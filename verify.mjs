@@ -70,6 +70,7 @@ import {
 import { MODES, MODE_IDS, TEAM_NAMES, DEFAULT_MODE } from './shared/modes.js';
 import {
   REGIONS, REGION_IDS, HERE, isRegion, fastest, parseRegions, regionsFromEnv, wsOrigin, pingGrade,
+  publicOrigin,
 } from './shared/regions.js';
 import { socketFor } from './client/src/regions.js';
 import { TIERS, MAX_TIER, rankOf, toNextRank } from './shared/ranks.js';
@@ -7060,7 +7061,9 @@ const okN = (cond, label, detail = '') => {
   const to = src.indexOf('\n}', from);
   okN(from > 0 && to > from, 'settings.js still has an httpOrigin validator to lift',
       from > 0 ? `${to - from} chars` : 'NOT FOUND - the checks below are vacuous');
-  const httpOrigin = new Function(`${src.slice(from, to + 2)}\nreturn httpOrigin;`)();
+  // `publicOrigin` is passed in rather than stubbed: settings.js calls the shared one, and a
+  // stub here would let the two disagree about which addresses are dialable.
+  const httpOrigin = new Function('publicOrigin', `${src.slice(from, to + 2)}\nreturn httpOrigin;`)(publicOrigin);
 
   okN(httpOrigin('https://a.example.com') === 'https://a.example.com'
       && httpOrigin('http://localhost:8080') === 'http://localhost:8080',
@@ -7076,6 +7079,15 @@ const okN = (cond, label, detail = '') => {
       leaked.length ? `LEAKED: ${leaked.join(' ')}` : `refused ${refused.length} shapes`);
   okN([null, undefined, 42, {}, []].every((v) => httpOrigin(v) === ''),
       'including values that are not strings at all, which is what a corrupt entry looks like');
+  // An address a card already stored before shared/regions.js learned to complete it. Repaired
+  // on read, because a returning player would otherwise dial `wss://fpsbone-sea` at load and sit
+  // on "connecting…" forever with nothing on screen suggesting the region itself is fine.
+  okN(httpOrigin('https://fpsbone-sea') === 'https://fpsbone-sea.onrender.com',
+      'a private hostname already in somebody’s storage is completed rather than dialled as-is',
+      'the poisoned entry the broken ASIA card wrote');
+  okN(httpOrigin('https://fpsbone-sea.onrender.com') === 'https://fpsbone-sea.onrender.com'
+      && httpOrigin('http://localhost:8080') === 'http://localhost:8080',
+      'and a stored address that was always fine is left exactly as it was');
 }
 
 {
@@ -7234,6 +7246,44 @@ const okN = (cond, label, detail = '') => {
   okN(ping.includes('...CORS'),
       'and sends CORS, without which every region but your own reads as unreachable',
       'the menu on one region has to ask all of them');
+
+  // ── THE PRIVATE-NAME TRAP. This is the one that reached production: `fromService … property:
+  // host` fills in the peer's PRIVATE NETWORK name — `fpsbone-sea`, no domain — and the spec has
+  // no property that returns the public hostname. The client was handed `https://fpsbone-sea`,
+  // which resolves nowhere, so ASIA read `unreachable` on a server that was answering in 40ms
+  // while AMERICA (whose own address comes from RENDER_EXTERNAL_HOSTNAME, and is real) worked.
+  // `publicOrigin` now completes a domainless host, and these check the belt as well as it.
+  const tables = services.map((s) => parseRegions(s.env.FPSBONE_REGIONS ?? ''));
+  const noTable = services.filter((s) => !(s.env.FPSBONE_REGIONS ?? '').trim());
+  okN(noTable.length === 0,
+      'every service carries an explicit address table, not only a peer name injected by the host',
+      noTable.length ? noTable.map((s) => s.name).join(', ') : 'FPSBONE_REGIONS on all of them');
+  const domainless = tables.flatMap((t) => t.regions)
+    .filter((r) => !new URL(r.host).hostname.includes('.'));
+  okN(domainless.length === 0,
+      'and every address in it is one a browser can actually resolve, with a domain on the end',
+      domainless.length ? domainless.map((r) => r.host).join(' ') : 'the bug that shipped');
+  const junked = tables.flatMap((t) => t.dropped);
+  okN(junked.length === 0,
+      'and every entry parses, rather than being dropped with a log line nobody reads at boot',
+      junked.length ? junked.join(' ') : 'nothing ignored');
+  const want = ids.slice().sort().join(',');
+  const short = services.filter((_, i) => tables[i].regions.map((r) => r.id).sort().join(',') !== want);
+  okN(short.length === 0,
+      'and names every region in this file, its own included, so either page can reach either server',
+      short.length ? short.map((s, i) => `${s.name} lists [${tables[i].regions.map((r) => r.id)}]`).join('; ')
+        : `both tables list ${want}`);
+  // A Render-default hostname is `<service name>.onrender.com`, so a renamed service and a
+  // stale table are catchable. A custom domain is exempt — it can be anything at all.
+  const mismatch = tables.flatMap((t) => t.regions).filter((r) => {
+    const h = new URL(r.host).hostname;
+    const svc = services.find((s) => s.env.FPSBONE_REGION === r.id);
+    return svc && h.endsWith('.onrender.com') && h !== `${svc.name}.onrender.com`;
+  });
+  okN(mismatch.length === 0,
+      'and each address is the host of the service that actually is that region',
+      mismatch.length ? mismatch.map((r) => `${r.id} at ${r.host}`).join('; ')
+        : 'rename a service and this is the check that catches the stale table');
 }
 
 
@@ -7389,6 +7439,60 @@ const okN = (cond, label, detail = '') => {
   okN(back.loc.reloaded === true || back.loc.href !== dflt,
       'a pick always reloads, because the socket was opened once at load against one address',
       back.loc.reloaded ? 'reload()' : back.loc.href);
+}
+
+{
+  // ── AN ADDRESS A BROWSER CAN DIAL, which is not the same thing as a valid url.
+  // `publicOrigin` exists because of a live failure, not a hypothetical one: the ASIA card read
+  // `unreachable` while Singapore answered in 40ms, because the blueprint had injected the peer's
+  // PRIVATE network name and `https://fpsbone-sea` resolves nowhere. Everything here is that bug,
+  // pinned from both ends — the shape that broke, and the shapes that must not be touched.
+  okN(publicOrigin('https://fpsbone-sea') === 'https://fpsbone-sea.onrender.com',
+      'a host with no domain on it is completed, because that is what a blueprint can inject',
+      'https://fpsbone-sea → nowhere; this is the bug that shipped');
+  okN(publicOrigin('fpsbone-sea') === 'https://fpsbone-sea.onrender.com',
+      'and so is the same name arriving with no scheme either');
+  okN(publicOrigin('https://fpsbone-sea:10000') === 'https://fpsbone-sea.onrender.com',
+      'and the private port goes with it, since the public endpoint is 443',
+      'property: hostport hands over name:10000');
+
+  // Everything already routable has to come through untouched, or the repair is a new bug.
+  const keep = [
+    'https://fpsbone-sea.onrender.com',
+    'https://fpsbone.onrender.com',
+    'https://play.fpsbone.gg',
+    'http://localhost:8080',
+    'http://127.0.0.1:8080',
+    'https://a.example.com',
+  ];
+  const mangled = keep.filter((v) => publicOrigin(v) !== v);
+  okN(mangled.length === 0,
+      'an address that already resolves is returned exactly as it was',
+      mangled.length ? mangled.map((v) => `${v} → ${publicOrigin(v)}`).join('; ')
+        : `${keep.length} shapes untouched, custom domains and localhost included`);
+  okN(publicOrigin('http://[::1]:8080') === 'http://[::1]:8080',
+      'including an IPv6 literal, which has no dot in it and is not a service name');
+
+  const refuse = ['javascript:alert(1)', 'file:///etc/passwd', 'ftp://x.example.com', '', '   '];
+  const leaked2 = refuse.filter((v) => publicOrigin(v) !== '');
+  okN(leaked2.length === 0,
+      'and nothing that is not an http(s) address comes out of it at all',
+      leaked2.length ? `LEAKED: ${leaked2.join(' ')}` : `refused ${refuse.length}`);
+
+  // The whole path, from the var a blueprint writes to the url a WebSocket is handed. This is
+  // the assertion that would have failed before the deploy went out.
+  const injected = regionsFromEnv({ FPSBONE_REGION: 'usw', FPSBONE_HOST: 'fpsbone.onrender.com', FPSBONE_PEER_SEA: 'fpsbone-sea' });
+  const sea2 = injected.regions.find((r) => r.id === 'sea');
+  okN(sea2?.host === 'https://fpsbone-sea.onrender.com',
+      'a peer injected as a bare service name reaches the client as an address, not a private name',
+      JSON.stringify(sea2?.host));
+  okN(socketFor('sea', sea2?.host) === 'wss://fpsbone-sea.onrender.com',
+      'and the socket built from it is one that can open');
+  const handWritten = parseRegions('sea=https://fpsbone-sea,usw=https://fpsbone.onrender.com');
+  okN(handWritten.regions.length === 2
+      && handWritten.regions.every((r) => new URL(r.host).hostname.includes('.')),
+      'and a hand-written table with the same mistake in it is repaired the same way',
+      handWritten.regions.map((r) => r.host).join(' '));
 }
 console.log([...pN, ...fN].join('\n'));
 // ─────────────────────────────────────────── Part I: two live clients

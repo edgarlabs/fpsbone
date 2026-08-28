@@ -8,7 +8,7 @@
 
 import { MODE_IDS, DEFAULT_MODE } from '../../shared/modes.js';
 import { WEAPON_IDS } from '../../shared/weapons.js';
-import { HERE, isRegion } from '../../shared/regions.js';
+import { HERE, isRegion, publicOrigin } from '../../shared/regions.js';
 import { DEFAULT_BINDS, normalizeBinds } from './binds.js';
 
 const KEY = 'fpsbone.settings';
@@ -88,12 +88,20 @@ const bool = (v) => v === true || v === 'true' || v === 1 || v === '1';
 
 /** A stored region address, or ''. Only a bare http(s) origin survives: the scheme is swapped
  *  for ws(s) and endpoints are appended, so a path would 404 them and any other scheme would
- *  reach `new WebSocket` as something nobody meant to dial. */
+ *  reach `new WebSocket` as something nobody meant to dial.
+ *
+ *  Run through `publicOrigin` on the way out, which repairs the one address a card could have
+ *  stored that no browser can dial: a peer host with no domain on it, injected by a blueprint
+ *  before shared/regions.js knew to complete it. Repaired on READ because it is already in
+ *  people's storage — a returning player would otherwise dial `wss://fpsbone-sea` forever and
+ *  sit on "connecting…" with no way to tell that the region they picked is fine. */
 function httpOrigin(v) {
   if (typeof v !== 'string' || !v) return '';
   try {
     const u = new URL(v);
-    return (u.protocol === 'http:' || u.protocol === 'https:') && u.pathname === '/' ? u.origin : '';
+    return (u.protocol === 'http:' || u.protocol === 'https:') && u.pathname === '/'
+      ? publicOrigin(u.href)
+      : '';
   } catch {
     return '';
   }

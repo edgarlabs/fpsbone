@@ -19,11 +19,14 @@
 # measured ping to each and lets the player pick. A region is FIXED WHEN A SERVICE IS CREATED,
 # which is why this is two services and not one with a setting.
 #
-# NOTHING IS TYPED BY HAND to connect them. Each service is told where the other one lives with
-# `fromService`, which Render fills in with the real hostname — including the suffix it adds if
-# a name was taken. Each also learns its own address from RENDER_EXTERNAL_HOSTNAME, so it can
-# appear in the menu under its region label instead of as an anonymous "THIS SERVER". See
-# `regionsFromEnv` in shared/regions.js for how the three sources combine.
+# NOTHING IS TYPED BY HAND to connect them. Each service is given the table of public addresses
+# in FPSBONE_REGIONS, and is also handed the other's name by `fromService` as a fallback. The
+# two are not redundant: `fromService` fills in the PRIVATE network name — `fpsbone-sea`, no
+# domain — because the blueprint spec has no property that returns a public hostname, and a
+# browser cannot dial that. shared/regions.js completes it; the literal avoids needing to. Each
+# service also learns its own address from RENDER_EXTERNAL_HOSTNAME, so it can appear in the menu
+# under its region label instead of as an anonymous "THIS SERVER". See `regionsFromEnv` in
+# shared/regions.js for how the sources combine, and `publicOrigin` for the repair.
 #
 # WHAT THE FREE PLAN COSTS YOU, stated plainly:
 #
@@ -46,9 +49,9 @@
 #
 # ADDING A THIRD REGION is this file only — Ohio (`usc`), Virginia (`use`) or Frankfurt (`eu`),
 # whose ids are listed in shared/regions.js. Copy a service block, give it the region and the
-# id, and add a FPSBONE_PEER_ line to it and to every existing service. No rebuild of anything
-# else: hostnames reach the client at runtime over /regions, which is the entire reason they are
-# not compiled in.
+# id, and add its address to the FPSBONE_REGIONS line of every service, its own included. No
+# rebuild of anything else: hostnames reach the client at runtime over /regions, which is the
+# entire reason they are not compiled in.
 
 services:
   # ── AMERICA · Oregon. Named plainly because it is also the one a single-region deploy would
@@ -74,8 +77,23 @@ services:
         value: "22"
       - key: FPSBONE_REGION
         value: usw
-      # Where the other region is, filled in by Render rather than guessed here. A bare
-      # hostname arrives and shared/regions.js gives it https, which is what Render serves.
+      # WHERE THE OTHER REGION IS, and why this is a literal rather than a `fromService`.
+      #
+      # A blueprint CAN inject a peer's hostname — and the one it injects is the PRIVATE network
+      # name, `fpsbone-sea`, with no domain on the end. There is no property that returns the
+      # public one: the spec documents `host` and `hostport` as private-network values and offers
+      # nothing else for a web service. Handed to a browser that becomes `https://fpsbone-sea`,
+      # which resolves nowhere, and the ASIA card read `unreachable` while Singapore was up and
+      # answering in 40ms. That is what these two lines fix.
+      #
+      # shared/regions.js now completes a domainless host to `<name>.onrender.com`, so the
+      # injected form below works too — but a literal is exact, and it survives a service that
+      # Render had to name `fpsbone-sea-a1b2` because the name was taken. RENAME A SERVICE AND
+      # THIS LINE IS WHAT YOU FIX; it wins over the injected value on purpose.
+      - key: FPSBONE_REGIONS
+        value: sea=https://fpsbone-sea.onrender.com,usw=https://fpsbone.onrender.com
+      # Kept as the fallback, and as the thing that keeps a fork with different service names
+      # from having no peer at all: a domainless name arrives, shared/regions.js completes it.
       - key: FPSBONE_PEER_SEA
         fromService:
           type: web
@@ -96,6 +114,9 @@ services:
         value: "22"
       - key: FPSBONE_REGION
         value: sea
+      # The same table as the other service, for the same reason — see the long note above it.
+      - key: FPSBONE_REGIONS
+        value: sea=https://fpsbone-sea.onrender.com,usw=https://fpsbone.onrender.com
       - key: FPSBONE_PEER_USW
         fromService:
           type: web

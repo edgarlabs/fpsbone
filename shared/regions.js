@@ -80,6 +80,9 @@ export function fastest(results) {
  *   a non-http scheme  — the client turns http→ws and https→wss and nothing else
  *   a url with a path  — endpoints are appended, so a trailing path silently 404s them all
  *   a duplicate id     — two addresses for one place is a config bug, not a preference
+ *
+ * One shape is repaired rather than rejected: a host with no domain on it, which is what a
+ * Render blueprint can inject and is the one address a browser cannot dial. See `publicOrigin`.
  */
 export function parseRegions(spec) {
   const regions = [];
@@ -105,7 +108,9 @@ export function parseRegions(spec) {
     }
 
     seen.add(id);
-    regions.push({ id, ...REGIONS[id], host: url.origin });
+    // `publicOrigin` and not `url.origin`: a blueprint can only inject a peer's private
+    // network name, and a name with no domain on it is not an address any browser can reach.
+    regions.push({ id, ...REGIONS[id], host: publicOrigin(url.href) });
   }
 
   regions.sort((a, b) => REGION_IDS.indexOf(a.id) - REGION_IDS.indexOf(b.id));
@@ -115,6 +120,46 @@ export function parseRegions(spec) {
 /** A hostname or a full url as a url. Hosts that inject their own hostname into the
  *  environment hand over a bare `name.onrender.com`, and https is what they serve. */
 const withScheme = (v) => (/^https?:\/\//.test(String(v)) ? String(v) : `https://${v}`);
+
+/** The suffix a Render service's public hostname has when it has no custom domain. */
+const ONRENDER = '.onrender.com';
+
+/**
+ * An address as an origin a BROWSER can dial — repairing the one shape that cannot be dialled
+ * at all, because a deploy hands it over and looks correct doing so.
+ *
+ * A Render blueprint's `fromService … property: host` fills in the peer's PRIVATE NETWORK name:
+ * a single label, `fpsbone-sea`, with no domain on the end of it. The blueprint spec has no
+ * property that returns the public hostname — `host` and `hostport` are both documented as
+ * private-network values — so that single label is what a blueprint can know about its peer.
+ * Passed through to the client it becomes `https://fpsbone-sea`, which resolves nowhere, and
+ * the ASIA card reads `unreachable` while the server behind it is up and answering. That is
+ * exactly the failure this repairs, and it shipped.
+ *
+ * A single-label host cannot be a public address, so it is completed to the one it must be.
+ * The port goes with it: a private hostport is `name:10000` and the public endpoint is 443.
+ *
+ * Anything already routable is returned untouched — a dotted host, `localhost`, an IP literal.
+ * A service whose public hostname carries a suffix Render added because the name was taken
+ * cannot be derived from anything, and is what FPSBONE_REGIONS is for.
+ */
+export function publicOrigin(v) {
+  const s = String(v).trim();
+  // A scheme that is not http(s) is refused BEFORE `withScheme` gets it, or `file:///etc/passwd`
+  // is handed back as `https://file.onrender.com` — a bare hostname is the only thing that may
+  // have a scheme put in front of it.
+  if (/^[a-z][a-z0-9+.-]*:/i.test(s) && !/^https?:/i.test(s)) return '';
+  let u;
+  try {
+    u = new URL(withScheme(s));
+  } catch {
+    return '';
+  }
+  if (u.protocol !== 'http:' && u.protocol !== 'https:') return '';
+  const h = u.hostname;
+  const private1 = !h.includes('.') && h !== 'localhost' && !h.startsWith('[');
+  return private1 ? `${u.protocol}//${h}${ONRENDER}` : u.origin;
+}
 
 /**
  * Everything the environment says about regions, in one place: which region this process is,
