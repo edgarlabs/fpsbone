@@ -11,7 +11,7 @@
 
 import * as C from './constants.js';
 import { depenetrate, moveAxis, overlapsBox } from './collide.js';
-import { WEAPON_IDS } from './weapons.js';
+import { WEAPON_IDS, scopes, zoomStepCount, SCOPE_SETTLE_MS } from './weapons.js';
 
 const EPS_GAIN = 1e-4;
 
@@ -109,18 +109,43 @@ export function createPlayerState(spawn) {
     /** Set when the bar hits empty, cleared at SPRINT_MIN_START. Without it a player
      *  who runs flat re-engages sprint for one tick at a time, forever. */
     sprintLock: false,
+    /**
+     * Which zoom step the scope is at: 0 for down, 1 for the first, 2 for the second.
+     *
+     * SIMULATION STATE, and it was not, which is the whole of "crazy hard to play with
+     * sniper". The scope used to be a client-side latch that never left the browser — so
+     * the server, which is the thing that decides whether your bullet hit, had no idea
+     * whether you were looking through glass. Every consequence a scope is supposed to
+     * have therefore could not exist: no penalty for firing from the hip, no reward for
+     * having held the angle, no cost to walking around zoomed. The gun had a scope the
+     * way a hat has a feather.
+     *
+     * The client asserts a step (`sc` on the input) and this is where the assertion is
+     * turned into a fact, narrowed against the weapon actually held — see `scopeStep`.
+     */
+    scope: 0,
+    /**
+     * How long the current scope step has been open, in ms, or 0 whenever it is not.
+     *
+     * The quick-scope window (see SCOPE_SETTLE_MS in weapons.js). Accumulated here rather
+     * than from a wall clock for the reason `restTicks` gives: stepPlayer has no clock,
+     * only dt — and a dt that is identical on both sides is exactly what makes this
+     * bit-exact rather than merely close. A shot's accuracy hangs off this number, so
+     * "close" would mean the server disagreeing with the crosshair the player aimed with.
+     */
+    scopeMs: 0,
   };
 }
 
 const KINEMATIC = ['x', 'y', 'z', 'vx', 'vy', 'vz', 'yaw', 'pitch', 'grounded', 'crouch',
-  'jumpHeld', 'stamina', 'restTicks', 'sprintLock'];
+  'jumpHeld', 'stamina', 'restTicks', 'sprintLock', 'scope', 'scopeMs'];
 
 export function copyState(from, to) {
   for (const k of KINEMATIC) to[k] = from[k];
   return to;
 }
 
-export const EMPTY_INPUT = { moveX: 0, moveZ: 0, yaw: 0, pitch: 0, buttons: 0, wep: 0 };
+export const EMPTY_INPUT = { moveX: 0, moveZ: 0, yaw: 0, pitch: 0, buttons: 0, wep: 0, sc: 0 };
 
 const clamp = (v, lo, hi) => (v < lo ? lo : v > hi ? hi : v);
 
@@ -157,6 +182,21 @@ export function sanitizeInput(raw, fallbackYaw = 0, fallbackWep = 0) {
     pitch: clamp(num(raw?.pitch), -C.PITCH_LIMIT, C.PITCH_LIMIT),
     buttons: num(raw?.buttons) | 0,
     wep: clamp(num(raw?.wep, fallbackWep) | 0, 0, WEAPON_IDS.length - 1),
+    /**
+     * Which zoom step the client says its scope is at. Rides in the input for exactly the
+     * reasons `wep` above does — idempotent, ordered, redundant, unlosable — and it is a
+     * LEVEL rather than a toggle for the same reason: a dropped "scope up" edge would
+     * leave the two sides permanently disagreeing about what the player is looking
+     * through, and there is no way to notice, whereas a dropped level corrects itself on
+     * the next input 16ms later.
+     *
+     * Clamped against a global ceiling rather than the held weapon's own step count,
+     * because nothing here has resolved a loadout yet — the same split `wep` makes, and
+     * `scopeStep` does the narrowing where the weapon is actually known. So the worst an
+     * edited client achieves here is claiming a third zoom on a two-zoom rifle, which
+     * `scopeStep` reads as the second.
+     */
+    sc: clamp(num(raw?.sc) | 0, 0, C.MAX_SCOPE_STEP),
   };
 }
 
@@ -197,6 +237,65 @@ function crouchStep(s, input, dt, boxes) {
 }
 
 /**
+ * Resolve the client's claimed scope step against the weapon it is actually holding, and
+ * age the one that is open.
+ *
+ * Two rules, and the second is the interesting one:
+ *
+ * A step is CLAMPED to what the held weapon has, never refused. A rifle asserting step 1
+ * simply has no scope and reads 0; a sniper asserting 3 reads 2. So a weapon swap that
+ * crosses a packet boundary — the client already unscoped, the input describing it still
+ * in flight — resolves to something sane on every tick in between rather than to an
+ * argument, and there is no state to get stuck in.
+ *
+ * The timer RESETS ON EVERY CHANGE, including on the way down and including between the
+ * two zoom levels. That is what makes double-scoping a real decision rather than a free
+ * upgrade: the second click starts the settle again, so a player who flicks to the far
+ * zoom mid-duel is firing from an unsettled cone at the worse of the two multipliers.
+ * CS2's scoped-inaccuracy indicator visibly re-widens on a double scope for the same
+ * reason. Aged BEFORE the accumulate, so the first tick of a new scope reads 0ms and not
+ * one tick's worth — the instant the glass comes up is when the penalty is total.
+ *
+ * AND THE TIMER ONLY RUNS FORWARD WHILE THE PLAYER IS STANDING STILL, which is the rule
+ * that replaced a pure stopwatch. Time alone was the wrong axis. It made this weapon a
+ * test of how long you could hold the right button before pulling the trigger — a number
+ * nothing on screen reports and nothing in the world causes — while a scoped player at a
+ * dead run stayed inside 14cm at 25m and was barely punished at all. CS2 spends its scoped
+ * inaccuracy on MOVEMENT, and movement is the one thing a player always knows they are
+ * doing. So the glass settles when you stop and unsettles when you go, symmetrically and
+ * at the same rate, and "stop, then shoot" becomes the whole of the skill instead of an
+ * invisible stopwatch nobody could have found by playing.
+ *
+ * Keyed on the INTENT, `moveX`/`moveZ`, and never on a velocity threshold — for the
+ * reason `sprintOk` gives about `wl`: velocity crosses the wire quantised and a branch on
+ * it would put the two sides on opposite sides of the same tick. `sanitizeInput` clamps
+ * both axes identically on both sides, so this is bit-exact. Read raw rather than as the
+ * rotated wish vector because the hypot of a rotation is only the same number in exact
+ * arithmetic, and because `wl` does not exist yet this early in the step.
+ */
+function scopeStep(s, input, dt) {
+  const want = scopes(WEAPON_IDS[input.wep])
+    ? Math.min(input.sc ?? 0, zoomStepCount(WEAPON_IDS[input.wep]))
+    : 0;
+  if (want !== s.scope) {
+    s.scope = want;
+    s.scopeMs = 0;
+    return;
+  }
+  // Only a scope that is UP ages. Down, the number is meaningless and left at 0 so a
+  // state that has been sitting unscoped for a minute is identical to one that just
+  // lowered — otherwise `scopeSpread` would read a stale settle off the next scope-in.
+  if (want <= 0) return;
+  const moving = Math.hypot(input.moveX, input.moveZ) > 1e-6;
+  const ms = (s.scopeMs ?? 0) + (moving ? -dt * 1000 : dt * 1000);
+  // Clamped at BOTH ends, and the ceiling is the half that matters: without it a player
+  // who held an angle for ten seconds would carry ten seconds of credit into a sprint and
+  // arrive across the map still perfectly settled. Bounded, the trade is legible — one
+  // window to earn the shot, one window to give it away.
+  s.scopeMs = Math.max(0, Math.min(SCOPE_SETTLE_MS, ms));
+}
+
+/**
  * Is this tick a sprinting tick? Resolved ONCE per tick and handed to both the cost
  * and the cap, so the two can never disagree about what the player was doing.
  *
@@ -218,6 +317,11 @@ function sprintOk(s, input, wl) {
   if (wl <= 1e-6) return false;
   if (input.buttons & C.BTN_WALK) return false;
   if ((s.crouch ?? 0) > 1e-3) return false;
+  // A scope is the opposite of a sprint, and this is a REFUSAL rather than a slower
+  // sprint on purpose: the cap below already takes a minimum, so without this line a
+  // player holding shift would be charged stamina for speed the scope was never going
+  // to let them have. An integer count of exactly what it bought, or nothing.
+  if ((s.scope ?? 0) > 0) return false;
   return !s.sprintLock && s.stamina > 0;
 }
 
@@ -234,7 +338,14 @@ function speedMul(s, input, sprinting) {
   if (sprinting) return C.SPRINT_SPEED_MUL;
   const walk = input.buttons & C.BTN_WALK ? C.WALK_SPEED_MUL : 1;
   const duck = 1 + (C.CROUCH_SPEED_MUL - 1) * (s.crouch ?? 0);
-  return Math.min(walk, duck);
+  // The scope joins the same minimum, and joins it as a HARD number rather than a blend
+  // of `scope`: the glass is up or it is not, and there is no half-zoomed state to
+  // interpolate — CS2's scope is instantaneous and so is this one now (see the FOV snap
+  // in client/src/viewmodel.js). Taking a minimum rather than multiplying is the rule
+  // this whole function is built on; SCOPE_SPEED_MUL's own comment says why compounding
+  // 0.4 into a crouch would read as being stuck.
+  const glass = (s.scope ?? 0) > 0 ? C.SCOPE_SPEED_MUL : 1;
+  return Math.min(walk, duck, glass);
 }
 
 export function stepPlayer(s, input, dt, boxes) {
@@ -244,6 +355,11 @@ export function stepPlayer(s, input, dt, boxes) {
   // Resize before anything else reads the body, so one tick uses one size.
   crouchStep(s, input, dt, boxes);
   const half = halfOf(s);
+
+  // Before the speed cap and before the sprint check, both of which read `s.scope`, and
+  // before anything fires: a shot resolved this tick asks `spreadMul` for a cone and has
+  // to be told about the glass that is up right now, not the glass that was up last tick.
+  scopeStep(s, input, dt);
 
   // Never simulate from inside the level. The client replays from a position that
   // came over the wire quantised, so it can start a tick hairline-deep in a wall;

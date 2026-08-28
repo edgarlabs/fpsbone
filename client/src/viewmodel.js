@@ -1098,16 +1098,18 @@ export function createViewmodel(camera, scene, vmRoot, hooks = {}) {
   /** 0..1 blend on the held weapon's OWN right-click verb. Zero for a weapon that
    *  has no `alt` at all, which is why a knife no longer reacts to right-click. */
   let altK = 0;
-  let scopeK = 0; // altK, but only for weapons that actually zoom
+  /** Is the glass up: 1 or 0, and never anything in between. Shaped like `altK` and
+   *  named like a blend because it used to be one — see where it is assigned for why an
+   *  eased scope and a stepped sensitivity made the sniper unplayable. */
+  let scopeK = 0;
   /**
-   * The scope's currently-eased field of view, in degrees. Absolute, not a fraction.
+   * The scope's field of view, in degrees. Absolute, not a fraction.
    *
    * Held apart from `scopeK` because a double scope has TWO narrow fields of view and
    * one 0..1 blend cannot express both: stepping from the first zoom to the second
    * happens while `scopeK` is pinned at 1, so if the FOV rode on `scopeK` alone the
-   * second click would do nothing at all. This eases between the steps; `scopeK` eases
-   * between unscoped and scoped. Only written while scoped, so on the way back out it
-   * keeps its last value and `scopeK` alone returns the view to the player's own FOV.
+   * second click would do nothing at all. This one says WHICH zoom; `scopeK` says whether
+   * we are at one. Both are now snapped rather than eased, so a step is a step.
    */
   let zoomFovK = 0;
   let swing = -1; // -1 idle, else 0..1 through a slash or throw
@@ -1684,19 +1686,35 @@ export function createViewmodel(camera, scene, vmRoot, hooks = {}) {
       const heavyK = alt === 'heavy' ? altK : 0;
       // Only a weapon that actually zooms gets a scope overlay; aiming a pistol must
       // not black out the screen.
-      scopeK = scopes(currentId) ? altK : 0;
+      //
+      // INSTANT, and not `altK`, which is the single biggest reason the sniper was
+      // "crazy hard to play". The overlay and the FOV used to ride the same 13/s ease as
+      // the pose — about 230ms to settle — while MOUSE SENSITIVITY is a step function on
+      // the latch (see client/src/input.js): it drops to `zoomSens` on the frame of the
+      // click. So scoping in zoomed the picture underneath a cursor that had already
+      // slowed, and unscoping was worse in the other direction: the latch cleared, gain
+      // jumped straight back to 1x, and the view was still magnified for a fifth of a
+      // second — a violent whip on every single shot, right at the moment the player was
+      // trying to look at what they had just hit.
+      //
+      // CS2's scope is instantaneous. Snapping the two values that the sensitivity has to
+      // agree with is what puts the gain and the magnification on the same frame, and it
+      // is what makes a quick-scope a thing a hand can actually do. The POSE still eases
+      // on `altK` below, and that costs nothing: `g.visible = scopeK < 0.5` hides the
+      // weapon the instant the glass is up, so the only frames where the eased pose is on
+      // screen are the ones on the way out, where it reads as the gun coming down off the
+      // shoulder — which is exactly what it is.
+      scopeK = scopes(currentId) ? wantAlt : 0;
 
-      // Which of the scope's zooms we are easing toward. Snapped on the way in rather
-      // than eased from a stale value, so the first frame of a scope is computed against
-      // this weapon's own first zoom and not against whatever the last one left behind.
+      // Which of the scope's zooms we are at. Snapped for the same reason and to the same
+      // frame, so the second click of a double scope is also instant rather than a
+      // 230ms crawl inward with the sensitivity already at the far zoom's gain.
       if (scopedStep > 0) {
-        const target = steps[scopedStep - 1];
-        zoomFovK = zoomFovK > 0 ? zoomFovK + (target - zoomFovK) * Math.min(1, dt * 13) : target;
-      } else if (scopeK < 0.01) {
-        // Fully out. Clear the remembered zoom so the next scope snaps to its own first
-        // step instead of easing across from the last weapon's second. The 0.01 guard
-        // keeps it set through the un-zoom ease, when scopeK is still bleeding the FOV
-        // back to the player's own and a mid-flight reset would jump the view.
+        zoomFovK = steps[scopedStep - 1];
+      } else {
+        // Fully out, and there is no longer any ease to protect: `scopeK` is already 0 on
+        // this frame, so the remembered zoom can be cleared immediately and the next scope
+        // starts from its own first step rather than from the last weapon's second.
         zoomFovK = 0;
       }
 
@@ -2290,8 +2308,10 @@ export function createViewmodel(camera, scene, vmRoot, hooks = {}) {
       return altK;
     },
 
-    /** 0..1 opacity for the scope overlay. Zero for weapons without a scope, so the
-     *  caller does not have to know which those are. */
+    /** Opacity for the scope overlay: 1 or 0. Still typed as an amount because the HUD
+     *  writes it straight into `opacity` and because a future scope that fades is a
+     *  change to one assignment rather than to this seam. Zero for weapons without a
+     *  scope, so the caller does not have to know which those are. */
     get scopeAmount() {
       return scopeK;
     },
@@ -2306,10 +2326,10 @@ export function createViewmodel(camera, scene, vmRoot, hooks = {}) {
     /**
      * Field of view this weapon wants right now, given the player's base FOV.
      *
-     * Two eased values rather than one: `scopeK` says how far we are between the
-     * player's own FOV and the scope, and `zoomFovK` says which of the scope's zooms
-     * we are looking through. Both are needed, because a double scope changes its FOV
-     * while `scopeK` is already pinned at 1.
+     * Two values rather than one: `scopeK` says whether we are looking through the
+     * scope at all, and `zoomFovK` says which of its zooms. Both are needed, because a
+     * double scope changes its FOV while `scopeK` is already pinned at 1. Neither eases
+     * any more — a scope is instant, like CS2's, and the assignment above says why.
      *
      * `scopeK`, not the raw blend, so a lobbed grenade cannot zoom the camera — and it
      * is zero for every weapon without a scope, which is what makes the whole

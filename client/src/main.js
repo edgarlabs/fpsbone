@@ -159,6 +159,17 @@ let selfId = null;
 /** Has the first authoritative snapshot landed? Nothing simulates before it. */
 let primed = false;
 let latestPlayers = [];
+/**
+ * Who is in the room, by id: name, rank tier and badge shelf, from MSG.ROSTER.
+ *
+ * A SECOND PLAYER LIST, kept apart from `latestPlayers` because the two arrive on completely
+ * different schedules — that one is replaced twenty times a second, this one on a join, a
+ * drop or a promotion. The scoreboard reads both and the merge happens there.
+ *
+ * A Map and not an array because every read is by id and there is one read per row per frame
+ * the board is open.
+ */
+let latestRoster = new Map();
 let selfHp = C.MAX_HP;
 let selfAlive = true;
 let footAccum = 0;
@@ -411,6 +422,12 @@ function applyMode(id) {
   input.setLoadout(loadout);
   input.setWeapon(indexOf(settings.wep));
 }
+
+// Replaces wholesale rather than merging: the server sends the entire room every time, so
+// somebody who left is gone by absence and there is no removal message that could be missed.
+net.on('roster', (rows) => {
+  latestRoster = new Map((rows ?? []).map((r) => [r.i, r]));
+});
 
 net.on('snapshot', (m) => {
   const now = performance.now();
@@ -959,8 +976,16 @@ function frame(now) {
     s.sprinting);
   // Zoom follows the scope blend, so it must be applied every frame, not on the
   // mouse event — and the base value is the player's own FOV setting.
-  view.setFov(viewmodel.fovFor(settings.fov));
-  hud.scope(viewmodel.scopeAmount, viewmodel.hasScope);
+  const fovNow = viewmodel.fovFor(settings.fov);
+  view.setFov(fovNow);
+  // The cone the next round can land in, and the field of view it is being drawn across.
+  // `spreadMul` with the weapon id is the whole scope model — the 40x hip penalty and the
+  // settle after the glass comes up — read off the same predicted state the shot will be
+  // fired from, so the ring is reporting the spread rather than illustrating it. Exactly
+  // the argument `hud.bloom` below makes about the crosshair, applied to the one weapon
+  // whose crosshair is deliberately absent.
+  hud.scope(viewmodel.scopeAmount, viewmodel.hasScope,
+    (weaponAt(wep).spread ?? 0) * spreadMul(s, idAt(wep)), fovNow);
   // The crosshair opens with the recoil, which is the only honest thing it can do:
   // the punch is added to the aim we send, so the arms are showing the spread of where
   // the next round can actually go.
@@ -985,8 +1010,10 @@ function frame(now) {
     match?.wt ? (TEAM_NAMES[match.wt] ?? null) : match?.w ? nameOf(match.w) : null,
   );
   hud.scoreboard(
+    now,
     input.scoreboard || matchOver,
     latestPlayers,
+    latestRoster,
     selfId,
     matchOver ? `${mode.label} · final` : mode.label.toLowerCase(),
   );

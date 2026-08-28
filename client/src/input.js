@@ -400,8 +400,10 @@ export function createInput(canvas, settings) {
     get alt() {
       return alt;
     },
-    /** Client-only: camera zoom and the scope overlay read this. Never sent, and
-     *  false for every weapon without a scope no matter what the mouse is doing. */
+    /** Are we looking down glass? What the camera zoom, the scope overlay and the mouse
+     *  gain all read. False for every weapon without a scope no matter what the mouse is
+     *  doing. The STEP behind it now travels — see `sc` in `sample` — so this is a local
+     *  view of shared simulation state rather than the only copy of it. */
     get scoping() {
       return scoping();
     },
@@ -655,7 +657,20 @@ export function createInput(canvas, settings) {
       // far side, so the prediction and the server agree about where a kick that has
       // driven the view into the ceiling actually points.
       const pitchOut = Math.max(-C.PITCH_LIMIT, Math.min(C.PITCH_LIMIT, pitch + punchPitch));
-      return { moveX, moveZ, yaw: yaw + punchYaw, pitch: pitchOut, buttons, wep, vt };
+      // `sc` is the scope, and it now GOES ON THE WIRE. It used to be a purely local
+      // latch that never left the browser, which meant the
+      // server, the thing that decides whether a bullet hit, could not know whether the
+      // player was looking through glass. So the scope had no consequences it could not
+      // have had without existing: no cost to hipfiring, no reward for having settled, no
+      // slowdown while zoomed. See `scope` in shared/movement.js.
+      //
+      // A LEVEL and not the toggle that produced it, because `sanitizeInput` clamps a
+      // level and a dropped edge is unrecoverable: a lost "scope up" would leave the two
+      // sides disagreeing forever with nothing on either side able to notice. Narrowed
+      // through `scopes()` here as well as on the far side, so a step left over from a
+      // sniper cannot ride out on the input that swapped to a rifle.
+      const sc = scopes(idAt(wep)) ? scopeStep : 0;
+      return { moveX, moveZ, yaw: yaw + punchYaw, pitch: pitchOut, buttons, wep, vt, sc };
     },
   };
 }

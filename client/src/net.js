@@ -20,8 +20,13 @@ export function createNet({
 }) {
   /** `lobby` carries how full every room is. Its own kind rather than a field on
    *  `snapshot` because it arrives on a join or a drop, not per tick, and the menu that
-   *  wants it is on screen precisely when snapshots are not being drawn. */
-  const handlers = { welcome: [], snapshot: [], status: [], lobby: [] };
+   *  wants it is on screen precisely when snapshots are not being drawn.
+   *
+   *  `roster` is the same argument applied inside one room: names, ranks and badge shelves
+   *  arrive on a join, a drop or a promotion, so they are not in the twenty-a-second
+   *  snapshot. The scoreboard reads both — this for who somebody is, the snapshot for how
+   *  they are doing and what their ping is right now. */
+  const handlers = { welcome: [], snapshot: [], status: [], lobby: [], roster: [] };
   const emit = (k, v) => handlers[k].forEach((f) => f(v));
 
   // `lag` is a round-trip figure, so half of it is applied in each direction.
@@ -64,6 +69,10 @@ export function createNet({
     // lobby from its first frame rather than after the first join anywhere on the server;
     // both carry the same shape, and main.js points both at one handler.
     if (m.t === MSG.LOBBY) return emit('lobby', m.rooms);
+    // Who is in this room and what they wear. Rare, unprompted, and REPLACES rather than
+    // merges: the server sends the whole room every time, so a player who left is gone by
+    // absence and there is no removal message to miss.
+    if (m.t === MSG.ROSTER) return emit('roster', m.players);
     if (m.t !== MSG.SNAPSHOT) return;
 
     // Input-to-ack latency. Reads slightly above true network RTT because it

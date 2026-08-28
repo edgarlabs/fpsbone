@@ -64,7 +64,7 @@ import * as C from './shared/constants.js';
 import { ARENA, SPAWNS, TEAM_SPAWNS, WORLD_BOXES } from './shared/map.js';
 import { rayWorld, overlapsBox, depenetrate, EPS } from './shared/collide.js';
 import {
-  createPlayerState, stepPlayer, halfOf, halfHAt, eyeY, aimDir,
+  createPlayerState, stepPlayer, sanitizeInput, EMPTY_INPUT, halfOf, halfHAt, eyeY, aimDir,
   chestY, headBoxOf, legsTopOf,
 } from './shared/movement.js';
 import { MODES, MODE_IDS, TEAM_NAMES, DEFAULT_MODE } from './shared/modes.js';
@@ -76,15 +76,15 @@ import { socketFor } from './client/src/regions.js';
 import { TIERS, MAX_TIER, rankOf, toNextRank } from './shared/ranks.js';
 import {
   BADGES, TRACK_KEYS, SPECIAL_KEYS, TIER_NAMES, MAX_BADGE_TIER, MAX_LEVEL, MAX_STEP,
-  labelOf, tierName, tierOf, badgeOf, levelOf, stepOf, toNextStep, tracksFor,
+  labelOf, tierName, tierOf, badgeOf, levelOf, stepOf, toNextStep, tracksFor, publicTiers,
 } from './shared/badges.js';
 import {
   SPREE_LEGS, SPREE_MS, SPREE_NAMES, legsOf, spreeName, wingsOf,
 } from './shared/spree.js';
 import {
   WEAPON_IDS, WEAPONS, SWITCH_MS, switchMsOf, JAM_CLEAR_MS, jamChanceOf, zoomStepsOf,
-  cycleMsOf, heftOf,
-  HIT_ZONE, HIT_ZONE_MUL, falloffMul, shotDamage, spreadMul,
+  cycleMsOf, heftOf, SCOPE_SETTLE_MS,
+  HIT_ZONE, HIT_ZONE_MUL, falloffMul, shotDamage, spreadMul, holdBandOf,
   hasHeavy, idAt, indexOf, isAuto, isUtil, pelletsOf, rollLoadout, scopes, shotStats, slotOf, slotPick, weaponAt,
 } from './shared/weapons.js';
 import {
@@ -331,6 +331,20 @@ function duel({
   // clear spot, which is what the distance-curve tests need: the 8u line is inside every
   // weapon's full-damage band, so nothing measured on it can see a falloff at all.
   pitch = 0, at = null,
+  // Whether the glass is up, defaulting to UP for any weapon that has any — because the
+  // shot these tests measure is the shot a player would actually take, and for a sniper
+  // that is a scoped one.
+  //
+  // Load-bearing, not tidiness. The scope is simulation state now (`sc` on the input,
+  // `scope`/`scopeMs` on the body — see shared/movement.js), and an input that omits it
+  // asserts a shot from the HIP, which `spreadMul` widens forty-fold. Every sniper figure
+  // in this file was measured through settled glass; without this line they would be
+  // re-measured at random through a 0.032rad cone, and a suite that flakes is a suite
+  // nobody reads. The warm-up below runs an order of magnitude longer than the settle
+  // window, so the cone is fully closed before the first measured tick.
+  //
+  // Pass 0 to take the hip shot on purpose.
+  sc = null,
 } = {}) {
   const home = at ?? line;
   const room = new Room(modeId);
@@ -371,9 +385,15 @@ function duel({
     }
   };
 
+  // Read off the weapon rather than defaulted to a number, so a weapon that gains or
+  // loses a scope changes these tests with it instead of silently measuring the wrong cone.
+  const glass = sc ?? (scopes(wep) ? 1 : 0);
+
   let seq = 0;
   const send = (buttons) =>
-    room.queueInput(idA, [{ seq: ++seq, moveX: 0, moveZ: 0, yaw: YAW_EAST, pitch, buttons, wep: wi }]);
+    room.queueInput(idA, [{
+      seq: ++seq, moveX: 0, moveZ: 0, yaw: YAW_EAST, pitch, buttons, wep: wi, sc: glass,
+    }]);
 
   /** Step `n` ticks holding `buttons`, collecting events and B's health. */
   const events = [];
@@ -421,7 +441,7 @@ function duel({
   const ticks = Math.round(ms / STEP_MS);
   trigger(ticks);
 
-  return { room, idA, idB, A, B, events, hpTrace, ticks, wi, pin, run, trigger, auto };
+  return { room, idA, idB, A, B, events, hpTrace, ticks, wi, pin, run, trigger, auto, glass };
 }
 
 /**
@@ -1394,6 +1414,429 @@ for (const id of DM.loadout) {
       + ` vs smg standing ${WEAPONS.smg.spread} rad`);
 }
 
+// ---- the cone the glass closes
+{
+  // "i notice how crazy hard to play with sniper can you tell me why and what should we
+  // improve i think we should copy how sniper behaves uin cs2."
+  //
+  // Three of CS2's rules about an AWP were missing, and this block is the biggest of them:
+  // fpsbone's sniper was PINPOINT FROM THE HIP. `spread` was the weapon's only accuracy
+  // number, so a snap shot at a running target went out through a 0.0008rad cone, a fifth
+  // of a degree, which made the scope a pure liability. It cost the player their peripheral
+  // vision and (now) their speed, and bought back nothing they did not already have. In CS2
+  // an unscoped AWP is close to useless, and scoping resolves the cone over roughly
+  // 150-200ms, which is what makes a quick-scope a gamble rather than a free shot.
+  //
+  // Every number here is asserted as a PROPERTY rather than a constant: HIP_SPREAD,
+  // SCOPE_SETTLE_MS and SCOPE_STEP_SPREAD are private to shared/weapons.js on purpose, and
+  // a test that pinned the literals would need editing every time the gun is tuned, which
+  // is how a suite stops meaning anything.
+  const glass = (scope, scopeMs) => ({ vx: 0, vz: 0, grounded: true, crouch: 0, scope, scopeMs });
+  // Standing still, on the ground, not crouched, so the body term is exactly 1 and every
+  // number below is the scope's own contribution.
+  const mul = (scope, scopeMs) => spreadMul(glass(scope, scopeMs), 'sniper');
+  const hip = mul(0, 0);
+
+  // How long the glass takes to close, discovered rather than declared.
+  let settleMs = -1;
+  for (let t = 0; t <= 2000 && settleMs < 0; t++) if (mul(1, t) === 1) settleMs = t;
+  okB(settleMs > 100 && settleMs <= 300,
+      'the scope resolves over the same window CS2 uses, not instantly and not eventually',
+      `${settleMs}ms to fully settled`);
+
+  okB(hip > 20, 'a sniper fired from the hip is not a sniper',
+      `${hip.toFixed(0)}x the cone the table promises`);
+  // Exactly 1, not approximately: the settled cone has to be the weapon's own number, or
+  // every aimed sniper shot in the game is quietly wider than shared/weapons.js says.
+  okB(mul(1, settleMs) === 1 && mul(1, settleMs * 5) === 1,
+      'and through settled glass it is exactly the number in the table, and stays there',
+      `${mul(1, settleMs)}x at ${settleMs}ms and ${mul(1, settleMs * 5)}x long after`);
+  // The instant the glass comes up is the instant it is widest, which is what stops the
+  // scope from being a free upgrade a hand can flick on at the last moment.
+  okB(Math.abs(mul(1, 0) - hip) < 1e-9,
+      'the frame the scope opens is no better than no scope at all',
+      `${mul(1, 0).toFixed(0)}x scoped-this-frame against ${hip.toFixed(0)}x from the hip`);
+
+  // Monotone, and quadratic in the time remaining, so the last half of the window is nearly
+  // free and the first half is not. Same shape as the movement penalty above and for the
+  // same reason: it has to reward waiting a little without demanding a full second.
+  const walk = [];
+  for (let t = 0; t <= settleMs; t += 10) walk.push(mul(1, t));
+  okB(walk.every((v, i) => i === 0 || v < walk[i - 1]),
+      'and it closes smoothly the whole way, never widening again',
+      `${walk.length} samples from ${walk[0].toFixed(1)}x down to ${walk[walk.length - 1].toFixed(2)}x`);
+  const half = mul(1, settleMs / 2);
+  okB(half - 1 < 0.35 * (hip - 1),
+      'most of the cone is gone by the halfway mark, so a hurried shot is punished not refused',
+      `${half.toFixed(1)}x at ${settleMs / 2}ms, which is `
+      + `${(100 * (half - 1) / (hip - 1)).toFixed(0)}% of the way back to the hip`);
+  // The double scope, and CS2 widens its indicator on the second step too, because the far
+  // zoom magnifies the same wobble.
+  const far = mul(2, settleMs);
+  okB(far > 1 && far < hip,
+      'the far zoom is a little wider than the near one, and never wider than the hip',
+      `step 1 ${mul(1, settleMs).toFixed(2)}x, step 2 ${far.toFixed(2)}x, hip ${hip.toFixed(0)}x`);
+
+  // What all of that means where the player stands. At duelling range a hip shot's cone is
+  // wider than the body it is pointed at; a settled one is a fraction of a head.
+  const REF = 20;
+  const SN = WEAPONS.sniper;
+  const loose = REF * SN.spread * hip;
+  const tight = REF * SN.spread * mul(1, settleMs);
+  okB(loose > C.PLAYER_HALF_W && tight < C.PLAYER_HALF_W / 4,
+      `a no-scope at ${REF}u can miss a body it is aimed dead centre at, and an aimed shot cannot`,
+      `${loose.toFixed(2)}u from the hip against a ${C.PLAYER_HALF_W}u half-width, `
+      + `${(tight * 100).toFixed(1)}cm scoped`);
+
+  // The body terms still multiply through the glass, so a scoped player who is moving pays
+  // for both. Written as the composition rather than as a second literal, because the bug
+  // worth catching is a `return` that REPLACED the body term instead of scaling it.
+  const runner = { ...glass(1, settleMs), vx: C.MOVE_SPEED * C.SCOPE_SPEED_MUL };
+  const bare = spreadMul({ ...runner, scope: 0, scopeMs: 0 }, 'rifle');
+  okB(spreadMul(runner, 'sniper') > 1 && Math.abs(spreadMul(runner, 'sniper') - bare) < 1e-9,
+      'and moving still costs what moving costs, on top of whatever the glass is doing',
+      `${spreadMul(runner, 'sniper').toFixed(3)}x scoped and walking`);
+
+  // A weapon with no scope cannot be affected by one, however hard a client asserts it.
+  const liars = [0, 1, 2, C.MAX_SCOPE_STEP].map((sc) => spreadMul(glass(sc, 0), 'rifle'));
+  okB(liars.every((v) => v === 1), 'a rifle claiming to be scoped is still just a rifle',
+      liars.map((v) => `${v}x`).join(' '));
+  // And a call that names no weapon is the body alone, which is what every caller in this
+  // file did before the scope existed and what main.js still hands the crosshair bloom.
+  const legacy = [0, 1, 2].map((sc) => spreadMul(glass(sc, 0)));
+  okB(legacy.every((v) => v === 1), 'and a call that names no weapon is the body alone, as it was',
+      legacy.map((v) => `${v}x`).join(' '));
+
+  // The range band the bots read, declared on the weapon so ai.js never has to know what a
+  // sniper is. shared/weapons.js throws at import on a band it cannot use, so what is left
+  // to check here is that the sniper has one and that nothing else quietly grew one.
+  const band = holdBandOf('sniper');
+  okB(Array.isArray(band) && band[0] > 0 && band[1] > band[0] && band[1] <= SN.range,
+      'the sniper declares the range it wants to be fought at, inside the range it reaches',
+      `${band ? band[0] : '?'}-${band ? band[1] : '?'}u of a ${SN.range}u reach`);
+  const others = WEAPON_IDS.filter((id) => id !== 'sniper' && holdBandOf(id));
+  okB(others.length === 0 && holdBandOf('rifle') === null,
+      'and it is the only weapon that asks, so every other bot keeps the default',
+      others.length ? `also ${others.join(',')}` : 'sniper alone');
+  // The band has to sit OUTSIDE knife range, which is the whole point of it: nine bots
+  // holding a 100-damage one-shot inside 14u was the difficulty being complained about.
+  okB(band[0] > 14, 'and it stands the bots off well past the range a knife closes',
+      `${band[0]}u minimum against the 14u the default band held at`);
+}
+
+// ---- the glass as simulation state
+{
+  // The scope used to live entirely in the browser: input.js latched it, the camera zoomed,
+  // and nothing ever left the tab. That is why the cone above could not exist, because the
+  // server had no idea whether a shot came through glass, and it is why a scoped player
+  // could sprint. Both are the same fix: `sc` on the input, `scope` and `scopeMs` on the
+  // body, accumulated inside `stepPlayer` where prediction and authority run the same code.
+  const FLOOR = [{ x: 0, y: -50, z: 0, w: 400, h: 100, d: 400 }];
+  const wi = indexOf('sniper');
+  const ri = indexOf('rifle');
+  const inp = (sc, buttons = 0, wep = wi, moveZ = 0) =>
+    ({ seq: 1, moveX: 0, moveZ, yaw: 0, pitch: 0, buttons, wep, sc });
+  const born = () => createPlayerState({ x: 0, y: C.PLAYER_HALF_H, z: 0, yaw: 0 });
+
+  const fresh = born();
+  okB(fresh.scope === 0 && fresh.scopeMs === 0,
+      'a fresh body is out of the scope rather than undefined',
+      `scope=${fresh.scope} scopeMs=${fresh.scopeMs}`);
+
+  // sanitizeInput is the only door a client's claim comes through, and `sc` is a LEVEL: a
+  // dropped toggle edge would leave the two sides permanently disagreeing about what the
+  // player is looking through, with no way for either to notice.
+  const sane = (raw) => sanitizeInput(raw).sc;
+  okB(sane({}) === 0 && sane({ sc: 99 }) === C.MAX_SCOPE_STEP && sane({ sc: -5 }) === 0
+      && sane({ sc: 1.7 }) === 1 && sane({ sc: 'sniper' }) === 0 && sane({ sc: NaN }) === 0,
+      'the wire may assert a zoom step, and only a whole one inside the ceiling',
+      `{} to ${sane({})}, 99 to ${sane({ sc: 99 })}, -5 to ${sane({ sc: -5 })}, `
+      + `1.7 to ${sane({ sc: 1.7 })}, "sniper" to ${sane({ sc: 'sniper' })}`);
+  okB(Object.hasOwn(EMPTY_INPUT, 'sc') && EMPTY_INPUT.sc === 0,
+      'and the filler a starved connection is stepped with names it, so a gap is unscoped',
+      'EMPTY_INPUT carries sc: 0 rather than leaving it undefined');
+
+  // Accumulated from dt, never from a wall clock, which is the same argument `restTicks`
+  // makes: a Date.now() here would make the cone a different width on each side of the wire.
+  //
+  // N held ticks buy N-1 of window, not N, and that off-by-one is the point rather than a
+  // rounding artefact: the tick the step CHANGES banks nothing, so the first frame through
+  // fresh glass is the full hip cone. A player who scopes and fires on the same frame is
+  // paying the no-scope price, which is exactly the quick-scope this whole model closes.
+  //
+  // HELD is 8 and not 12 because the window is now BOUNDED at SCOPE_SETTLE_MS: 12 held ticks
+  // would bank 183ms of a 120ms window and this check would be measuring the clamp instead of
+  // the accrual. Seven ticks of credit is 116.67ms, which is inside it by one tick — the last
+  // room there is. The ceiling gets a check of its own below.
+  const HELD = 8;
+  const up = born();
+  for (let i = 0; i < HELD; i++) stepPlayer(up, inp(1), C.TICK_DT, FLOOR);
+  okB(up.scope === 1 && Math.abs(up.scopeMs - (HELD - 1) * C.TICK_DT * 1000) < 1e-6,
+      'holding the scope accumulates the settle window one dt at a time, starting from zero',
+      `scope=${up.scope} scopeMs=${up.scopeMs.toFixed(2)} after ${HELD} ticks `
+      + `— the ${(C.TICK_DT * 1000).toFixed(2)}ms the glass came up on is not credited`);
+  const opened = born();
+  stepPlayer(opened, inp(1), C.TICK_DT, FLOOR);
+  okB(opened.scope === 1 && opened.scopeMs === 0
+      && spreadMul(opened, 'sniper') === spreadMul({ ...opened, scope: 0 }, 'sniper'),
+      'so a shot fired on the very frame the glass arrives is fired through the hip cone',
+      `scopeMs=${opened.scopeMs} — ${spreadMul(opened, 'sniper').toFixed(1)}x, `
+      + `the same as no scope at all`);
+
+  // THE WINDOW IS BOUNDED AT BOTH ENDS, and the ceiling is the half that is easy to forget:
+  // without it a player who held an angle for ten seconds would carry ten seconds of credit
+  // into a sprint and arrive across the map still perfectly settled, because the decay below
+  // runs at the same rate it accrued at. Bounded, the trade is legible in both directions —
+  // one window to earn the shot, one window to give it away.
+  const pegged = born();
+  for (let i = 0; i < 240; i++) stepPlayer(pegged, inp(1), C.TICK_DT, FLOOR);
+  okB(pegged.scopeMs === SCOPE_SETTLE_MS && spreadMul(pegged, 'sniper') === 1,
+      'a scope held for four seconds banks the window and not a millisecond more',
+      `scopeMs=${pegged.scopeMs} after 240 still ticks, against a ${SCOPE_SETTLE_MS}ms window `
+      + `— ${spreadMul(pegged, 'sniper').toFixed(2)}x, the bare zoom with no cone left on it`);
+
+  // AND IT ONLY RUNS FORWARD WHILE THE PLAYER IS STANDING STILL. This is the whole of the
+  // sniper fix: the difficulty used to sit in an invisible stopwatch that a player could
+  // satisfy while sprinting, so the cone was 80cm wide at 25m for the first eighth of a
+  // second of every scope — against a standing pistol's 10cm — and then pinpoint forever
+  // after, running or not. Time was the wrong axis. CS2 spends scoped inaccuracy on MOVEMENT,
+  // and so does this now: hold still and the glass closes, ask to move and it opens again.
+  //
+  // Keyed on the INTENT and never on velocity, for the reason `sprintOk` gives: velocity
+  // crosses the wire quantised through r3(), `moveX`/`moveZ` are clamped identically by
+  // sanitizeInput on both sides, and only one of those two is bit-exact under replay.
+  const given = born();
+  for (let i = 0; i < 240; i++) stepPlayer(given, inp(1), C.TICK_DT, FLOOR);
+  const cone0 = spreadMul(given, 'sniper');
+  const TOGO = Math.ceil(SCOPE_SETTLE_MS / (C.TICK_DT * 1000));
+  for (let i = 0; i < TOGO; i++) stepPlayer(given, inp(1, 0, wi, 1), C.TICK_DT, FLOOR);
+  okB(given.scope === 1 && given.scopeMs === 0 && spreadMul(given, 'sniper') > cone0 * 20,
+      'and a settled scope is given back by walking, at the rate it was earned',
+      `${TOGO} ticks of moveZ=1 took ${SCOPE_SETTLE_MS}ms of credit back to `
+      + `${given.scopeMs}ms — ${cone0.toFixed(2)}x to ${spreadMul(given, 'sniper').toFixed(2)}x, `
+      + `still scoped the whole way`);
+
+  // The floor, so the decay cannot go negative and hand a moving player a NEGATIVE green
+  // term — which `scopeSpread` squares, so it would come back out as a cone that TIGHTENS
+  // the longer you run.
+  const run = born();
+  for (let i = 0; i < 60; i++) stepPlayer(run, inp(1, 0, wi, 1), C.TICK_DT, FLOOR);
+  okB(run.scopeMs === 0 && spreadMul(run, 'sniper') === spreadMul({ ...run, scope: 0 }, 'sniper'),
+      'a scope that has only ever moved sits on the floor rather than below it',
+      `scopeMs=${run.scopeMs} after a second of walking — ${spreadMul(run, 'sniper').toFixed(1)}x, `
+      + `the hip cone, which is what a run-and-flick is worth`);
+
+  // What the rule is actually FOR, in centimetres at the range the duel happens at. A player
+  // is PLAYER_HALF_W*2 wide; the cone has to be inside that for the shot to be a shot rather
+  // than a coin toss, and the fresh scope this replaced was not.
+  const cm = (b) => Math.tan(WEAPONS.sniper.spread * spreadMul(b, 'sniper')) * 25 * 200;
+  const WIDE = C.PLAYER_HALF_W * 2 * 100;
+  okB(cm(pegged) < WIDE / 4 && cm(born()) > WIDE && cm(run) > WIDE,
+      'so a still sniper can hit a man at 25m and a running one cannot, which is the point',
+      `${cm(pegged).toFixed(1)}cm settled against a ${WIDE.toFixed(0)}cm target, `
+      + `${cm(run).toFixed(0)}cm running, ${cm(born()).toFixed(0)}cm from the hip`);
+
+  // Any CHANGE of step restarts the window, in both directions. Stepping in must not inherit
+  // the near zoom's settle, and coming out and going back in must not either, or anyone who
+  // scoped once at the start of a round would carry a free pinpoint no-scope for the rest.
+  const stepped = born();
+  for (let i = 0; i < 12; i++) stepPlayer(stepped, inp(1), C.TICK_DT, FLOOR);
+  stepPlayer(stepped, inp(2), C.TICK_DT, FLOOR);
+  okB(stepped.scope === 2 && stepped.scopeMs === 0,
+      'stepping to the far zoom starts its window from nothing',
+      `scope=${stepped.scope} scopeMs=${stepped.scopeMs}`);
+  stepPlayer(stepped, inp(0), C.TICK_DT, FLOOR);
+  okB(stepped.scope === 0 && stepped.scopeMs === 0, 'and dropping it clears both',
+      `scope=${stepped.scope} scopeMs=${stepped.scopeMs}`);
+  const BACK = 3;
+  for (let i = 0; i < BACK; i++) stepPlayer(stepped, inp(1), C.TICK_DT, FLOOR);
+  okB(Math.abs(stepped.scopeMs - (BACK - 1) * C.TICK_DT * 1000) < 1e-6,
+      'so a second scope pays the window again rather than inheriting the first',
+      `scopeMs=${stepped.scopeMs.toFixed(2)} after ${BACK} ticks back in, against the `
+      + `${((HELD - 1) * C.TICK_DT * 1000).toFixed(2)} it had banked before it dropped`);
+
+  // Narrowed against the WEAPON here rather than in sanitizeInput, which has not resolved a
+  // loadout yet. A rifle asserting a scope reads 0; a sniper asserting a third zoom reads
+  // its second, because two is all it has.
+  const liar = born();
+  for (let i = 0; i < 6; i++) stepPlayer(liar, inp(2, 0, ri), C.TICK_DT, FLOOR);
+  okB(liar.scope === 0 && liar.scopeMs === 0,
+      'a rifle cannot be scoped however hard the client asserts it',
+      `scope=${liar.scope} after 6 ticks of sc:2 on a rifle`);
+  const greedy = born();
+  for (let i = 0; i < 6; i++) stepPlayer(greedy, inp(C.MAX_SCOPE_STEP, 0, wi), C.TICK_DT, FLOOR);
+  okB(greedy.scope === zoomStepsOf('sniper').length,
+      'and a claim past the last zoom reads as the last zoom',
+      `sc:${C.MAX_SCOPE_STEP} reads as step ${greedy.scope} of ${zoomStepsOf('sniper').length}`);
+
+  // The speed cap, and the sprint refusal underneath it. CS2 walks an AWP at 100 of 250,
+  // which is the whole reason a sniper holds an angle instead of running one down, and
+  // fpsbone charged nothing at all for having the glass up.
+  const race = (sc, buttons = 0) => {
+    const s = born();
+    for (let i = 0; i < 240; i++) stepPlayer(s, inp(sc, buttons, wi, 1), C.TICK_DT, FLOOR);
+    return s;
+  };
+  // Two pairs, and the split matters. The CAP is measured against a WALK, because a scoped
+  // body cannot sprint at all — comparing it to a sprint would fold the refusal below into
+  // the ratio and neither number would mean anything. The sprint pair exists to measure that
+  // refusal, through the stamina bar.
+  const walk = race(0);
+  const shut = race(1);
+  const open = race(0, C.BTN_SPRINT);
+  const held = race(1, C.BTN_SPRINT);
+  const speed = (s) => Math.hypot(s.vx, s.vz);
+  okB(walk.grounded && shut.grounded && open.grounded,
+      'the bodies are on the floor, so the caps below are real rather than an airborne tie',
+      `grounded ${walk.grounded} / ${shut.grounded} / ${open.grounded}`);
+  // Asserted as a RATIO of the same body unscoped, not against `MOVE_SPEED * SCOPE_SPEED_MUL`
+  // directly. Friction is subtracted every tick after the acceleration is added, so a walk
+  // converges to a steady state a fixed fraction below whatever cap it is chasing — 3.733 of
+  // a nominal 4.2 here — and an equality against the nominal would fail on a body that is
+  // obeying the cap perfectly. The ratio is exact, and it is the number CS2 states.
+  okB(speed(shut) <= C.MOVE_SPEED * C.SCOPE_SPEED_MUL + 1e-9
+      && Math.abs(speed(shut) / speed(walk) - C.SCOPE_SPEED_MUL) < 1e-6,
+      'a scoped player walks at the fraction of his own walk the glass sets, and no faster',
+      `${speed(shut).toFixed(3)}u/s of the ${speed(walk).toFixed(3)} he walks unscoped `
+      + `— ${(speed(shut) / speed(walk)).toFixed(4)} against the ${C.SCOPE_SPEED_MUL} asked for, `
+      + `under the ${(C.MOVE_SPEED * C.SCOPE_SPEED_MUL).toFixed(3)} ceiling`);
+  okB(speed(shut) > 1 && speed(open) > speed(shut) * 2.5,
+      'and it is a walk rather than a stop — the same body running is well over twice as fast',
+      `${speed(open).toFixed(3)}u/s sprinting unscoped against ${speed(shut).toFixed(3)} scoped`);
+  // The glass caps the body even while it is asking to sprint, which is the case a Math.min
+  // over three multipliers has to get right and the one a player will actually produce:
+  // nobody lets go of shift to scope.
+  okB(Math.abs(speed(held) - speed(shut)) < 1e-9,
+      'and asking to sprint through the glass buys not one unit per second of it',
+      `${speed(held).toFixed(3)}u/s with shift held, ${speed(shut).toFixed(3)} without`);
+  // The sprint refusal, observed through the bar rather than asserted about a private helper:
+  // a body that is genuinely sprinting drains stamina, and one `sprintOk` refused never
+  // touches it. So this is also the check that the refusal is not merely being masked by the
+  // Math.min on the speed.
+  okB(open.stamina < C.SPRINT_STAMINA_MAX && held.stamina === C.SPRINT_STAMINA_MAX,
+      'holding BTN_SPRINT through a scope is not sprinting, and does not spend the bar for it',
+      `unscoped drained to ${open.stamina}, scoped still ${held.stamina} of ${C.SPRINT_STAMINA_MAX}`);
+}
+
+// ---- the glass, and the three ways it was left standing over a weapon that has none
+//
+// `scopeStep` narrows the scope against the weapon in the INPUT, and the room has two
+// paths that put a weapon in that field which is not the weapon in the player's hand: a
+// swap it refuses, and the starvation filler, which repeats the last input a player sent.
+// Both shipped, and the second one had a symptom in the game: a bot that died holding the
+// sniper came back holding a shotgun WITH THE SCOPE UP — the filler restated the dead
+// man's `wep: sniper, sc: 1` on the respawn tick, `scopeStep` raised the glass off it, and
+// `applyWeapon` is not on the filler path so the shotgun stayed in hand. The body then
+// walked at 40% speed, could not sprint, and had nothing on screen to explain either.
+//
+// Found from outside as a rate — one or two ticks in ten thousand, which is exactly why
+// the Part F check for it failed one run in three and passed the others. These are the
+// same invariant asserted deterministically, in the three places it can break.
+{
+  const room = new Room('sniper');
+  const id = room.add('stall', {});
+  const p = room.players.get(id);
+  room.drainEvents();
+  const SNI = indexOf('sniper');
+  const KNI = indexOf('knife');
+  let seq = 0;
+  /** A tick with an input, or — with no argument — a tick that starves and fills. */
+  const tick = (patch) => {
+    if (patch) {
+      room.queueInput(id, [{ seq: ++seq, moveX: 0, moveZ: 0, yaw: p.yaw, pitch: 0,
+                             buttons: 0, wep: p.wep, ...patch }]);
+    }
+    room.step();
+    room.drainEvents();
+  };
+
+  tick({ wep: SNI, sc: 1 });
+  okB(p.wep === SNI && p.scope === 1, 'a scoped weapon asked for the glass gets it',
+      `holding ${WEAPON_IDS[p.wep]} at step ${p.scope}`);
+  const settled = p.scopeMs;
+  tick();
+  okB(p.scope === 1 && p.scopeMs > settled,
+      'and a connection that stalls keeps the glass up, and keeps it settling',
+      `${r3(settled)}ms before the stall, ${r3(p.scopeMs)}ms after a filler tick`);
+
+  // The swap. Down through the input, then starved — the filler must not put back the
+  // scope of a weapon that is no longer in this hand.
+  tick({ wep: KNI, sc: 1 });
+  okB(p.wep === KNI && p.scope === 0, 'swapping to a weapon with no glass lowers it',
+      `holding ${WEAPON_IDS[p.wep]} at step ${p.scope}`);
+  tick();
+  tick();
+  okB(p.wep === KNI && p.scope === 0,
+      'and a stall does not raise it again off the weapon the player used to hold',
+      `${WEAPON_IDS[p.wep]}, scope ${p.scope} after two filler ticks`);
+
+  // The refused swap. `applyWeapon` grants a change only out of `p.allowed`, so a weapon
+  // this mode never dealt is not a cheat — it is an ordinary input the room says no to.
+  // Said no to AFTER `stepPlayer` had already read it, which is what made it a bug.
+  const other = new Room('snow');
+  const oid = other.add('asker', {});
+  const q = other.players.get(oid);
+  other.drainEvents();
+  okB(!q.allowed.has(SNI) && !scopes(idAt(q.wep)),
+      'a snowball fight deals no scoped weapon at all, which is the premise of the next check',
+      `holding ${WEAPON_IDS[q.wep]}, allowed ${[...q.allowed].map((i) => WEAPON_IDS[i]).join(',')}`);
+  const held = q.wep;
+  for (let i = 1; i <= 4; i++) {
+    other.queueInput(oid, [{ seq: i, moveX: 0, moveZ: 0, yaw: q.yaw, pitch: 0,
+                             buttons: 0, wep: SNI, sc: 1 }]);
+    other.step();
+    other.drainEvents();
+  }
+  okB(q.wep === held && q.scope === 0 && q.scopeMs === 0,
+      'asking for a weapon the loadout refuses cannot raise a scope over the one in hand',
+      `still ${WEAPON_IDS[q.wep]}, scope ${q.scope} after 4 ticks of asking for the sniper`);
+
+  // The respawn, which is the one that shipped. Killed while scoped, and then not sending
+  // anything — a browser mid-death-cam sends nothing, so the filler is the whole of what
+  // the fresh body is stepped with on the tick it comes back.
+  tick({ wep: SNI, sc: 1 });
+  tick({ wep: SNI, sc: 1 });
+  okB(p.scope === 1, 'scoped again, and about to be killed for it', `step ${p.scope}`);
+  room.applyDamage(null, p, C.MAX_HP, -1);
+  okB(!p.alive, 'the scoped body is down', `hp ${p.hp}`);
+  let respawned = -1;
+  for (let i = 0; i < C.TICK_HZ * 12 && respawned < 0; i++) {
+    tick();                          // nothing sent, all the way through the death cam
+    if (p.alive) respawned = i;
+  }
+  okB(respawned >= 0, 'and comes back without the player having sent a thing',
+      `alive again ${respawned + 1} ticks later, holding ${WEAPON_IDS[p.wep]}`);
+  okB(p.scope === 0 && p.scopeMs === 0,
+      'and it comes back with the glass DOWN, not with a dead man\u2019s scope over a fresh hand',
+      `scope ${p.scope}, ${r3(p.scopeMs)}ms — this read 1 before the filler stopped repeating \`wep\``);
+  // And the fresh body moves like one. A leaked scope reads as a number in a probe; what a
+  // player felt was a spawn that walked at 40% and would not sprint however hard they held
+  // shift. So this is asserted where they felt it — as speed, against the cap a scope imposes.
+  for (let i = 0; i < 150; i++) tick({ wep: p.wep, sc: 0, moveZ: 1, buttons: C.BTN_SPRINT });
+  const fresh = Math.hypot(p.vx, p.vz);
+  okB(fresh > C.MOVE_SPEED * C.SCOPE_SPEED_MUL * 1.5,
+      'so a fresh spawn runs like a fresh spawn rather than crawling at a scope it never raised',
+      `${fresh.toFixed(3)}u/s against the ${(C.MOVE_SPEED * C.SCOPE_SPEED_MUL).toFixed(3)} a scope caps at`);
+
+  // The other half of the same rule, and the reason `respawn` empties the queue rather than
+  // trusting the tick that cleared it while dead: `step` clears a corpse's inputs on every
+  // tick it stays down, but the tick it comes BACK it respawns first and consumes second, so
+  // anything that arrived in the gap is a dead man's intent applied to a live body — aimed
+  // where the corpse was aiming, walking where the corpse was walking, in a body that has
+  // just been teleported somewhere else entirely.
+  room.applyDamage(null, p, C.MAX_HP, -1);
+  tick();
+  p.respawnAt = room.now();          // due on the very next step
+  const before = p.lastSeq;
+  room.queueInput(id, [{ seq: before + 50, moveX: 1, moveZ: 1, yaw: p.yaw + 2, pitch: 0,
+                         buttons: C.BTN_SPRINT, wep: p.wep, sc: 0 }]);
+  room.step();
+  room.drainEvents();
+  okB(p.alive && p.lastSeq === before && Math.hypot(p.vx, p.vz) === 0,
+      'and nothing queued by the corpse is applied to the body that replaces it',
+      `alive, still on seq ${p.lastSeq}, standing at ${r3(Math.hypot(p.vx, p.vz))}u/s`);
+}
+
 // ---- the rewind, first on its own terms
 {
   const now = 1000;
@@ -1477,6 +1920,14 @@ for (const id of DM.loadout) {
       room.queueInput(idA, [{
         seq: ++seq, moveX: 0, moveZ: 0, yaw: YAW_EAST, pitch: pitchTo(AIM_BODY),
         buttons: t === total - 1 ? C.BTN_FIRE : 0, wep: wi,
+        // Scoped, for the whole run, and that is what makes the miss below mean something.
+        // The cone is the sniper's own 0.0008rad only through settled glass; asserted from
+        // the hip it is forty times that, wide enough for a shot the rewind should have
+        // missed to connect by luck a third of the time. The warm-up above is ~1s against a
+        // 200ms settle, so by the tick that fires the glass is fully closed — and the shot
+        // that lands with `vt` set now additionally proves `sc` survived sanitizeInput and
+        // reached resolveShot, since a dropped one would reopen the cone.
+        sc: 1,
         // The stamp a client would send: the server's own clock as of the frame the shooter
         // was looking at. `room.now()` is the same `now` tryFire will read, which models a
         // zero-ping client — the honest best case for the mechanism, and the one where a
@@ -1958,6 +2409,166 @@ const FLAT = [{ x: 0, y: -50, z: 0, w: 400, h: 100, d: 400 }];
   okC(live.maxP <= Math.ceil(LAG + JIT),
       'and leaves exactly a round trip unacknowledged rather than a growing backlog',
       `${live.minP}–${live.maxP} inputs pending against MAX_PENDING 240`);
+}
+
+// The scope across the wire, which is the same contract the stamina block above proves and
+// the same failure if it is broken — except that this field decides how WIDE a bullet's cone
+// is, so a replay that ages it wrongly does not jitter, it silently lies to the shooter about
+// whether his shot was pinpoint. `stepPlayer` ADDS to scopeMs, and reconcile replays every
+// unacked input, so a client that replayed from its own running total would settle the glass
+// roughly a round trip early on every single snapshot: a quick-scope that the shooter's screen
+// scores and the server records as a 40x hip shot into the wall behind.
+{
+  const wi = indexOf('sniper');
+  const LAG = 8;
+  const born = () => createPlayerState({ x: 0, y: C.PLAYER_HALF_H, z: 0, yaw: 0 });
+  const TICKS = 60 * 8;
+
+  // One stream that visits every state the field has: unscoped, the near zoom held long past
+  // the settle, a step up to the far zoom, a drop back out, and a re-scope — mostly while
+  // walking, because the step ALSO caps the speed and the position error below is what proves
+  // it.
+  //
+  // MOSTLY, and the exception is load-bearing. The settle only runs forward while the player
+  // is asking to move nowhere, so a stream that walks for all eight seconds never once closes
+  // the cone and the coverage assert below fails — which is exactly how it failed when the
+  // rule changed, rather than passing over a body that had quietly stopped visiting half the
+  // states it claims to. PLANT covers the middle of the near-zoom stretch: a stop long enough
+  // to bank the full window, which is what a player actually does before taking the shot.
+  const PLANT = [100, 180];
+  const inputs = [];
+  for (let t = 0; t < TICKS + LAG; t++) {
+    let sc = 0;
+    if (t >= 60 && t < 200) sc = 1;
+    else if (t >= 200 && t < 260) sc = 2;
+    else if (t >= 300 && t < 340) sc = 1;          // a re-scope, so a stale window would show
+    else if (t >= 400) sc = t % 7 === 0 ? 0 : 1;   // and a flicker no human could produce
+    const still = t >= PLANT[0] && t < PLANT[1];
+    inputs.push({ moveX: 0, moveZ: still ? 0 : 1, yaw: 0.4, pitch: 0,
+                  buttons: still ? 0 : C.BTN_SPRINT, wep: wi, sc, seq: t });
+  }
+
+  const srv = born();
+  const auth = [];
+  for (let t = 0; t < inputs.length; t++) {
+    stepPlayer(srv, inputs[t], C.TICK_DT, FLAT);
+    auth.push({ x: srv.x, y: srv.y, z: srv.z, vx: srv.vx, vy: srv.vy, vz: srv.vz,
+                grounded: srv.grounded, crouch: srv.crouch, jumpHeld: srv.jumpHeld,
+                stamina: srv.stamina, restTicks: srv.restTicks, sprintLock: srv.sprintLock,
+                scope: srv.scope, scopeMs: srv.scopeMs });
+  }
+
+  // Coverage first, for the same reason the stamina block asserts it: a zero-error result over
+  // a body that was never scoped is two constants agreeing.
+  // Measured against the same body's WEAPONLESS spread rather than against 1, because this
+  // body is walking: the movement term is in both numbers and only their ratio is the glass.
+  const steps = new Set(auth.map((a) => a.scope));
+  const glassOf = (a) => spreadMul(a, 'sniper') / spreadMul(a);
+  const settled = auth.filter((a) => a.scope > 0 && glassOf(a) === 1).length;
+  const midway = auth.filter((a) => a.scope > 0 && glassOf(a) > 1.5).length;
+  const resets = auth.filter((a, i) => i > 0 && a.scopeMs === 0 && a.scope !== auth[i - 1].scope).length;
+  okC(steps.size === 3 && settled > 60 && midway > 20 && resets >= 5,
+      'the body under test scopes, settles, steps up, drops out and scopes again',
+      `steps {${[...steps].join(',')}} over ${auth.length} ticks, ${settled} of them fully `
+      + `settled and ${midway} mid-window, ${resets} windows restarted`);
+
+  // The wire exactly as server/index.js builds it — and the rounding is the interesting part.
+  // `sm` is sent as a whole millisecond, so unlike stamina this field does NOT survive the
+  // trip bit-exact. That is deliberate: half a millisecond of a 120ms window is worth less
+  // than the float it would cost, and the assert below measures what it is worth in cone.
+  const wire = (a) => ({
+    snap: { x: r3(a.x), y: r3(a.y), z: r3(a.z), cr: r3(a.crouch) },
+    self: { vx: r3(a.vx), vy: r3(a.vy), vz: r3(a.vz), g: a.grounded ? 1 : 0,
+            jh: a.jumpHeld ? 1 : 0, st: a.stamina, rt: a.restTicks, sl: a.sprintLock ? 1 : 0,
+            ...(a.scope ? { sc: a.scope, sm: Math.round(a.scopeMs) } : {}) },
+  });
+
+  // The omission is part of the contract, not an implementation detail: an unscoped player is
+  // every player most of the time, and reconcile has to read a MISSING field as zero rather
+  // than as undefined, or a body carries NaN into a cone width.
+  const quiet = auth.find((a) => a.scope === 0);
+  const loud = auth.find((a) => a.scope === 2);
+  okC(!Object.hasOwn(wire(quiet).self, 'sc') && !Object.hasOwn(wire(quiet).self, 'sm')
+      && wire(loud).self.sc === 2 && Number.isInteger(wire(loud).self.sm),
+      'an unscoped tick sends no scope fields at all, and a scoped one sends whole milliseconds',
+      `unscoped self blob is ${JSON.stringify(wire(quiet).self).length} bytes, `
+      + `scoped adds sc:${wire(loud).self.sc} sm:${wire(loud).self.sm}`);
+
+  let stepMiss = 0, worstMs = 0, worstCone = 0, worstRel = 0, worstPos = 0;
+  for (let t = 0; t + LAG < inputs.length; t++) {
+    const { snap, self } = wire(auth[t]);
+    const cli = born();
+    cli.x = snap.x; cli.y = snap.y; cli.z = snap.z;
+    cli.crouch = snap.cr;
+    cli.vx = self.vx; cli.vy = self.vy; cli.vz = self.vz;
+    cli.grounded = !!self.g; cli.jumpHeld = !!self.jh;
+    cli.stamina = self.st ?? C.SPRINT_STAMINA_MAX;
+    cli.restTicks = self.rt ?? 0;
+    cli.sprintLock = !!self.sl;
+    // The two lines under test, transcribed from predict.js reconcile().
+    cli.scope = self.sc ?? 0;
+    cli.scopeMs = self.sm ?? 0;
+    cli.yaw = inputs[t].yaw;
+    for (let k = t + 1; k <= t + LAG; k++) stepPlayer(cli, inputs[k], C.TICK_DT, FLAT);
+
+    const a = auth[t + LAG];
+    if (cli.scope !== a.scope) stepMiss++;
+    worstMs = Math.max(worstMs, Math.abs(cli.scopeMs - a.scopeMs));
+    const dCone = Math.abs(spreadMul(cli, 'sniper') - spreadMul(a, 'sniper'));
+    worstCone = Math.max(worstCone, dCone);
+    worstRel = Math.max(worstRel, dCone / spreadMul(a, 'sniper'));
+    worstPos = Math.max(worstPos, Math.hypot(cli.x - a.x, cli.y - a.y, cli.z - a.z));
+  }
+
+  okC(stepMiss === 0, 'the zoom step survives the wire and an 8-tick replay exactly',
+      `${stepMiss} mismatches over ${TICKS} reconciles`);
+  // Bounded by the rounding it was handed, and no more. Anything larger means the replay is
+  // accumulating from its own total instead of from authority — which at this lag would read
+  // as 8 ticks, 133ms, two thirds of the whole settle window.
+  okC(worstMs <= 0.5 + 1e-9,
+      'and the settle window arrives inside the half-millisecond the rounding costs',
+      `worst |client - server| ${worstMs.toFixed(4)}ms, against the `
+      + `${(LAG * C.TICK_DT * 1000).toFixed(0)}ms a replay from its own total would gain`);
+  // And what that half-millisecond is WORTH, in the only unit that decides a duel. The cone
+  // is steepest at the top of the window, so the worst multiplier disagreement lands there;
+  // converted to a radius at a realistic sniping distance it has to be small against the body
+  // it is aimed at, not merely small as a number.
+  const cm = (mul) => weaponAt(indexOf('sniper')).spread * mul * 20 * 100;
+  okC(worstRel < 0.02 && cm(worstCone) < 1,
+      'so the cone the client draws and the cone the server fires agree to within a percent',
+      `worst ${(worstRel * 100).toFixed(2)}% — ${cm(worstCone).toFixed(2)}cm of radius at 20u, `
+      + `against the ${(C.PLAYER_HALF_W * 2 * 100).toFixed(0)}cm of body being aimed at`);
+  // Position, because the step also sets a speed cap: a dropped `sc` is not a cosmetic
+  // mistake, it is the client walking at 4.2 while the server walks it at 1.68.
+  okC(worstPos < 0.002, 'and the predicted position stays inside the wire rounding it started from',
+      `worst divergence ${(worstPos * 1000).toFixed(3)}mm after ${LAG} replayed ticks`);
+
+  // The legs of the contract, in the source, for the same reason as the stamina block: a
+  // missing one costs a lie about accuracy and no error anywhere.
+  const mvSrc = readFileSync(new URL('./shared/movement.js', import.meta.url), 'utf8');
+  const kin = mvSrc.match(/const KINEMATIC = \[([\s\S]*?)\]/)?.[1] ?? '';
+  const svSrc = readFileSync(new URL('./server/index.js', import.meta.url), 'utf8');
+  const prSrc = readFileSync(new URL('./client/src/predict.js', import.meta.url), 'utf8');
+  okC(kin.includes("'scope'") && kin.includes("'scopeMs'"),
+      'both scope fields are listed in KINEMATIC, so a respawn and a pin clear them',
+      kin.replace(/\s+/g, ' ').trim());
+  okC(/sc: p\.scope/.test(svSrc) && /sm: Math\.round\(p\.scopeMs\)/.test(svSrc)
+      && /\.\.\.\(p\.scope \?/.test(svSrc),
+      'the self blob sends both to the player they belong to, and omits them while zero',
+      'sc: p.scope, sm: Math.round(p.scopeMs), inside a p.scope guard');
+  okC(/state\.scope = self\.sc \?\? 0/.test(prSrc) && /state\.scopeMs = self\.sm \?\? 0/.test(prSrc),
+      'and reconcile restores both from authority, defaulting a missing field to zero',
+      'never `= self.sc` bare, which would carry undefined into a cone width');
+  // And the respawn path, which is the one place the field is cleared rather than copied.
+  okC(/state\.scope = 0;/.test(prSrc) && /state\.scopeMs = 0;/.test(prSrc),
+      'a pinned body comes back out of the scope rather than resuming the one it died in',
+      'predict.js pin() zeroes both');
+  // Bots run the same input shape through the same door, so the field cannot be a client-only
+  // convention that ai.js quietly omits.
+  const aiSrc = readFileSync(new URL('./server/ai.js', import.meta.url), 'utf8');
+  okC(/\bsc\b/.test(aiSrc) && /scopes\(/.test(aiSrc),
+      'and the bots assert it on their own inputs rather than firing through glass they lack',
+      'server/ai.js reads scopes() and returns sc');
 }
 
 console.log([...pC, ...fC].join('\n'));
@@ -2961,10 +3572,19 @@ const okD = (cond, label, detail = '') => {
       `return ${shipped('wantAlt', /const wantAlt = ([\s\S]*?);/)};`);
   const blend = new Function('altK', 'wantAlt', 'dt',
       `${shipped('the alt blend', /(altK \+= [^\n]*?;)/)} return altK;`);
-  const scopeKOf = new Function('scopes', 'currentId', 'altK',
-      `let scopeK; ${shipped('scopeK', /(scopeK = scopes\(currentId\) \? altK : 0;)/)} return scopeK;`);
+  // `wantAlt` and not `altK`, which is the sniper fix itself: the glass is now the RAW
+  // intent, 1 or 0 and nothing in between, rather than the eased pose blend. The lift is
+  // pinned to that so the day somebody puts the ease back the suite throws instead of
+  // quietly re-measuring a fade.
+  const scopeKOf = new Function('scopes', 'currentId', 'wantAlt',
+      `let scopeK; ${shipped('scopeK', /(scopeK = scopes\(currentId\) \? wantAlt : 0;)/)} return scopeK;`);
   const drawn = new Function('scopeK',
       `const g = {}; ${shipped('g.visible', /(g\.visible = scopeK < [0-9.]+;)/)} return g.visible;`);
+  // Which zoom, as opposed to whether. Snapped to a table entry, so a double scope's second
+  // click is also instant instead of a 230ms crawl inward with the gain already at the far
+  // zoom's ratio.
+  const zoomOf = new Function('steps', 'scopedStep',
+      `let zoomFovK = -1; ${shipped('zoomFovK', /(zoomFovK = steps\[scopedStep - 1\];)/)} return zoomFovK;`);
 
   // Every verb, every phase of a stoppage, with and without a reload over the top of it.
   // `jamP` runs 0..1 across the 1400ms and is -1 the rest of the time, so `>= 0` is the
@@ -2989,9 +3609,16 @@ const okD = (cond, label, detail = '') => {
 
   // From a settled scope, at five frame rates, with `up` left TRUE: the latch above has
   // already dropped it, and the point of the `jamP` term is that the weapon comes back
-  // even if something one day forgets to. 1000Hz is in the sweep because `dt * 13` makes
-  // a coarse frame decay FASTER than a fine one — the slowest fade in wall-clock terms is
-  // the continuous limit, so the fastest frame rate is the worst case and not the best.
+  // even if something one day forgets to.
+  //
+  // What is measured is no longer "fast enough" but IMMEDIATE, and that is the sniper fix
+  // itself. `scopeK` used to be `altK`, easing at 13/s — about 230ms to clear — while MOUSE
+  // GAIN is a step function on the same latch: it returned to 1x on the frame of the click
+  // while the picture was still magnified, which is a whip on every shot and was the largest
+  // part of "crazy hard to play". 1000Hz is still in the sweep because `dt * 13` decays a
+  // coarse frame FASTER than a fine one, so the finest frame is the old code's worst case —
+  // and it is the frame rate that now proves the most, because `altK` is still 0.99 of the
+  // way in on the frame where the glass has already gone.
   //
   // Timed against the animation's own beats rather than a round number of milliseconds.
   // `beat(p, a, b)` is a sine hump: the first strike winds up at `a`, lands at the middle
@@ -3002,10 +3629,15 @@ const okD = (cond, label, detail = '') => {
   const windUp = Number(hit1[1]) * JAM_CLEAR_MS;
   const lands = ((Number(hit1[1]) + Number(hit1[2])) / 2) * JAM_CLEAR_MS;
 
-  let slowest = 0;
+  let slowestBack = 0;
+  let slowestGone = 0;
   let slowAt = '';
   let residual = 0;
-  let clearAt = 0;
+  // What the OLD line would have drawn on the frame the new one is already clear on: the
+  // eased pose blend, sampled at the same instant. This is the size of the bug, in the
+  // units the player saw it in.
+  let poseStillIn = 0;
+  let frames = 0;
   for (const hz of [30, 60, 120, 240, 1000]) {
     const dt = 1 / hz;
     const target = wantAltOf(true, 'scope', -1, 0.5);
@@ -3014,28 +3646,47 @@ const okD = (cond, label, detail = '') => {
     let gone = 0;
     for (let i = 1; i * dt * 1000 <= JAM_CLEAR_MS; i++) {
       altK = blend(altK, target, dt);
-      const scopeK = scopeKOf(scopes, 'sniper', altK);
+      // `target`, not `altK` — the shipped line reads the intent. Passing the blend here
+      // would test a version of the file that no longer exists.
+      const scopeK = scopeKOf(scopes, 'sniper', target);
       if (!back && drawn(scopeK)) {
         back = i * dt * 1000;
         residual = Math.max(residual, scopeK);
+        poseStillIn = Math.max(poseStillIn, altK);
       }
       // The overlay opacity IS scopeK — hud.scope() is handed `viewmodel.scopeAmount` and
       // rounds it to two places, so below 0.005 there is nothing left of the glass.
       if (!gone && scopeK < 0.005) gone = i * dt * 1000;
+      frames++;
     }
-    if (back > slowest) {
-      slowest = back;
-      slowAt = `${hz}Hz`;
-    }
-    clearAt = Math.max(clearAt, gone);
+    slowestBack = Math.max(slowestBack, back);
+    slowestGone = Math.max(slowestGone, gone);
+    if (back >= slowestBack) slowAt = `${hz}Hz`;
   }
-  okD(slowest > 0 && slowest < windUp, 'the weapon is drawn again well before the first strike winds up',
-      `worst ${slowest.toFixed(0)}ms (${slowAt}) against a wind-up starting at ${windUp.toFixed(0)}ms, `
-      + `overlay ${residual.toFixed(2)} opaque at that moment and still falling`);
-  okD(clearAt > 0 && clearAt < lands, 'and the glass is gone by the time that strike lands',
-      `fully clear at ${clearAt.toFixed(0)}ms, the punch connects at ${lands.toFixed(0)}ms, `
-      + `leaving ${(100 * (1 - clearAt / JAM_CLEAR_MS)).toFixed(0)}% of the `
-      + `${JAM_CLEAR_MS}ms stoppage with nothing at all in front of it`);
+  // One frame at 30Hz, which is the coarsest in the sweep: there is no faster answer a
+  // frame-driven value can give than "the next frame".
+  const oneFrame = 1000 / 30 + 0.001;
+  okD(slowestBack > 0 && slowestBack <= oneFrame && slowestGone <= oneFrame && residual === 0,
+      'the glass goes and the weapon comes back on the FIRST frame of a stoppage, at every frame rate',
+      `worst ${slowestBack.toFixed(1)}ms (${slowAt}) over ${frames} frames from 30Hz to 1000Hz, `
+      + `overlay ${residual.toFixed(2)} — against a wind-up that starts at ${windUp.toFixed(0)}ms `
+      + `and a strike that lands at ${lands.toFixed(0)}ms of the ${JAM_CLEAR_MS}ms stoppage`);
+  okD(poseStillIn > 0.9,
+      'and the eased pose the overlay used to ride is still nearly all the way in at that moment',
+      `altK ${poseStillIn.toFixed(3)} on the frame the glass is already gone — the ${(poseStillIn * 100).toFixed(0)}% `
+      + 'of opaque scope the old line drew over a view whose mouse gain had already stepped back to 1x');
+  // No ease anywhere near either value, checked in the source. Both are assignments now, and
+  // a `+=` on either is the whole bug coming back.
+  okD(!/scopeK \+=/.test(vmSrc) && !/zoomFovK \+=/.test(vmSrc),
+      'neither the glass nor its zoom is eased anywhere in the file',
+      'scopeK and zoomFovK are assigned, never blended — the pose blend is altK alone');
+
+  // And the zoom itself snaps to a table entry rather than crawling toward one, which is
+  // what makes the second click of a double scope instant too.
+  const zsteps = zoomStepsOf('sniper');
+  okD(zoomOf(zsteps, 1) === zsteps[0] && zoomOf(zsteps, 2) === zsteps[1],
+      'each click of the double scope lands exactly on its own zoom, on the frame of the click',
+      `step 1 → ${zoomOf(zsteps, 1)}°, step 2 → ${zoomOf(zsteps, 2)}°, table [${zsteps}]`);
 }
 
 console.log([...pD, ...fD].join('\n'));
@@ -3166,15 +3817,21 @@ const okF = (cond, label, detail = '') => {
   // a human would notice within a minute of walking in — a bot rooted to its spawn, a
   // bot that never shoots, a bot standing inside a crate.
   //
-  // Forty-five seconds, not the twenty this used to be. The window is a function of the
-  // map: the arena is 64 units across, a bot crosses it in about nine seconds, and it
-  // then has to get an unobstructed eye on a moving target through two lanes' worth of
-  // cover. What twenty seconds bought was a room where the shooting had barely started —
-  // and the assertion that suffered for it, 'every bot fired', has since been replaced by
-  // one that does not depend on the clock at all (see LOOK_GATE). What still does depend
-  // on it is `hits` and `kills`: those need enough encounters to have happened at all,
-  // and on this arena twenty seconds is not reliably enough of them.
-  const SECONDS = 45;
+  // Ninety seconds, not the forty-five it was, and not the twenty before that. The window is a
+  // function of the map: the arena is 64 units across, a bot crosses it in about nine seconds,
+  // and it then has to get an unobstructed eye on a moving target through two lanes' worth of
+  // cover. What twenty seconds bought was a room where the shooting had barely started — and
+  // the assertion that suffered for it, 'every bot fired', has since been replaced by one that
+  // does not depend on the clock at all (see LOOK_GATE). What still does depend on it is `hits`
+  // and `kills`: those need enough encounters to have happened at all, and on this arena twenty
+  // seconds is not reliably enough of them.
+  //
+  // Forty-five was, for those. It was not enough for the HEARD bucket of the perception audit
+  // below, which is the smallest of the four and was being read as a rate at a few hundred
+  // ticks — see the comment on that check for the measurements. Ninety costs 1.8s of a 13s
+  // suite and turns a comparison that failed one honest run in twelve into one with seven
+  // points of margin under the worst of sixteen runs.
+  const SECONDS = 90;
   const TICKS = C.TICK_HZ * SECONDS;
   const N = 5;
   const room = new Room(DEFAULT_MODE);
@@ -3381,6 +4038,9 @@ const okF = (cond, label, detail = '') => {
   let sawBefore = new Map();
   /** Every shot whose range is known, for the miss figures. */
   const byRange = [];
+  /** One row per living player per tick: whether it holds a scoped weapon and what it is
+   *  doing with the glass, for the bot-scope checks after the loop. */
+  const glass = [];
 
   try {
     for (let i = 0; i < TICKS; i++) {
@@ -3487,6 +4147,22 @@ const okF = (cond, label, detail = '') => {
           for (const [vid, t] of stale) if (vid !== p.id) c = Math.min(c, aimOff(p, t));
           if (c < Infinity) { ctlN++; if (c < LOCK_TOL) ctlLock++; }
         }
+      }
+      // The glass, watched from OUTSIDE the brain. `sc` is the one field a bot asserts that
+      // costs it something — it caps the bot's own speed and widens its own cone until the
+      // window closes — so a brain that raised it at the wrong moment would be handing the
+      // player free kills, and one that never raised it at all would leave nine sniper bots
+      // firing 40x hip shots and reading as "the bots cannot aim". Both are silent: `sc` goes
+      // through `sanitizeInput` like any other field and a wrong value is legal.
+      for (const p of room.players.values()) {
+        if (!p.alive) continue;
+        let d = Infinity;
+        for (const vid of sawNow.get(p.id) ?? []) {
+          const v = room.players.get(vid);
+          if (v) d = Math.min(d, Math.hypot(v.x - p.x, v.z - p.z));
+        }
+        glass.push({ has: scopes(idAt(p.wep)), scope: p.scope ?? 0, ms: p.scopeMs ?? 0,
+                     seen: d < Infinity, dist: d, speed: Math.hypot(p.vx, p.vz) });
       }
       sawBefore = sawNow;
     }
@@ -3603,10 +4279,28 @@ const okF = (cond, label, detail = '') => {
   // line above prettier and the bots go deaf — which reads as broken long before it reads as
   // fair. A heard position is wrong by up to NOISE_SLOP, so this is well short of a lock and
   // has to be: it is somewhere to look, not something to shoot at.
-  okF(opp.heard > 200 && rate('heard') > rate('unseen'),
+  //
+  // WITH A MARGIN, AND OVER 90s RATHER THAN 45, because this was a bare inequality between two
+  // rates and it failed an honest run about one time in twelve — heard 15.4% against unseen
+  // 17.0%, which reads as the bots having gone deaf and is nothing of the kind. HEARD is the
+  // smallest of the four buckets by a wide margin (gunfire has to land inside HEAR_RANGE from
+  // somebody the bot cannot also see) so it is the noisiest number in the audit, and at 45s of
+  // dm the gap ran anywhere from +45 points down to −1.6 across fifteen runs.
+  //
+  // Doubling the window is what fixed it and the reason it works is `dealLoadout`: dm re-rolls
+  // a hand on every respawn, so more seconds are more INDEPENDENT encounters rather than more
+  // of the same one. Measured over sixteen 90s runs the gap came in at +12.7 to +31.8 points,
+  // median +21.6, on samples of 3400-5700 heard ticks — so the five points asserted here sit
+  // seven and a half points under the worst observed run, and the check is strictly stronger
+  // than the inequality it replaces. It costs 1.8s of the suite's 13.
+  const gap = rate('heard') - rate('unseen');
+  okF(opp.heard > 2000 && gap > 0.05,
       'it turns toward gunfire it heard through a wall, which is the honest version of that',
-      `${pcF(lock.heard, opp.heard)} of ticks facing an enemy it only heard`
-        + `, against ${pcF(lock.unseen, opp.unseen)} for one it had no line on at all`);
+      `${pcF(lock.heard, opp.heard)} of ${opp.heard} ticks facing an enemy it only heard, `
+        + `against ${pcF(lock.unseen, opp.unseen)} of ${opp.unseen} for one it had no line on at `
+        + `all — a gap of ${(gap * 100).toFixed(1)} points against the 5 asked for; a deaf brain `
+        + 'would put these two buckets on top of each other, which is exactly what deleting '
+        + 'listen() from ai.js does');
 
   // The trigger. Aim can drift onto a hidden target harmlessly; a round leaving the barrel
   // at one is the wallhack with the aim taken out and the trigger left in, which is exactly
@@ -3668,6 +4362,20 @@ const okF = (cond, label, detail = '') => {
   // A brain's output is fed through `queueInput` exactly as a browser's is, so it is
   // subject to `sanitizeInput` — which means an intent outside what a client may assert
   // is not a cheat, it is a bot silently having its input clamped and misbehaving.
+
+  // ---- what a bot holding something else does with the glass
+  //
+  // The NEGATIVE half of the bot-scope coverage, and this is the room for it: a dm loadout
+  // deals from every slot, so these ticks are five bots carrying shotguns, lmgs and knives.
+  // A brain that returned `sc: 1` unconditionally would be caught here and nowhere else.
+  // The positive half needs a room where a sniper is guaranteed to be in somebody's hands,
+  // which dm cannot promise — one primary of six — so it has a room of its own below.
+  okF(glass.filter((g) => !g.has).every((g) => g.scope === 0),
+      'a bot holding an unscoped weapon is never scoped, whatever its brain asks for',
+      `${glass.filter((g) => !g.has && g.scope > 0).length} of `
+      + `${glass.filter((g) => !g.has).length} unscoped-weapon ticks carried a scope, `
+      + `against ${glass.filter((g) => g.has).length} that this room happened to deal a scope to`);
+
   const p0 = bots[0];
   const intent = p0.bot.think(room, p0, room.now());
   okF(p0.loadout.includes(intent.wep), 'a bot only ever asks for a weapon it was dealt',
@@ -3676,6 +4384,205 @@ const okF = (cond, label, detail = '') => {
       && Math.abs(intent.pitch) <= C.PITCH_LIMIT + 1e-9,
       'and its intent is inside what the input sanitiser would allow',
       `move ${r3(intent.moveX)},${r3(intent.moveZ)} pitch ${r3(intent.pitch)}`);
+}
+
+
+// ---- a room of nothing but snipers, which is where the glass can be measured
+//
+// "i notice how crazy hard to play with sniper" was three separate things, and one of them was
+// the bots: nine of them holding a 100-damage one-shot and closing to knife range, where a
+// human's scope is a pure liability and their settled aim error sits well inside the angle a
+// body subtends. The fix was to declare on the weapon the range it wants to be fought at —
+// `hold: [18, 40]` — and to penalise picking it inside that, so a rushed bot draws its knife.
+//
+// This has to be its own room because dm cannot promise a sniper: it deals one primary of six
+// per bot, so a run where nobody was dealt one is a 40% coin flip and the checks below would
+// pass vacuously two runs in five. The `sniper` mode's loadout IS the sniper, which is also
+// the mode a player picks when this is the gun they came for.
+{
+  const SECONDS = 25;
+  const TICKS = C.TICK_HZ * SECONDS;
+  const N = 5;
+  const pcF = (a, b) => (b ? `${((a / b) * 100).toFixed(1)}%` : 'n/a');
+  const room = new Room('sniper');
+  room.setBots(N);
+  room.drainEvents();
+
+  const bots = [...room.players.values()];
+  okF(bots.every((p) => scopes(idAt(p.wep)) || idAt(p.wep) === 'knife'),
+      'the sniper mode deals nothing but the sniper and the knife, so the glass is on the table',
+      bots.map((p) => idAt(p.wep)).join(', '));
+
+  const band = holdBandOf('sniper');
+  const glass = [];
+  /** Angle between where a bot is looking and a point, for picking out its actual target. */
+  const aimOffF = (p, t) => {
+    const cp = Math.cos(p.pitch);
+    const fx = -Math.sin(p.yaw) * cp;
+    const fy = Math.sin(p.pitch);
+    const fz = -Math.cos(p.yaw) * cp;
+    const dx = t.x - p.x;
+    const dy = t.y - eyeY(p);
+    const dz = t.z - p.z;
+    const len = Math.hypot(dx, dy, dz) || 1;
+    return Math.acos(Math.max(-1, Math.min(1, (fx * dx + fy * dy + fz * dz) / len)));
+  };
+  let crash = null;
+  try {
+    for (let i = 0; i < TICKS; i++) {
+      room.step();
+      for (const p of room.players.values()) {
+        if (!p.alive || !scopes(idAt(p.wep))) continue;
+        // The range to whoever the bot is AIMED at, not to whoever is nearest — and the
+        // difference is the whole measurement. ai.js decides `sc` on the distance to the
+        // enemy it picked, so a third bot creeping up behind is not the brain choosing to
+        // scope a knife fight; scored against nearest-in-space this reads anywhere from 1%
+        // to 20% run to run and means nothing either way. Nearest in ANGLE is the target.
+        let d = Infinity;
+        let best = Infinity;
+        for (const v of room.players.values()) {
+          if (v === p || !v.alive) continue;
+          const off = aimOffF(p, { x: v.x, y: eyeY(v), z: v.z });
+          if (off < best) { best = off; d = Math.hypot(v.x - p.x, v.z - p.z); }
+        }
+        // `wl` is the brain's own asking, off the input the room queued for it: the settle
+        // keys on the INTENT, so speed alone can no longer tell a bot that PLANTED itself
+        // from one the glass merely slowed, and the two want opposite assertions.
+        const q = p.lastInput;
+        glass.push({ scope: p.scope ?? 0, ms: p.scopeMs ?? 0, dist: d,
+                     wl: q ? Math.hypot(q.moveX ?? 0, q.moveZ ?? 0) : 0,
+                     speed: Math.hypot(p.vx, p.vz), grounded: p.grounded });
+      }
+    }
+  } catch (e) { crash = e; }
+  okF(!crash, `${SECONDS}s of sniper-mode AI ticks without throwing`,
+      crash ? String(crash.stack ?? crash).split('\n').slice(0, 3).join(' | ') : `${glass.length} samples`);
+
+  const up = glass.filter((g) => g.scope > 0);
+  okF(glass.length > 1000 && up.length > 50,
+      'a bot holding a scoped weapon actually raises the glass rather than hip-firing a sniper',
+      `${up.length} scoped of ${glass.length} sniper-holding ticks (${pcF(up.length, glass.length)})`);
+  // The rule ITSELF, lifted out of server/ai.js and evaluated, rather than inferred from how
+  // often a scoped bot happened to be standing close.
+  //
+  // That rate was tried first and it is not a measurement. Bots stand off at the band because
+  // `moveZ` sends them there, so a brain that raised the scope UNCONDITIONALLY still shows
+  // only a few percent of close-range scoped ticks — 0.4%, 3.6% and 10.4% over three runs —
+  // while the honest brain shows 1.5%, 5.5% and 0.3%. The distributions overlap completely.
+  // A statistic that fails an honest run one time in three is worse than no check at all, so
+  // what is asserted here is the shipped expression, at distances chosen to sit either side
+  // of the band it reads off the weapon.
+  const aiTxt = readFileSync(new URL('./server/ai.js', import.meta.url), 'utf8');
+  const scRe = /(sc = scopes\(idAt\(wep\)\)[^\n]*?;)/;
+  const scHits = aiTxt.match(new RegExp(scRe.source, 'g')) ?? [];
+  if (scHits.length !== 1) throw new Error(`the bot scope rule: ${scHits.length} matches in ai.js, wanted 1`);
+  const scOf = new Function('scopes', 'idAt', 'wep', 'dist', 'band', 'reach',
+      `let sc = 0; ${scRe.exec(aiTxt)[1]} return sc;`);
+  const bandOf = (i) => holdBandOf(idAt(i)) ?? [6, 14];
+  const SNR = weaponAt(indexOf('sniper')).range;
+  const askAt = (id, dist, reach = weaponAt(indexOf(id)).range) =>
+    scOf(scopes, idAt, indexOf(id), dist, bandOf, reach);
+  const inside = askAt('sniper', band[0] - 4);
+  const atBand = askAt('sniper', (band[0] + band[1]) / 2);
+  const past = askAt('sniper', SNR + 10);
+  okF(inside === 0 && atBand === 1 && past === 0,
+      'the brain raises the glass only inside the band the weapon declares, and inside its reach',
+      `${band[0] - 4}u reads ${inside}, ${(band[0] + band[1]) / 2}u reads ${atBand}, `
+      + `${SNR + 10}u (past the ${SNR}u reach) reads ${past}`);
+  okF([0, band[0] - 1, band[0], band[1], SNR].every((d) => askAt('rifle', d) === 0),
+      'and never on a weapon that has no glass to raise, at any range at all',
+      'a rifle reads 0 from point blank to the edge of its reach');
+  // The boundary, exactly where the weapon puts it, so moving `hold` moves this with it.
+  okF(askAt('sniper', band[0] - 1e-6) === 0 && askAt('sniper', band[0]) === 1,
+      'and the near edge of the band is the edge, not a suggestion',
+      `${band[0]}u reads 1, a hair under it reads 0`);
+  // A RAISED SCOPE PLANTS THE BOT, which is the AI half of the sniper fix and the thing this
+  // suite caught when the rule changed: `scopeStep` settles the cone on the movement intent,
+  // so ai.js's old `FIRE_SETTLE` damping — 0.3 of a step, still a step — meant no bot sniper
+  // would ever have fired through anything tighter than a metre again. Measured on the intent
+  // and not on the speed, because a body bleeding off friction is still a planted body.
+  const held = up.filter((g) => g.ms >= SCOPE_SETTLE_MS);
+  const planted = held.filter((g) => g.wl === 0).length;
+  okF(held.length > 100 && planted > held.length * 0.95,
+      'a bot that has earned the cone earned it by standing still, not by being slowed',
+      `${planted} of ${held.length} fully settled scoped ticks asked to move nowhere `
+      + `(${pcF(planted, held.length)})`);
+
+  // The cap, on a bot, through the same `speedMul` a player goes through — which is the whole
+  // reason `sc` rides on the input instead of being a camera trick in the browser.
+  //
+  // Read at the 95th percentile and not as a maximum, and that is not a fudge. `stepPlayer`
+  // accelerates up to `top` PROJECTED ON THE WISH DIRECTION — Quake's rule, which CS2 also
+  // inherits — so a body that turns carries the speed it already had across into the new
+  // direction and its total can sit above `top` for as long as friction takes to bleed it.
+  // That is the movement model, identical scoped or not, and a maximum over 25s of five bots
+  // turning corners measures it rather than the cap. The percentile lands on the steady state,
+  // which is what the cap actually governs, and the RATIO of the two percentiles is
+  // SCOPE_SPEED_MUL to within a few percent — which is the number CS2 states, off a bot.
+  const pct = (a, q) => (a.length ? a.slice().sort((x, y) => x - y)[Math.floor(a.length * q)] : 0);
+  const walking = glass.filter((g) => g.grounded && g.scope === 0).map((g) => g.speed);
+  // Filtered on `wl` and no longer on a settled `ms`: the ticks that used to be both scoped
+  // and at speed are now exactly the ticks a bot plants for, so the old filter sampled the
+  // plant and read the cap as 0.14 of the walk. A scoped bot still MOVES — across the band,
+  // or toward a position it only heard — and those ticks are where the cap lives.
+  const glassed = glass.filter((g) => g.grounded && g.scope > 0 && g.wl > 0).map((g) => g.speed);
+  const p95 = pct(glassed, 0.95);
+  const p95u = pct(walking, 0.95);
+  okF(glassed.length > 500 && walking.length > 500 && p95 <= C.MOVE_SPEED * C.SCOPE_SPEED_MUL
+      && Math.abs(p95 / p95u - C.SCOPE_SPEED_MUL) < 0.05,
+      'a scoped bot is slowed by its own glass in the same proportion a scoped player is',
+      `${p95.toFixed(3)}u/s at the 95th percentile of ${glassed.length} settled scoped ticks, `
+      + `against ${p95u.toFixed(3)} over ${walking.length} unscoped — ratio `
+      + `${(p95 / p95u).toFixed(3)} against the ${C.SCOPE_SPEED_MUL} asked for, under the `
+      + `${(C.MOVE_SPEED * C.SCOPE_SPEED_MUL).toFixed(3)} cap`);
+  // And it holds it. A brain that toggled `sc` every tick would sit permanently at the top of
+  // the settle window, which is worse than never scoping: the speed cap with none of the cone.
+  //
+  // POOLED OVER THREE ROOMS, and that is a correction rather than a convenience. One room is
+  // one draw of five brains and five spawns, and the rate it produces ranges from 11.5% to
+  // 59.2% across 160 measured rooms — three of those 160 came in at or under the 15% asserted
+  // here, so this check failed an honest run about one time in fifty and the failure said
+  // nothing. Pooling the ticks of three independent rooms is the same argument the badge shelf
+  // makes about forty lobbies: the floor becomes a claim about the BRAIN instead of about a
+  // draw. Pooled, the worst of 53 trials was 17.3% and the median 27.5%.
+  //
+  // The rate itself stays a rate, and deliberately. Per-BURST was the sharper statement and it
+  // was measured first: of 954 scope-holds that ran long enough to settle four times over, 244
+  // never closed the cone once, in 59 rooms out of 60. That is not a defect — a scoped bot
+  // still WALKS, across the band or toward a position it only heard, and `scopeMs` bleeds back
+  // down while it does. So the honest floor is over ticks, not over holds.
+  const pooled = [[up.length, held.length]];
+  for (let extra = 0; extra < 2; extra++) {
+    const r2 = new Room('sniper');
+    r2.setBots(N);
+    r2.drainEvents();
+    let seen = 0;
+    let full = 0;
+    for (let i = 0; i < TICKS; i++) {
+      r2.step();
+      for (const p of r2.players.values()) {
+        if (!p.alive || !scopes(idAt(p.wep)) || (p.scope ?? 0) === 0) continue;
+        seen++;
+        if ((p.scopeMs ?? 0) >= SCOPE_SETTLE_MS) full++;
+      }
+    }
+    pooled.push([seen, full]);
+  }
+  const seenAll = pooled.reduce((a, [n]) => a + n, 0);
+  const settled = pooled.reduce((a, [, n]) => a + n, 0);
+  okF(seenAll > 1000 && settled > seenAll * 0.15,
+      'and holds the glass long enough for the cone to actually close behind it',
+      `${settled} of ${seenAll} scoped ticks past a full ${SCOPE_SETTLE_MS}ms of settle `
+      + `(${pcF(settled, seenAll)}) across ${pooled.length} rooms — `
+      + `${pooled.map(([n, f]) => pcF(f, n)).join(', ')} — longest single settle `
+      + `${Math.round(up.reduce((m, g) => Math.max(m, g.ms), 0))}ms, which saturates at `
+      + `${SCOPE_SETTLE_MS} because scopeMs is a meter that bleeds back down, not a stopwatch`);
+  // Both zoom steps are the client's to cycle; a bot asks for the near one and stays there,
+  // which is worth asserting because a brain that asked for step 2 would be paying a 1.35x
+  // cone for a zoom no server-side code reads.
+  okF(up.every((g) => g.scope === 1),
+      'a bot uses the near zoom only, and does not pay the far one for a zoom it cannot see',
+      `steps used: {${[...new Set(up.map((g) => g.scope))].join(',')}}`);
 }
 
 console.log([...pF, ...fF].join('\n'));
@@ -5170,20 +6077,34 @@ driveJ('the rank readout', () => {
             : 'no throw from a fresh career to five hundred past the top of the ladder');
     }
 
-    // The scoreboard badge, as one lifted expression. `rk` arrives off the wire, so an index
-    // the client's table does not have has to come out blank rather than as the word undefined.
-    const badge = /const rk = (p\.rk \? [^\n]*? : '');/.exec(hudJ)?.[1];
-    okJ(!!badge, 'the scoreboard badge expression is still where this suite looks for it',
-        badge ? badge.replace(/\s+/g, ' ') : 'no match — the badge was rewritten');
-    if (badge) {
-      const cell = new Function('p', 'TIERS', 'esc', `return ${badge};`);
+    // The scoreboard rank gutter, as the two lifted statements that build it. `rk` now arrives
+    // on BOTH wires — MSG.ROSTER carries it per career and the snapshot carries it per tick —
+    // so what is lifted is the merge as well as the render, and an index the client's table
+    // does not have still has to come out blank rather than as the word undefined.
+    const gut = /const tier = ([^\n]*);\s*\n\s*const rk = ([^\n]*);/.exec(hudJ);
+    okJ(!!gut, 'the scoreboard rank gutter is still where this suite looks for it',
+        gut ? `${gut[1]} then ${gut[2]}`.replace(/\s+/g, ' ')
+          : 'no match — the gutter was rewritten');
+    if (gut) {
+      const cell = new Function('who', 'p', 'TIERS', 'esc',
+          `const tier = ${gut[1]}; const rk = ${gut[2]}; return rk;`);
+      // THE MERGE, and which wire wins. Both numbers come off `rankOf` on the same career, so
+      // they agree in every ordinary case — but the roster is the message that carries who
+      // somebody IS, and the snapshot's copy exists for the plate. The precedence has to be
+      // the roster, and the fallback has to exist: there is one tick between a join bumping
+      // the revision and the push going out, and a board opened inside it would be rankless.
+      const merged = cell({ rk: 20 }, { rk: 3 }, TIERS, (s) => String(s));
+      const fellBack = cell(undefined, { rk: 20 }, TIERS, (s) => String(s));
+      okJ(merged.includes(TIERS[20].abbr) && fellBack.includes(TIERS[20].abbr),
+          'the roster outranks the snapshot for the gutter, and the snapshot is still the fallback',
+          `roster 20 over snapshot 3 → ${merged}, no roster row at all → ${fellBack}`);
       const id = (s) => String(s);
       // A throw is reported as the text it would have rendered, because that is what it costs:
       // an exception thrown building one row takes the whole scoreboard, not one gutter.
       const bad = [];
       const shown = (rk) => {
         try {
-          return cell({ rk }, TIERS, id);
+          return cell(undefined, { rk }, TIERS, id);
         } catch (e) {
           bad.push(`${rk}: ${e?.message ?? e}`);
           return `${e?.message ?? e}`;
@@ -7495,6 +8416,559 @@ const okN = (cond, label, detail = '') => {
       handWritten.regions.map((r) => r.host).join(' '));
 }
 console.log([...pN, ...fN].join('\n'));
+// ─────────────────────────────── Part O: the scoreboard, and the two wires behind it
+console.log('\n=== Part O ' + '—' + ' the scoreboard: rank, badge and ping, on the two wires that carry them ===\n');
+
+// WHY THIS PART EXISTS. "when you press TAB when you are ingame i dont see their ping their
+// rank their badges" — the board is the one screen where a player reads everybody ELSE, and
+// each of those three things now arrives differently. A ping changes every tick and rides the
+// snapshot. A rank and a badge shelf change a handful of times a career and ride MSG.ROSTER.
+// The row a player reads is built out of both, so the split is what this part measures:
+//
+//   the per-career wire   carries who somebody is, and TIERS ONLY — never a count, because a
+//                         count is private to the player who earned it
+//   the per-tick wire     carries a ping, and still says nothing about which players are bots
+//   the row itself        merges them, and is lifted out of hud.js and run, since three.js and
+//                         `document` mean that file cannot be imported (see Part J)
+const pO = [];
+const fO = [];
+const okO = (cond, label, detail = '') => {
+  (cond ? pO : fO).push(`${cond ? 'PASS' : 'FAIL'}  ${label}${detail ? `  ${'—'} ${detail}` : ''}`);
+};
+
+// ─────────────────────────────── publicTiers: what a stranger is allowed to know
+{
+  // The counts are the private half of a career — `cv` and `bd` go only to their owner in the
+  // `self` blob (Part H). A shelf on the roster is what everyone in the room sees, so the one
+  // thing it must never carry is the number behind the emblem.
+  const top = (k) => BADGES[k].at[(MAX_BADGE_TIER - 1) * MAX_LEVEL];
+  const shelf = { kills: 0, rifle: top('rifle'), hs: BADGES.hs.at[0] - 1, knife: BADGES.knife.at[MAX_LEVEL] };
+  const pub = publicTiers(shelf);
+  okO(pub.rifle === MAX_BADGE_TIER && pub.knife === 2
+      && !('kills' in pub) && !('hs' in pub),
+      'publicTiers answers a tier per lit track and omits the tracks that are not lit',
+      `${JSON.stringify(shelf)} → ${JSON.stringify(pub)} — omit-when-zero, the same economy `
+      + 'sp, jm and rk already use, so a brand new player is {i, n} and nothing else');
+
+  // The privacy assertion, and it is a value test rather than a key test on purpose: every
+  // threshold in the table is larger than the tier it grants, so a function that forwarded the
+  // count instead of the tier would look identical in shape and leak in every field.
+  const huge = Object.fromEntries(TRACK_KEYS.map((k) => [k, 99999]));
+  const out = publicTiers(huge);
+  const leaked = Object.entries(out).filter(([, v]) => !Number.isInteger(v) || v < 1 || v > MAX_BADGE_TIER);
+  okO(leaked.length === 0 && Object.keys(out).length === TRACK_KEYS.length,
+      'and no value it emits can be a count, on any track, at any size of career',
+      leaked.length ? `LEAKED ${JSON.stringify(leaked)}`
+        : `${TRACK_KEYS.length} tracks at 99999 kills each → every value in 1..${MAX_BADGE_TIER}`);
+
+  const junk = [undefined, null, {}, { nonsense: 500 }, { kills: -1 }, { kills: '60' }];
+  const threw = [];
+  const shapes = junk.map((v) => {
+    try {
+      return JSON.stringify(publicTiers(v));
+    } catch (e) {
+      threw.push(`${JSON.stringify(v)}: ${e?.message ?? e}`);
+      return 'THREW';
+    }
+  });
+  okO(threw.length === 0 && shapes.slice(0, 5).every((s) => s === '{}'),
+      'and a missing, empty or nonsense shelf comes back empty rather than throwing',
+      threw.length ? `THREW ON ${threw.join('; ')}` : shapes.join(' '));
+}
+
+// ─────────────────────────────── the shelf a bot wears, and the row the room hands out
+{
+  // Forty lobbies' worth, because a shelf is drawn from an id and one lobby is nine ids: a
+  // rule that holds for nine and fails for the tenth is a bug somebody meets in their second
+  // match. Driven through `setBots` rather than by calling the seed function, which is not
+  // exported and should not be — what is under test is the shelf a player actually sees.
+  const shelves = [];
+  const rows = [];
+  for (let pass = 0; pass < 40; pass++) {
+    const room = new Room(DEFAULT_MODE);
+    room.setBots(MODES[DEFAULT_MODE].slots - 1);
+    for (const id of room.bots) shelves.push({ id, bg: room.players.get(id).badges });
+    rows.push(...room.rosterState());
+  }
+
+  // ON A TIER BOUNDARY, exactly the claim `botBadges` documents. The thresholds are the values
+  // `stepOf` is inclusive at, so a bot seeded one short of one would wear the tier below the
+  // one it was drawn for — the off-by-one in that comparison, visible on a scoreboard with no
+  // test involved, which is precisely why the seeds are aligned to it.
+  const off = [];
+  const tiers = new Set();
+  for (const { id, bg } of shelves) {
+    for (const [k, n] of Object.entries(bg)) {
+      const t = tierOf(n, k);
+      tiers.add(t);
+      if (BADGES[k].at[(t - 1) * MAX_LEVEL] !== n) off.push(`#${id} ${k}=${n} reads tier ${t}`);
+    }
+  }
+  okO(off.length === 0 && shelves.length > 300,
+      'every bot in forty lobbies is seeded exactly ON a badge threshold, never one short of it',
+      off.length ? `OFF BOUNDARY: ${off.slice(0, 4).join(', ')}`
+        : `${shelves.length} shelves, tiers ${[...tiers].sort((a, b) => a - b).join('/')} all present`);
+
+  // TWO TO FOUR TRACKS, which is a claim about the ROTATION and not about the badges: one
+  // track cannot take turns with itself, and the slot on the board is a slot precisely because
+  // a shelf has several things in it. A collision used to shorten the shelf instead of
+  // redrawing, and it caught about one bot in fourteen.
+  const sizes = shelves.map(({ bg }) => Object.keys(bg).length);
+  const hist = {};
+  for (const n of sizes) hist[n] = (hist[n] ?? 0) + 1;
+  okO(Math.min(...sizes) >= 2 && Math.max(...sizes) <= 4,
+      'and wears between two and four of them, so the one rotating slot has something to rotate',
+      `sizes ${JSON.stringify(hist)} — a one-track shelf is a static chip in a column whose `
+      + 'whole job is to turn over, and twelve is a slot machine');
+
+  // SEEDED FROM THE ID AND NOTHING ELSE, which is what makes a bot wear the same thing in
+  // every lobby it is ever drawn into. Proved by lifting the seed function out of room.js as
+  // text and calling it with only an id — if the shelves in a real room match a copy that has
+  // no room, no tick and no join order to read, then nothing but the id went into them.
+  const roomSrc = readFileSync('server/room.js', 'utf8');
+  const seedSrc = /\r?\nconst botBadges = \(id\) => \{\r?\n([\s\S]*?)\r?\n\};\r?\n/.exec(roomSrc);
+  okO(!!seedSrc, 'the bot shelf seed is still where this suite looks for it',
+      seedSrc ? `lifted ${seedSrc[1].split('\n').length} lines out of room.js`
+        : 'no match — botBadges was renamed or reshaped, so nothing below it is measured');
+  if (seedSrc) {
+    const seed = new Function('id', 'TRACK_KEYS', 'MAX_BADGE_TIER', 'MAX_LEVEL', 'BADGES', seedSrc[1]);
+    const disagree = shelves.filter(({ id, bg }) =>
+      JSON.stringify(bg) !== JSON.stringify(seed(id, TRACK_KEYS, MAX_BADGE_TIER, MAX_LEVEL, BADGES)));
+    okO(disagree.length === 0,
+        'a shelf is a pure function of the id, so a bot wears the same thing in every lobby',
+        disagree.length ? `${disagree.length} of ${shelves.length} differ — first #${disagree[0].id}: `
+          + `${JSON.stringify(disagree[0].bg)}`
+          : `${shelves.length} shelves reproduced from the id alone — no room state, no tick, `
+            + 'no join order, the same argument the career and the brain are seeded on');
+  }
+
+  // ── the row itself
+  const FIELDS = ['i', 'n', 'rk', 'bg'];
+  const strange = rows.flatMap((r) => Object.keys(r).filter((k) => !FIELDS.includes(k)));
+  okO(strange.length === 0 && rows.length > 300,
+      'a roster row is an id, a name, and the two things that are omitted when they are zero',
+      strange.length ? `UNEXPECTED FIELDS: ${[...new Set(strange)].join(', ')}`
+        : `${rows.length} rows, fields ${FIELDS.join('/')}`);
+
+  // THE BOT FLAG THAT IS NOT THERE, on the new wire as well as the old one. Part I asserts
+  // this of the snapshot; MSG.ROSTER is a second message carrying identity and it would have
+  // been the natural place to put one, since it is where a name already lives.
+  const flags = rows.filter((r) => Object.keys(r).some((k) => /^(bot|ai|b)$/.test(k)));
+  okO(flags.length === 0,
+      'and it never marks which rows are bots, for the reason room.js gives at BOT_NAMES',
+      'a client written against that flag outlines the humans and ignores everything else — '
+      + 'the BOT name prefix is the whole mechanism, and it is a string a player can read too');
+
+  const counted = rows.filter((r) => r.bg && Object.values(r.bg).some((v) => v > MAX_BADGE_TIER));
+  okO(counted.length === 0,
+      'and carries tiers rather than counts, so a stranger learns the emblem and not the ledger',
+      counted.length ? `LEAKED ${JSON.stringify(counted[0])}`
+        : `${rows.filter((r) => r.bg).length} shelves on the wire, every value in 1..${MAX_BADGE_TIER}`);
+}
+
+// ─────────────────────────────── rosterRev: the integer that decides when to send it
+{
+  // A REVISION AND NOT A DIRTY FLAG, because one room has several clients: a flag cleared by
+  // the first send is a flag the second client never sees. What this measures is the other
+  // half — that the number moves on exactly the edges that change a row, and on nothing else.
+  const room = new Room(DEFAULT_MODE);
+  const at0 = room.rosterRev;
+  const ia = room.add('alpha', {}, 'acct-o-a');
+  const at1 = room.rosterRev;
+  const ib = room.add('bravo', {}, 'acct-o-b');
+  const at2 = room.rosterRev;
+  room.remove(ib);
+  const at3 = room.rosterRev;
+  okO(at1 > at0 && at2 > at1 && at3 > at2,
+      'a join and a drop each move the revision, so the board is never a name out of date',
+      `${at0} → ${at1} → ${at2} → ${at3} across two joins and a drop — and bumped by `
+      + '`add` and `remove` themselves rather than by four call sites, one of which is in '
+      + 'another file');
+
+  // ── the kill that moves an emblem, and the kill that moves nothing
+  const A = room.players.get(ia);
+  const B = room.players.get(room.add('victim', {}, null));
+  A.protectedUntil = 0;
+  B.protectedUntil = 0;
+  room.drainEvents();
+
+  // A career and a shelf parked well inside their tiers, so the increment lands nowhere near
+  // a boundary. `flat` is found rather than typed: the rank thresholds are close together low
+  // down and a hardcoded career would quietly start straddling one when the table is retuned.
+  let flat = 4;
+  while (flat < 500 && rankOf(flat + 1) !== rankOf(flat)) flat++;
+  const inside = (k) => Math.round((BADGES[k].at[0] + BADGES[k].at[MAX_LEVEL]) / 2);
+  A.career = flat;
+  A.badges = Object.fromEntries(TRACK_KEYS.map((k) => [k, inside(k)]));
+  const before = room.rosterRev;
+  room.applyDamage(A, B, 500, indexOf('rifle'), HIT_ZONE.HEAD);
+  room.drainEvents();
+  const quiet = room.rosterRev;
+  okO(quiet === before && A.career === flat + 1,
+      'a kill that moves a count without moving an emblem costs the room no push at all',
+      `career ${flat} → ${A.career}, revision ${before} → ${quiet} — this is the whole reason `
+      + 'the kill path compares tiers before and after instead of bumping on every kill: at '
+      + 'twenty snapshots a second a push per kill is the rate the split exists to avoid');
+
+  // And the promotion. One short of a rifle threshold, so the same headshot that changed
+  // nothing above now changes an emblem — which is a row on somebody else's board. The career
+  // goes back to `flat` first, so the rank cannot be what moves the revision here.
+  A.alive = true; A.hp = C.MAX_HP; A.protectedUntil = 0;
+  B.alive = true; B.hp = C.MAX_HP; B.protectedUntil = 0;
+  A.career = flat;
+  A.badges.rifle = BADGES.rifle.at[MAX_LEVEL] - 1;
+  const was = tierOf(A.badges.rifle, 'rifle');
+  room.applyDamage(A, B, 500, indexOf('rifle'), HIT_ZONE.BODY);
+  room.drainEvents();
+  okO(room.rosterRev > quiet && tierOf(A.badges.rifle, 'rifle') === was + 1,
+      'and the one that crosses a threshold moves it, because that is a row that changed',
+      `rifle ${BADGES.rifle.at[MAX_LEVEL] - 1} → ${A.badges.rifle}, tier ${was} → `
+      + `${tierOf(A.badges.rifle, 'rifle')}, revision ${quiet} → ${room.rosterRev}`);
+
+  // The rank half of the same test, on the wire the roster and the snapshot share. Both read
+  // `rankOf` on the same career, and the plate over the head reads it a third time — the one
+  // failure shared/ranks.js exists to prevent is those three disagreeing.
+  A.career = TIERS[2].at - 1;
+  const rankWas = room.rosterRev;
+  A.alive = true; A.hp = C.MAX_HP; A.protectedUntil = 0;
+  B.alive = true; B.hp = C.MAX_HP; B.protectedUntil = 0;
+  room.applyDamage(A, B, 500, indexOf('knife'), HIT_ZONE.BODY);
+  room.drainEvents();
+  const row = room.rosterState().find((r) => r.i === ia);
+  const snapRow = room.snapshotBase().players.find((r) => r.id === ia);
+  okO(room.rosterRev > rankWas && row?.rk === rankOf(A.career) && snapRow?.rk === row?.rk,
+      'a promotion moves it too, and both wires then report the same rank for the same career',
+      `career ${A.career} → roster rk=${row?.rk}, snapshot rk=${snapRow?.rk}, `
+      + `rankOf says ${rankOf(A.career)} (${TIERS[rankOf(A.career)]?.name})`);
+}
+
+// ─────────────────────────────── pg: the one roster-ish field that belongs in the snapshot
+{
+  const room = new Room(DEFAULT_MODE);
+  room.setBots(4);
+  const ih = room.add('unmeasured', {}, null);
+  const human = room.players.get(ih);
+
+  const rowsAt = (tick) => {
+    room.tick = tick;
+    const by = new Map(room.snapshotBase().players.map((r) => [r.id, r]));
+    return by;
+  };
+
+  // NOBODY HAS MEASURED THIS ONE, and that is a different statement from "the round trip is
+  // zero". A socket in the first second of its life has had no pong back yet, and the in-page
+  // host measures nothing at all — so the field is absent and hud.js draws an en dash. A `0`
+  // on the wire would be a claim, and "0ms" on a board is a claim nobody can act on.
+  const fresh = rowsAt(0).get(ih);
+  okO(human.ping === 0 && !('pg' in fresh),
+      'a player nobody has timed yet carries no ping field at all, rather than a ping of zero',
+      `${JSON.stringify(fresh.n)} → ${JSON.stringify(Object.keys(fresh).filter((k) => k === 'pg'))} `
+      + '— omit-when-zero, and the absence is what the en dash in the ping column means');
+
+  human.ping = 84.6;
+  okO(rowsAt(0).get(ih)?.pg === 85,
+      'and one that has been timed carries whole milliseconds, because tenths are not read',
+      '84.6 → 85 — no r3() here: a float invites somebody to average it, and the width of the '
+      + 'column is three digits either way');
+
+  // ── the bots, and the column that would have handed them away for free
+  const botIds = [...room.bots];
+  const seeded = botIds.map((id) => room.players.get(id).ping);
+  okO(seeded.every((ms) => ms >= 5 && ms < 200) && new Set(seeded).size > 1,
+      'every bot carries a plausible seeded ping, and not the same one as the bot beside it',
+      `${seeded.join(', ')}ms — a blank ping column next to nine named players IS the bot flag `
+      + 'that BOT_NAMES refuses to put on the wire, handed over by omission instead');
+
+  // Over four hundred ticks, which is about twenty seconds of a board held open. Two sines at
+  // unrelated periods, so what is checked is that the number moves, stays in a believable
+  // band, and never reaches the 0 that would say "this player is in your own process".
+  const seen = new Map(botIds.map((id) => [id, new Set()]));
+  let floor = Infinity;
+  for (let t = 0; t < 400; t++) {
+    const by = rowsAt(t);
+    for (const id of botIds) {
+      const pg = by.get(id)?.pg ?? 0;
+      seen.get(id).add(pg);
+      floor = Math.min(floor, pg);
+    }
+  }
+  const moved = botIds.filter((id) => seen.get(id).size >= 8);
+  okO(moved.length === botIds.length && floor >= 5,
+      'and it drifts as the room ticks, so the column does not read as a row of constants',
+      `${moved.length}/${botIds.length} bots took at least eight distinct values over 400 ticks, `
+      + `lowest anywhere ${floor}ms — floored at 5, because a bot showing 0 is a bot showing `
+      + 'that it is in this process');
+
+  const band = botIds.map((id) => {
+    const vals = [...seen.get(id)];
+    return Math.max(...vals) - Math.min(...vals);
+  });
+  okO(Math.max(...band) <= 24,
+      'while staying near the ping it was seeded with, rather than sweeping the whole column',
+      `widest swing ${Math.max(...band)}ms — a bot whose ping ranged over a hundred `
+      + 'milliseconds would be the only player on the board doing it, which is the same tell '
+      + 'by a different route');
+}
+
+// ─────────────────────────────── the push, through the real host and a stopped clock
+{
+  // What is under test here is a rate: MSG.ROSTER has to reach every client whose room changed,
+  // once, and must NOT ride along with the twenty snapshots a second going the same way. The
+  // host decides that with one integer compare per broadcast, which is the only reason the
+  // question can be asked at snapshot rate at all.
+  let ns = 0n;
+  const STEP_NS = BigInt(Math.round(1e9 / C.TICK_HZ));
+  const host = createHost({ nowNs: () => ns });
+  const seat = (name, rtt) => {
+    const inbox = [];
+    const wire = { send: (p) => inbox.push(decode(p)), isOpen: () => true };
+    if (rtt !== undefined) wire.rtt = () => rtt;
+    const conn = host.connect(wire);
+    conn.message(encode({ t: MSG.HELLO, name, cosmetics: {}, id: null, mode: DEFAULT_MODE }));
+    return { conn, inbox, of: (t) => inbox.filter((m) => m.t === t) };
+  };
+  // Whole snapshots, so the count below is a count of broadcasts rather than of ticks.
+  const pump = (snaps) => {
+    for (let i = 0; i < snaps * C.TICKS_PER_SNAPSHOT; i++) {
+      ns += STEP_NS;
+      host.advance();
+    }
+  };
+
+  const alpha = seat('alpha', 96);
+  pump(10);
+  const first = alpha.of(MSG.ROSTER);
+  okO(first.length === 1 && alpha.of(MSG.SNAPSHOT).length >= 8,
+      'a client is sent the roster once for its join, not once per snapshot',
+      `${first.length} roster message(s) against ${alpha.of(MSG.SNAPSHOT).length} snapshots — `
+      + 'the revision is compared, not the room, so the answer costs one integer compare at '
+      + '20Hz and the message goes out about twice a match');
+  okO(first[0]?.players?.length === MODES[DEFAULT_MODE].slots
+      && first[0].players.some((r) => r.n === 'alpha'),
+      'and it names everybody in the room, the bots that filled it included',
+      `${first[0]?.players?.length} rows for a ${MODES[DEFAULT_MODE].slots}-slot lobby: `
+      + `${(first[0]?.players ?? []).map((r) => r.n).join(', ')}`);
+
+  // THE SEATED CLIENT, which is the half a dirty flag would have broken: bravo's join changes
+  // alpha's board, and alpha is not the client that joined.
+  const bravo = seat('bravo', 12);
+  pump(6);
+  const second = alpha.of(MSG.ROSTER);
+  okO(second.length === 2 && second[1].players.some((r) => r.n === 'bravo'),
+      'and somebody else arriving pushes a fresh one to the client already sitting there',
+      `alpha now holds ${second.length} rosters, the second of which has bravo in it — a dirty `
+      + 'flag cleared by the first send is a flag the second client never sees, which is the '
+      + 'whole reason this is a revision');
+
+  // ── the transport seam, from `ws.ping()` to a number on a row
+  const mine = alpha.of(MSG.SNAPSHOT).slice(-1)[0]?.players
+    ?.find((r) => r.n === 'alpha');
+  const theirs = alpha.of(MSG.SNAPSHOT).slice(-1)[0]?.players?.find((r) => r.n === 'bravo');
+  okO(mine?.pg === 96 && theirs?.pg === 12,
+      'the round trip a transport measured reaches every other player’s row for that body',
+      `alpha reads ${mine?.pg}ms for itself and ${theirs?.pg}ms for bravo — measured by the `
+      + 'host with ws.ping()/pong rather than reported by the client, because a self-reported '
+      + 'ping is a number a player can edit and it is a number other players read');
+
+  // A transport with no clock in it at all — which is exactly client/src/localserver.js, the
+  // in-page host, where the only human is on the same thread as the room.
+  const quiet = seat('offline', undefined);
+  pump(4);
+  const own = quiet.of(MSG.SNAPSHOT).slice(-1)[0]?.players?.find((r) => r.n === 'offline');
+  okO(own && !('pg' in own),
+      'and a transport that measures nothing leaves the field off rather than inventing a zero',
+      '`rtt` is optional on the connect contract: the in-page host has no round trip to '
+      + 'measure, so its human reads an en dash while the bots beside it read their seeds');
+}
+
+// ─────────────────────────────── the row a player actually reads, lifted out of hud.js
+{
+  // hud.js cannot be imported — `document` at module scope — so the two functions that build
+  // the board are cut out as text and run, the same way Part J lifts the plate and the rank
+  // readout. A lift that stops matching FAILS loudly rather than silently testing nothing,
+  // which is the only reason this is worth more than reading the file.
+  const braced = (src, from) => {
+    let depth = 0;
+    for (let i = from; i < src.length; i++) {
+      if (src[i] === '{') depth++;
+      else if (src[i] === '}' && --depth === 0) return src.slice(from, i + 1);
+    }
+    return null;
+  };
+
+  const escSrc = /\r?\nconst esc = ([\s\S]*?);\r?\n/.exec(hudJ);
+  const slotAt = hudJ.indexOf('function badgeSlot(');
+  const slotSrc = slotAt < 0 ? null : hudJ.slice(slotAt, hudJ.indexOf('{', slotAt))
+    + braced(hudJ, hudJ.indexOf('{', slotAt));
+  const sig = /\n {4}scoreboard\(([^)]*)\) \{/.exec(hudJ);
+  const boardSrc = sig ? braced(hudJ, sig.index + sig[0].length - 1) : null;
+  const rot = /\n\s*const BADGE_ROT_MS = (\d+);/.exec(hudJ);
+
+  okO(!!escSrc && !!slotSrc && !!boardSrc && !!rot,
+      'the scoreboard and the badge slot can be lifted whole out of hud.js and run',
+      escSrc && slotSrc && boardSrc && rot
+        ? `badgeSlot ${slotSrc.length} chars, scoreboard ${boardSrc.length} chars, `
+          + `BADGE_ROT_MS=${rot[1]}ms, braces balanced`
+        : 'no match — one of them was renamed or reshaped, so nothing below it is measured');
+
+  if (escSrc && slotSrc && boardSrc && rot) {
+    const ROT = Number(rot[1]);
+    // Every closure variable becomes a parameter, and `boardHtml` is declared in the wrapper
+    // rather than in the body so it survives between calls — the early-out below is a claim
+    // about the SECOND call with the same rows, and a body that redeclared it would pass by
+    // never having remembered anything.
+    const make = new Function('els', 'TIERS', 'pingGrade', 'TRACK_KEYS', 'tierName', 'labelOf',
+      'BADGE_ROT_MS',
+      `const esc = ${escSrc[1]};\n${slotSrc}\nlet boardHtml = '';\n`
+      + `return ({ scoreboard(${sig[1]}) ${boardSrc} }).scoreboard;`);
+
+    let html = '';
+    let writes = 0;
+    let shown = null;
+    let cap = '';
+    const els = {
+      board: { classList: { toggle: (_c, on) => { shown = on; } } },
+      boardCap: { set textContent(v) { cap = v; }, get textContent() { return cap; } },
+      boardRows: { set innerHTML(v) { html = v; writes++; }, get innerHTML() { return html; } },
+    };
+    const board = make(els, TIERS, pingGrade, TRACK_KEYS, tierName, labelOf, ROT);
+
+    // A cast with something to say in every column: a ranked leader, a shelf of three tracks
+    // to rotate through, a player with nothing at all, two teams, and a name with markup in it.
+    const snap = [
+      { id: 1, n: 'snapname', k: 9, d: 2, rk: 4, pg: 42, tm: 1 },
+      { id: 2, n: 'ranked', k: 9, d: 1, rk: 20, pg: 240, tm: 2 },
+      { id: 3, n: 'BOT Ivy', k: 3, d: 3, pg: 18, tm: 1 },
+      { id: 4, n: 'nothing', k: 0, d: 7, tm: 2 },
+    ];
+    const roster = new Map([
+      [1, { i: 1, n: '<script>x</script>', rk: 4, bg: { rifle: 2, hs: 5, knife: 1 } }],
+      [2, { i: 2, n: 'ranked', rk: 20 }],
+      [3, { i: 3, n: 'BOT Ivy', bg: { sniper: 3 } }],
+      [4, { i: 4, n: 'nothing' }],
+    ]);
+    const draw = (now = 0, show = true, caption = 'deathmatch') => {
+      board(now, show, snap, roster, 2, caption);
+      return html;
+    };
+
+    const first = draw();
+    const rows = first.split('</tr>').filter(Boolean).map((s) => `${s}</tr>`);
+    const rowWith = (needle) => rows.find((r) => r.includes(needle)) ?? '';
+
+    okO(rows.length === 4 && writes === 1 && shown === true && cap === 'deathmatch',
+        'four players in the room draw four rows, once, under the caption they were given',
+        `${rows.length} rows, ${writes} write(s) to the table body, caption "${cap}"`);
+
+    // THE THREE THINGS THE PLAYER SAID WERE MISSING, each in its own column.
+    const ga = rowWith('ranked');
+    okO(ga.includes(`<span class="rk">${TIERS[20].abbr}</span>`)
+        && !rowWith('nothing').includes('class="rk"'),
+        'a rank rides in the name cell as the abbreviation the plate uses, and a Private has none',
+        `${ga} — the full name would not fit and an insignia would be a second drawing of the `
+        + 'same rank that could disagree with the plate; an abbreviation makes no claim about a shape');
+
+    // THE GRADE COMES OFF `pingGrade`, not out of a literal here, because the claim is that the
+    // row and the region card share ONE definition of these colours. A board carrying its own
+    // copy of the thresholds would drift from the menu the first time either of them moved, and
+    // the drift would be invisible: both still print three digits, in two different inks.
+    const pgOf = (row) => (/<td class="pg p-([a-z]+)">([^<]*)</.exec(row) ?? []).slice(1).join(':');
+    const cells = [pgOf(ga), pgOf(rowWith('BOT Ivy')), pgOf(rowWith('nothing'))];
+    okO(cells[0] === `${pingGrade(240)}:240`
+        && cells[1] === `${pingGrade(18)}:18`
+        && cells[2] === `${pingGrade(NaN)}:–`,
+        'a ping is printed with the grade colour pingGrade gives it, and an unmeasured one is a dash',
+        `240 → ${cells[0]}, 18 → ${cells[1]}, no field at all → ${cells[2]} — a 0 would be a `
+        + 'claim about a round trip nobody has taken yet, so the field is omitted and the column '
+        + 'says so with a dash rather than with a number');
+
+    // And the stylesheet has to answer every name that function can return. A grade with no rule
+    // behind it is a ping printed in the table's default ink: the digits still read, and the
+    // colour that was the entire reason for grading them silently does not — which is the same
+    // class of bug as the empty columns that started this part.
+    const indexH = readFileSync('client/index.html', 'utf8');
+    const grades = [...new Set(['none', 'good', 'fair', 'poor', 'bad',
+      ...[NaN, 0, 59, 60, 149, 150, 249, 250, 4000].map(pingGrade)])];
+    const unstyled = grades.filter((g) => !indexH.includes(`#board td.p-${g}`));
+    okO(unstyled.length === 0 && grades.length === 5,
+        'and every grade that function can return has a rule behind it in the stylesheet',
+        unstyled.length ? `NO CSS FOR ${unstyled.join(', ')}`
+          : `${grades.join('/')} — one selector pairs the board cell with the region card, `
+            + '`.card u.p-x, #board td.p-x`, so the two cannot end up two shades of the same claim');
+
+    const shelved = rowWith('&lt;script&gt;');
+    okO(/<td class="bgc"><span class="bg b5" title="[^"]*"[^>]*>[^<]+<i>5<\/i><\/span><\/td>/.test(shelved)
+        && rowWith('nothing').includes('<td class="bgc"></td>'),
+        'a badge shows the best thing on the shelf first, as its tier metal, and an empty shelf is empty',
+        `${(/<td class="bgc">.*?<\/td>/.exec(shelved) ?? [''])[0]} — hs at tier 5 beats rifle 2 `
+        + 'and knife 1, and best-first is what makes one rotating slot honest: a board glanced '
+        + 'at for a beat has told the truth about somebody');
+
+    // ── the rotation, which is the whole reason there is one slot rather than five
+    const chipAt = (ms) => {
+      draw(ms);
+      const r = html.split('</tr>').find((s) => s.includes('&lt;script&gt;')) ?? '';
+      return (/<span class="bg b(\d)"[^>]*>([^<]+)</.exec(r) ?? []).slice(1).join(':');
+    };
+    const spun = [0, ROT, ROT * 2, ROT * 3].map(chipAt);
+    okO(new Set(spun).size === 3 && spun[0] === spun[3],
+        'the slot takes turns through the whole shelf and comes back round to the start',
+        `${spun.join(' → ')} over ${(ROT * 3) / 1000}s — off `
+        + '`now` rather than counted, so a board reopened after ten seconds is wherever the '
+        + 'clock says it would have been had it stayed open');
+
+    // Every row turning over on the same beat, which is a decision about the COLUMN: rows
+    // changing at their own moments would make it shimmer.
+    draw(0);
+    const atZero = (html.match(/class="bg b\d"/g) ?? []).length;
+    draw(ROT / 2);
+    okO(html === first && atZero >= 2,
+        'and every row turns at the same instant, so the column reads as a rotation not a shimmer',
+        `half a rotation later the markup is byte-identical, ${atZero} chips sharing one index`);
+
+    // ── who is who, and what the row is allowed to say about them
+    okO(rowWith('ranked').startsWith('<tr class="me tB">')
+        && rowWith('BOT Ivy').startsWith('<tr class="tA">'),
+        'your own row is marked, and each side carries its own class',
+        `${rowWith('ranked').slice(0, 24)}… against ${rowWith('BOT Ivy').slice(0, 22)}… — `
+        + 'selfId is passed in rather than read from a module, so the board has no opinion '
+        + 'about which client it is running in');
+
+    okO(shelved.includes('&lt;script&gt;') && !first.includes('<script>'),
+        'a name is escaped on the way into the row, on the wire that carries the name people chose',
+        'MSG.ROSTER carries `n` for every player in the room and a name is the one field a '
+        + 'player types — innerHTML on an unescaped one is a script tag every other client runs');
+
+    okO(rowWith('&lt;script&gt;').includes('&lt;script&gt;') && !first.includes('snapname'),
+        'the roster’s name wins over the snapshot’s, since it is the wire that carries identity',
+        'the snapshot still carries `n` and it is still the fallback for the beat before the '
+        + 'first roster lands — a board opened on the first frame of a match is complete');
+
+    // ── the order, and the early-out
+    const order = rows.map((r) => (/<td>(?:<span class="rk">[^<]*<\/span>)?([^<]*)</.exec(r) ?? [])[1]);
+    okO(order.join('|') === ['ranked', '&lt;script&gt;x&lt;/script&gt;', 'BOT Ivy', 'nothing'].join('|'),
+        'rows are sorted by kills, then by fewest deaths, then by name',
+        `${order.join(' > ')} — two players on nine kills are split by deaths (1 before 2), `
+        + 'which is the only tiebreak that means anything on a scoreboard');
+
+    const before = writes;
+    draw(0);
+    draw(0);
+    okO(writes === before,
+        'and identical rows are not re-parsed, because this runs from the frame loop while TAB is held',
+        `${writes - before} further write(s) across two more draws — re-parsing twelve rows of `
+        + 'identical HTML sixty times a second is a cost paid on the machines least able to absorb it');
+
+    writes = 0;
+    board(0, false, snap, roster, 2, 'hidden');
+    okO(writes === 0 && shown === false,
+        'and a closed board builds nothing at all, it only stops showing',
+        'the early-out is before the sort — a scoreboard nobody is looking at costs one '
+        + 'classList toggle per frame');
+  }
+}
+
+console.log([...pO, ...fO].join('\n'));
 // ─────────────────────────────────────────── Part I: two live clients
 console.log('\n=== Part I — two live clients over the wire ===\n');
 
@@ -7688,8 +9162,9 @@ try {
 
 const total = fail.length + fB.length + fC.length + fD.length + fE.length + fF.length
   + fG.length + fH.length + fJ.length + fK.length + fL.length + fM.length + fN.length
+  + fO.length
   + f2.length;
 console.log(
-  `\n${total === 0 ? 'ALL PASS' : `${total} FAILURE(S)`} — ${pass.length + pB.length + pC.length + pD.length + pE.length + pF.length + pG.length + pH.length + pJ.length + pK.length + pL.length + pM.length + pN.length + p2.length} checks passed`,
+  `\n${total === 0 ? 'ALL PASS' : `${total} FAILURE(S)`} — ${pass.length + pB.length + pC.length + pD.length + pE.length + pF.length + pG.length + pH.length + pJ.length + pK.length + pL.length + pM.length + pN.length + pO.length + p2.length} checks passed`,
 );
 process.exit(total === 0 ? 0 : 1);

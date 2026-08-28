@@ -102,6 +102,31 @@ export const CROUCH_SPEED_MUL = 0.36;
  *  quieter, and nothing anywhere reads velocity for accuracy. The doc used to claim
  *  "quiet, accurate, and slower" and only the last word was true. */
 export const WALK_SPEED_MUL = 0.52;
+/**
+ * Speed multiplier while looking down a scope, and CS2's number rather than a taste one.
+ *
+ * The AWP moves at 200 of CS2's 250 unscoped and at 100 scoped -- so scoping costs half
+ * of an already-reduced walk, and 100/250 is 0.4. That single trade is most of what makes
+ * a sniper a sniper: the gun that kills in one shot is the gun that cannot reposition
+ * while it is aimed, and a scoped player who wants to move has to give up the scope to do
+ * it. Without it a sniper is a rifle with a magnifier on.
+ *
+ * Taken as a MINIMUM against crouch and walk in `speedMul`, not multiplied by them, for
+ * the reason the comment there gives: compounding 0.4 into 0.36 lands at 0.14, which
+ * reads as being stuck rather than as being deliberately slow.
+ */
+export const SCOPE_SPEED_MUL = 0.4;
+
+/**
+ * The highest zoom step any scope may claim, which is what `sanitizeInput` clamps to.
+ *
+ * A ceiling here rather than a per-weapon lookup in the sanitiser: the sanitiser runs
+ * before anything has decided which weapon this input is even holding, and the consumer
+ * narrows the value to the weapon's own `zoomFovs` anyway (see `scopeStepOf`). Two is
+ * what the sniper has; the slack is so a third zoom is a weapon-table edit and not a
+ * protocol one.
+ */
+export const MAX_SCOPE_STEP = 3;
 
 // ---------------------------------------------------------------- movement
 // Tuned down from 4.8 after a playtest reported the game "was so fast". The arena is

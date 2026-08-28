@@ -203,6 +203,26 @@ export function toNextStep(n, key) {
   return s >= at.length ? 0 : at[s] - c;
 }
 
+/**
+ * A career's badge counts as the emblems a ROOM may see: `{ track: tier }`, tracks with no
+ * emblem left out entirely.
+ *
+ * The counts themselves never leave the owner — see the `bd` note in server/index.js —
+ * and this is the line between the two. A tier is what somebody wears; a count is how they
+ * got there, and one of those is nobody else's business.
+ *
+ * Empty for a fresh career, which is what makes the roster message free for a new player:
+ * an omitted field rather than twelve zeroes.
+ */
+export function publicTiers(counts) {
+  const out = {};
+  for (const key of TRACK_KEYS) {
+    const t = tierOf(counts?.[key] ?? 0, key);
+    if (t > 0) out[key] = t;
+  }
+  return out;
+}
+
 /** The full name of a badge, or '' below the first one. */
 export const tierName = (t) => TIER_NAMES[t - 1] ?? '';
 

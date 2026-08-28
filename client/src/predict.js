@@ -63,6 +63,11 @@ export function createPredictor(spawn) {
       state.crouch = auth.cr ?? 0;
       state.vx = state.vy = state.vz = 0;
       state.grounded = false;
+      // A dead player is not looking through anything. input.js drops the latch on death
+      // too, so the next input already says 0 — this is the state the frozen body holds
+      // in the meantime, and it keeps the speed cap from being scoped on the respawn tick.
+      state.scope = 0;
+      state.scopeMs = 0;
       pending.length = 0;
       error.x = error.y = error.z = 0;
     },
@@ -101,6 +106,14 @@ export function createPredictor(spawn) {
         state.stamina = self.st ?? C.SPRINT_STAMINA_MAX;
         state.restTicks = self.rt ?? 0;
         state.sprintLock = !!self.sl;
+        // The scope, for a third airing of the same reason: `stepPlayer` ADDS to
+        // `scopeMs`, so a replay that started from our own running total would count
+        // every unacked input twice and settle the scope about three times too fast —
+        // which is the client believing a quick-scope was pinpoint while the host
+        // resolved it as a coin flip. Both default to 0 and both are omitted by the host
+        // whenever the glass is down, which is the overwhelmingly common case.
+        state.scope = self.sc ?? 0;
+        state.scopeMs = self.sm ?? 0;
       }
 
       while (pending.length && pending[0].seq <= ack) pending.shift();

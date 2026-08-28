@@ -10,7 +10,10 @@ import * as C from '../../shared/constants.js';
 import { WEAPONS, idAt } from '../../shared/weapons.js';
 import { TEAM_NAMES } from '../../shared/modes.js';
 import { TIERS, MAX_TIER, rankOf, toNextRank } from '../../shared/ranks.js';
-import { MAX_STEP, badgeOf, labelOf, levelOf, stepOf, tierName, toNextStep } from '../../shared/badges.js';
+import {
+  MAX_STEP, TRACK_KEYS, badgeOf, labelOf, levelOf, stepOf, tierName, toNextStep,
+} from '../../shared/badges.js';
+import { pingGrade } from '../../shared/regions.js';
 import { SPREE_LEGS, SPREE_MS, legsOf, spreeName } from '../../shared/spree.js';
 
 const $ = (id) => document.getElementById(id);
@@ -28,6 +31,30 @@ const $ = (id) => document.getElementById(id);
  */
 const BLOOM_PX = 110;
 const BLOOM_MAX = 34;
+
+/**
+ * The scoped reticle's resting centre gap, in vmin — the reticle it has always been.
+ *
+ * A BASE that the inaccuracy is ADDED to, not a floor it is clamped against, and the
+ * difference is the whole usefulness of the ring. A settled sniper's cone is 0.0008 rad,
+ * which is a fifth of a pixel, and a cone a fifth of the way through its settle is about
+ * two vmin — under a floor of this size both would render identically and the ring would
+ * say nothing for most of the window it exists to show. Added, the gap opens to three
+ * times its resting size on the frame the glass comes up and visibly closes from there.
+ * `bloom` treats the crosshair's gap the same way for the same reason.
+ *
+ * 3.15vmin is the 34px this was, expressed in vmin so it holds its proportion of the lens
+ * on any display — the ring is measured against the glass, not against the window.
+ */
+const RING_BASE_VMIN = 3.15;
+/** How wide the ring may get before it stops meaning anything. A ring larger than the
+ *  lens is a ring drawn under the black, and a player reading "somewhere on the screen"
+ *  learns the same thing from a ring at the edge of the glass. */
+const RING_MAX_VMIN = 30;
+/** Half the lens, in vmin — the `62vmin` in `#scope .lens`. The ring is a fraction of
+ *  the field of view and the lens is what that field of view is drawn across, so this
+ *  is the number that turns an angle into a distance on the glass. */
+const LENS_HALF_VMIN = 31;
 
 /** mm:ss. The match clock is the one number a player checks mid-fight, so it has
  *  to be readable at a glance rather than parsed. */
@@ -110,6 +137,13 @@ export function createHud() {
   const BADGE_MS = 1600;
   const BADGE_UP_MS = 2600;
   const BADGE_QUEUE_MAX = 3;
+  /** How long one badge holds the scoreboard's single slot before the next takes it.
+   *  Long enough to read a twelve-character label without hurrying, short enough that a
+   *  board held open for the length of a respawn shows a whole shelf. */
+  const BADGE_ROT_MS = 2400;
+  /** The markup the scoreboard last wrote, so a frame that would write the same thing
+   *  writes nothing. See `scoreboard`. */
+  let boardHtml = '';
   /**
    * The killmark: when the chain on screen runs out, and what its bar is drawing between.
    *
@@ -143,7 +177,7 @@ export function createHud() {
   let shownLabel = '';
   let shownBar = null;
   let shownTeams = null;
-  let shownScope = -1;
+  let shownScope = ''; // a composed key now — opacity, the scope flag and the ring size
   let shownBloom = -1;
   // Spawn protection is written every frame while it lasts. Three separate last-drawn
   // values because the visibility, the tenths and the bar percent all change on
@@ -259,15 +293,37 @@ export function createHud() {
      *   crosshair otherwise it makes no sense to scope because it has crosshair". A free
      *   aim reference while hipfiring is exactly the thing scoping is supposed to cost
      *   you, so the sniper is aimed by its scope or not aimed at all.
+     *
+     * @param coneRad the half-angle the next round can land inside, in radians — the
+     *   weapon's own spread times everything the body and the scope are doing to it. This
+     *   is CS2's scoped-inaccuracy indicator, and it is the ONLY feedback a scoped player
+     *   gets about the settle: without it a quick-scope that missed is indistinguishable
+     *   from a hitbox that lied, which is the single most demoralising thing a shooter can
+     *   do to somebody. The crosshair cannot do this job — it is hidden for a scoped
+     *   weapon on purpose (see above) — so the reticle's own centre gap does it.
+     * @param fovDeg the vertical field of view being drawn right now, which is what turns
+     *   that angle into a size. A ring of fixed pixels would mean different things at the
+     *   two zoom steps: the same cone covers twice as much glass at 30° as at 55°, and
+     *   the whole point of the ring is that it is measured in the picture the player is
+     *   actually looking at.
      */
-    scope(amount, hasScope = false) {
+    scope(amount, hasScope = false, coneRad = 0, fovDeg = 0) {
       const a = Math.round(amount * 100) / 100;
-      // Both inputs fold into the one early-out key, or toggling the flag at a settled
-      // blend would not repaint.
-      const key = a + (hasScope ? 2 : 0);
+      // Where the cone lands on the glass. `coneRad` as a fraction of the half-FOV is the
+      // fraction of the half-lens it covers; doubled because the gap is a diameter.
+      const half = (fovDeg * Math.PI) / 360;
+      const frac = a > 0 && half > 0 ? Math.min(1, coneRad / half) : 0;
+      const ring = Math.min(RING_MAX_VMIN, RING_BASE_VMIN + frac * LENS_HALF_VMIN * 2);
+      // Every input folds into the one early-out key, or toggling a flag at a settled
+      // blend would not repaint. The ring is quantised to a tenth of a vmin first — it
+      // moves every frame while the scope settles, and a DOM write per frame for a
+      // difference nobody can see is the thing this early-out exists to avoid.
+      const r = Math.round(ring * 10) / 10;
+      const key = `${a}|${hasScope ? 1 : 0}|${r}`;
       if (key === shownScope) return;
       shownScope = key;
       els.scope.style.opacity = String(a);
+      els.scope.style.setProperty('--ring', `${r}vmin`);
       els.cross.style.opacity = hasScope || a > 0.5 ? '0' : '';
     },
 
@@ -650,24 +706,63 @@ export function createHud() {
       shownKiller = '';
     },
 
-    scoreboard(show, players, selfId, caption) {
+    /**
+     * The scoreboard: who is here, how they are doing, what they wear and what their
+     * connection is like.
+     *
+     * TWO SOURCES, and that is the shape of the whole thing. `players` is the snapshot, which
+     * lands twenty times a second and carries what moves — score, team, ping. `roster` is
+     * MSG.ROSTER, which lands on a join, a drop or a promotion and carries who somebody is —
+     * name, rank, badge shelf. Merged by id, and the snapshot's own `n` and `rk` are the
+     * fallback for the beat before the first roster arrives, so a board opened on the very
+     * first frame of a match is complete rather than nameless.
+     *
+     * Rebuilt only when the markup would actually differ, which is the same early-out
+     * everything else in this file uses and it earns it more than most: this runs from the
+     * frame loop for as long as a key is held, and re-parsing twelve rows of identical HTML
+     * sixty times a second is a cost paid on exactly the machines least able to absorb it.
+     */
+    scoreboard(now, show, players, roster, selfId, caption) {
       els.board.classList.toggle('show', show);
       if (!show) return;
       if (caption) els.boardCap.textContent = caption;
-      const sorted = [...players].sort((a, b) => b.k - a.k || a.d - b.d);
-      els.boardRows.innerHTML = sorted
+      // ONE BADGE SLOT PER ROW, rotating, and the index is shared by every row on purpose:
+      // rows changing at their own moments would make the column shimmer, and the whole
+      // column turning over at once reads as a deliberate rotation instead.
+      //
+      // Off `now` rather than counted, so it does not drift and does not need to be reset
+      // when the board is closed — a board reopened after ten seconds is wherever the clock
+      // says, which is where it would have been had it stayed open.
+      const spin = Math.floor(now / BADGE_ROT_MS);
+      const sorted = [...players].sort(
+        (a, b) => b.k - a.k || a.d - b.d || String(a.n).localeCompare(String(b.n)),
+      );
+      const html = sorted
         .map((p) => {
+          const who = roster?.get?.(p.id);
           const cls = [p.id === selfId ? 'me' : '', p.tm === 1 ? 'tA' : p.tm === 2 ? 'tB' : '']
             .filter(Boolean)
             .join(' ');
           // Rank rides inside the name cell as an abbreviation. The full name would not fit
           // and the insignia would be a second drawing of the same thing that could disagree
           // with the plate — an abbreviation cannot, because it makes no claim about a shape.
-          // `rk` is absent for a Private, matching the wire, so the gutter is simply empty.
-          const rk = p.rk ? `<span class="rk">${esc(TIERS[p.rk]?.abbr ?? '')}</span>` : '';
-          return `<tr class="${cls}"><td>${rk}${esc(p.n)}</td><td>${p.k}</td><td>${p.d}</td></tr>`;
+          // Absent for a Private on both wires, so the gutter is simply empty.
+          const tier = who?.rk ?? p.rk;
+          const rk = tier ? `<span class="rk">${esc(TIERS[tier]?.abbr ?? '')}</span>` : '';
+          return `<tr class="${cls}">`
+            + `<td>${rk}${esc(who?.n ?? p.n)}</td>`
+            + `<td class="bgc">${badgeSlot(who?.bg, spin)}</td>`
+            + `<td>${p.k}</td><td>${p.d}</td>`
+            // A ping of 0 is not a ping of 0. It means nobody has measured one: a bot in the
+            // in-page host, or a socket in the first second of its life before the first
+            // pong. An en dash says that; a "0ms" would be a claim.
+            + `<td class="pg p-${pingGrade(p.pg ?? NaN)}">${p.pg ? `${p.pg}` : '–'}</td>`
+            + `</tr>`;
         })
         .join('');
+      if (html === boardHtml) return;
+      boardHtml = html;
+      els.boardRows.innerHTML = html;
     },
 
     net(now, rtt, snapRate, pending) {
@@ -813,6 +908,35 @@ export function createHud() {
       }
     },
   };
+}
+
+/**
+ * One badge from a player's shelf, as the chip a scoreboard row shows — or nothing at all
+ * for somebody who has not earned one.
+ *
+ * A SINGLE SLOT AND NOT A ROW OF EMBLEMS, which is a decision about the column and not about
+ * the badges: five weapon tracks side by side in a table cell is a wall of metal nobody reads,
+ * and the one thing a player actually wants off somebody else's sleeve is "what are they good
+ * at". So the shelf takes turns in one slot, best first.
+ *
+ * BEST FIRST is what makes the rotation honest rather than random: sorted by tier and then by
+ * the badge table's own key order, so the first thing shown of anybody is the highest thing
+ * they have, and a board glanced at for one beat has told the truth about them.
+ *
+ * The metal is the tier and the text is the track — the same division the badge card makes,
+ * and the same five `b1`..`b5` classes, so a colour means the same thing in both places. The
+ * tier NAME rides in the title rather than in the cell, because "Distinguished ELIMINATIONS"
+ * is twenty-six characters and this is a table.
+ */
+function badgeSlot(shelf, spin) {
+  if (!shelf) return '';
+  const keys = Object.keys(shelf).filter((k) => shelf[k] > 0);
+  if (!keys.length) return '';
+  keys.sort((a, b) => shelf[b] - shelf[a] || TRACK_KEYS.indexOf(a) - TRACK_KEYS.indexOf(b));
+  const key = keys[spin % keys.length];
+  const tier = shelf[key];
+  return `<span class="bg b${tier}" title="${esc(tierName(tier))} - ${esc(labelOf(key))}">`
+    + `${esc(labelOf(key))}<i>${tier}</i></span>`;
 }
 
 const esc = (s) =>

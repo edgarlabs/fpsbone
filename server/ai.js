@@ -41,7 +41,7 @@ import { WORLD_BOXES, SPAWNS } from '../shared/map.js';
 import { rayWorld } from '../shared/collide.js';
 import { chestY, eyeY } from '../shared/movement.js';
 import { PROJECTILES } from '../shared/projectile.js';
-import { hasHeavy, idAt, isAuto, isUtil, weaponAt } from '../shared/weapons.js';
+import { hasHeavy, holdBandOf, idAt, isAuto, isUtil, scopes, weaponAt } from '../shared/weapons.js';
 
 /**
  * How fast a bot turns, radians per second.
@@ -140,7 +140,14 @@ const AIM_ERR_TRACK = 0.035;
 
 /** The range band a bot tries to fight from. It closes outside this and backs off
  *  inside it, which is most of what stops bots from ending every engagement nose to
- *  nose in the middle of the map. */
+ *  nose in the middle of the map.
+ *
+ *  THE DEFAULT, not the rule: a weapon may override it with a `hold` band of its own and
+ *  the sniper does — see `holdBandOf` in shared/weapons.js, and `band()` below. Six to
+ *  fourteen units is knife range, and nine bots each holding a one-shot rifle inside it
+ *  is the literal answer to "i notice how crazy hard to play with sniper": they were not
+ *  snipers, they were shotguns with a scope on, and the scope you had just opened was
+ *  showing you a wall at the exact moment one of them walked into your face. */
 const HOLD_NEAR = 6;
 const HOLD_FAR = 14;
 /**
@@ -304,6 +311,11 @@ function loft(kind, dist, dy, pitch) {
  * SWITCH_MS, so a bot that re-picks each tick between two near-equal options never
  * finishes drawing either and stands there unarmed for the whole match.
  */
+/** The range band this weapon wants to be fought at: its own if it declared one, the
+ *  file's default otherwise. One expression so the movement and the weapon choice below
+ *  cannot end up reading different bands for the same gun. */
+const band = (idx) => holdBandOf(idAt(idx)) ?? [HOLD_NEAR, HOLD_FAR];
+
 function pickWeapon(p, dist) {
   let best = p.wep;
   let bestScore = -Infinity;
@@ -312,6 +324,13 @@ function pickWeapon(p, dist) {
     let s;
     if (w.kind === 'melee') s = dist < w.range ? 40 : 0;
     else if (w.mag !== null && p.ammo[idx] <= 0) s = 5; // empty: only if nothing else
+    // A scoped weapon UNDER its own band is a weapon being used wrong, and now that
+    // hipfire costs 40x the cone (see HIP_SPREAD) it is worse than nothing: the bot was
+    // keeping the sniper in a nose-to-nose fight and firing a lottery ticket a second,
+    // because 80 beat the knife's 40 at every range the barrel reached. Scored below
+    // melee so the knife wins inside that distance and above it everywhere else, which
+    // is CS2's own answer to an AWP — rush it — finally available to a player as well.
+    else if (scopes(idAt(idx)) && dist < band(idx)[0]) s = 25;
     // Utility is scored below an empty magazine, which is to say never chosen. A
     // flashbang has to be thrown *before* the fight and a smoke has to be thrown at a
     // sightline rather than at a person, and neither of those is a decision this brain
@@ -538,6 +557,10 @@ export function createBrain(seed = 0) {
       let moveZ = 0;
       let buttons = 0;
       let shoot = false;
+      /** Which zoom step this bot asks for, in exactly the shape a player's input carries
+       *  it. Zero unless the branch below has a reason — a bot with nothing to shoot at
+       *  wants both eyes and its full walking speed. */
+      let sc = 0;
       let dist = Infinity;
       const seen = belief?.fresh === true;
 
@@ -599,6 +622,27 @@ export function createBrain(seed = 0) {
         // this tick is a shooting tick. The condition itself is unchanged.
         shoot = seen && dist <= reach && now - belief.since >= REACTION_MS;
 
+        // ── the glass
+        //
+        // Bots scope, and they pay for it exactly like a player: `stepPlayer` accumulates
+        // their settle from the same `sc` and `speedMul` halves their speed off the same
+        // constant, so there is no bot-only path here and there must not be one — the
+        // note on FIRE_SETTLE makes the same argument about the trigger.
+        //
+        // Up whenever it believes in somebody at a distance the weapon is FOR, down
+        // otherwise. Both halves matter. Up, and the bot is a sniper holding an angle:
+        // REACTION_MS is 220ms against SCOPE_SETTLE_MS's 120, so by the tick it is
+        // allowed to fire the cone has settled — the bot earns its pinpoint the same way
+        // a player does, by having been there first. Down inside the band, and it is the
+        // counterplay: a bot rushed to knife range cannot shoot straight and cannot
+        // reposition while zoomed, so it drops the scope and reaches for the knife
+        // (`pickWeapon`), which is a duel rather than the free kill it used to be.
+        //
+        // Step 1 and never 2. The far zoom costs SCOPE_STEP_SPREAD for magnification a
+        // bot has no use for — it is not squinting at a pixel, it already knows exactly
+        // where it believes you are.
+        sc = scopes(idAt(wep)) && dist >= band(wep)[0] && dist <= reach ? 1 : 0;
+
         // Hold the band, and never stop moving sideways: a bot that walks straight at
         // you is a bot you cannot miss. Out of sight, close the distance instead —
         // that is the bot going to look for whoever it lost.
@@ -617,12 +661,28 @@ export function createBrain(seed = 0) {
             strafe = Math.random() < 0.5 ? 1 : -1;
             strafeUntil = now + 500 + Math.random() * 900;
           }
-          // Both axes, not just the strafe: at dist > HOLD_FAR the advance is what is
+          // Both axes, not just the strafe: outside the band the advance is what is
           // carrying the speed, and damping the sideways component alone would leave a
           // bot walking into a duel at full pace with a sevenfold cone.
-          const settle = shoot ? FIRE_SETTLE : 1;
+          //
+          // A RAISED SCOPE PLANTS THE BOT OUTRIGHT, and this is the line that keeps the
+          // AI honest about the rule the player now plays by. `scopeStep` settles the
+          // glass on the movement INTENT rather than on speed, so a damped intent is
+          // still an intent: 0.3 of a step unsettles the cone exactly as a full one does,
+          // and a bot strafing gently at 30% would hold up a scope forever and never once
+          // shoot through anything tighter than a metre. So a bot with the glass up and a
+          // target it can SEE stands still and earns the cone, which is the same bargain
+          // the player makes — and REACTION_MS's 220ms is comfortably past the 120ms
+          // window, so the first shot it is allowed to take is already a settled one.
+          //
+          // `seen` and not merely `sc`, because `sc` is a distance test against a BELIEF:
+          // a bot scoped at a position it only heard would otherwise freeze over a memory
+          // until the belief expired. It keeps moving instead, which costs it nothing —
+          // `shoot` gates on `seen` too, so it was never going to fire that tick anyway.
+          const settle = sc > 0 && seen ? 0 : shoot ? FIRE_SETTLE : 1;
+          const [near, far] = band(wep);
           moveX = seen ? strafe * 0.85 * settle : 0;
-          moveZ = (!seen || dist > HOLD_FAR ? 1 : dist < HOLD_NEAR ? -0.6 : 0) * settle;
+          moveZ = (!seen || dist > far ? 1 : dist < near ? -0.6 : 0) * settle;
         }
       } else {
         roam();
@@ -686,7 +746,7 @@ export function createBrain(seed = 0) {
       // What we are about to send is what the trigger will be holding next tick.
       triggerDown = (buttons & C.BTN_FIRE) !== 0;
 
-      return { seq: ++seq, moveX, moveZ, yaw, pitch, buttons, wep };
+      return { seq: ++seq, moveX, moveZ, yaw, pitch, buttons, wep, sc };
     },
   };
 }

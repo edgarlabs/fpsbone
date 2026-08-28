@@ -32,7 +32,9 @@ import {
 import { createController } from './modes/index.js';
 import { createBrain } from './ai.js';
 import { TIERS, rankOf } from '../shared/ranks.js';
-import { tracksFor } from '../shared/badges.js';
+import {
+  BADGES, MAX_LEVEL, MAX_BADGE_TIER, TRACK_KEYS, publicTiers, tierOf, tracksFor,
+} from '../shared/badges.js';
 import { resolveShot, rewindTimeFor } from './hitscan.js';
 import { rayWorld } from '../shared/collide.js';
 import {
@@ -97,6 +99,66 @@ const botCareer = (id) => {
 };
 
 /**
+ * A deterministic badge shelf for a bot: `{ track: count }`, two to four tracks lit.
+ *
+ * The same argument `botCareer` above makes, one level down. Solo-versus-AI is how most of
+ * this feature will ever be seen, and a scoreboard where nine bots have a rank and a blank
+ * badge column would read as a broken feature rather than as nine humble bots. It is also
+ * the only way the rotating slot on that board is ever exercised without a career behind it.
+ *
+ * ON A TIER BOUNDARY, exactly like `botCareer`, and for exactly its reason: the threshold is
+ * the value `stepOf` is inclusive at, so ordinary play exercises the one comparison in that
+ * function most likely to have been written `>` — and a bot wearing the tier below the one
+ * it was seeded for is that mistake, visible on screen without a test.
+ *
+ * TWO TO FOUR and never all twelve. A bot with every track lit looks like test data, and the
+ * whole point of the slot is that it rotates through a SHELF: one track cannot rotate, and
+ * twelve is a slot machine.
+ */
+const botBadges = (id) => {
+  // Same xorshift-on-a-Knuth-multiplication as botCareer, salted per track so the tracks a
+  // bot has are not the tracks the bot with the next id has. Adjacent ids landing on
+  // adjacent shelves would read as a difficulty ramp, which is the mistake that function
+  // documents.
+  const hash = (n) => {
+    let h = ((id * 2654435761) ^ (n * 40503)) & 0x7fffffff;
+    h ^= h >>> 13;
+    return (h * 1103515245) & 0x7fffffff;
+  };
+  const out = {};
+  const many = 2 + ((hash(0) >>> 9) % 3);
+  // A COLLISION REDRAWS rather than shortening the shelf, which is why this loop counts KEYS
+  // and not draws. Two of three draws landing on the same track is a one-in-twelve event and
+  // it caught about seven per cent of ids — one bot in every second lobby wearing a single
+  // chip in a column whose entire job is to rotate through several. The redraw is bounded and
+  // cannot spin: `many` is at most four and there are twelve tracks to find them in.
+  for (let i = 0; Object.keys(out).length < many && i < TRACK_KEYS.length * 4; i++) {
+    const key = TRACK_KEYS[(hash(i + 1) >>> 7) % TRACK_KEYS.length];
+    const tier = 1 + ((hash(i + 17) >>> 11) % MAX_BADGE_TIER);
+    // Highest wins on a collision, so a track drawn twice reads as one shelf rather than as
+    // whichever iteration happened to run last.
+    const at = BADGES[key].at[(tier - 1) * MAX_LEVEL];
+    if (at > (out[key] ?? 0)) out[key] = at;
+  }
+  return out;
+};
+
+/**
+ * A bot's seeded ping, moved a little, so the column does not read as twelve constants.
+ *
+ * DERIVED FROM THE TICK AND NOT ACCUMULATED, which is why there is no per-tick loop behind
+ * it: this is cosmetic, it is read once per snapshot per bot, and a stored value nudged
+ * every tick would be simulation-shaped state that nothing simulates. Two sines at
+ * unrelated periods, so the wobble does not look like a wobble.
+ *
+ * Floored at 5, because a bot showing 0ms is a bot showing that it is in this process.
+ */
+const wobble = (base, id, tick) =>
+  Math.max(5, base
+    + Math.sin(tick / 47 + id) * 4
+    + Math.sin(tick / 211 + id * 2.7) * 7);
+
+/**
  * Names for AI players.
  *
  * Every one is prefixed, and that prefix is the entire mechanism for telling bots
@@ -152,6 +214,16 @@ export class Room {
     /** Ids of the AI players, in the order they joined — so trimming the count
      *  removes the newest and leaves whoever has been in the fight alone. */
     this.bots = new Set();
+    /**
+     * Bumped whenever a MSG.ROSTER row could have changed: a join, a drop, or a kill that
+     * promoted somebody's rank or badge.
+     *
+     * A REVISION AND NOT A DIRTY FLAG, because there is one room and several clients and a
+     * flag would be cleared by whoever read it first. The host keeps the number it last
+     * sent per room and compares — one integer compare per broadcast, which is what lets
+     * this be checked every tick and sent almost never.
+     */
+    this.rosterRev = 0;
     /**
      * The room's source of chance. Only the jam roll uses it, and it is a field rather
      * than a bare `Math.random()` call for the same reason `rollLoadout` takes one: a
@@ -234,6 +306,20 @@ export class Room {
        * blob every snapshot — the same omit-when-zero economy `sp`, `jm` and `rk` use.
        */
       badges: {},
+      /**
+       * Round-trip milliseconds to this player, or 0 for a bot until `addBot` seeds it.
+       *
+       * WRITTEN FROM OUTSIDE, by server/index.js, off whatever the transport can measure —
+       * `ws.ping()` and a `pong` on Node, nothing at all in the browser host. It lives here
+       * rather than there because `snapshotBase` is what puts it on the wire and this is the
+       * object that function reads; a parallel map keyed by id in the host would be the same
+       * data with one more thing able to fall out of step with `players`.
+       *
+       * NOT SIMULATION STATE. Nothing in `stepPlayer` reads it, it is not in
+       * `createPlayerState`, and no replay depends on it — it is a number about the wire,
+       * riding on the object the wire is described from.
+       */
+      ping: 0,
       ...createPlayerState(spawn),
       hp: C.MAX_HP,
       alive: true,
@@ -322,6 +408,7 @@ export class Room {
     };
     this.dealLoadout(p);
     this.players.set(id, p);
+    this.rosterRev++;
     // Before onJoin, per the note on `isBot` above. A member of this set whose brain is
     // not attached yet is safe: `thinkBots` skips anything without a `bot`, and the gap
     // closes before this method returns.
@@ -348,6 +435,33 @@ export class Room {
   remove(id) {
     this.players.delete(id);
     this.bots.delete(id);
+    this.rosterRev++;
+  }
+
+  /**
+   * Who is in the room and what they wear, for MSG.ROSTER.
+   *
+   * Everything here changes a handful of times per career, which is the whole reason it is
+   * not in the snapshot: `snapshotBase` runs twenty times a second, and a badge shelf that
+   * has not moved since the match started would be re-encoded four hundred times a minute
+   * per player to say the same thing. `rosterRev` below is how the host knows when to send
+   * this instead of guessing.
+   *
+   * Bots are in it, unmarked, exactly as people are. See the note at BOT_NAMES.
+   */
+  rosterState() {
+    const players = [];
+    for (const p of this.players.values()) {
+      const row = { i: p.id, n: p.name };
+      // Omit-when-zero, the same economy `sp`, `jm` and `rk` use in the snapshot: a brand
+      // new player is `{ i, n }` and nothing else.
+      const rk = rankOf(p.career);
+      if (rk > 0) row.rk = rk;
+      const bg = publicTiers(p.badges);
+      if (Object.keys(bg).length) row.bg = bg;
+      players.push(row);
+    }
+    return players;
   }
 
   /**
@@ -370,6 +484,16 @@ export class Room {
     // most of this feature will ever be seen, a working ladder would look like a broken
     // one. Bots hold no account, so nothing here is ever written to disk.
     p.career = botCareer(id);
+    // And a shelf, on the same seed. See `botBadges`.
+    p.badges = botBadges(id);
+    // AND A PING, which is not decoration. Every other field a client could tell a bot from
+    // a human by has been kept off the wire on purpose — see the note at BOT_NAMES — and a
+    // ping column where the bots are all blank would have handed that back by omission. A
+    // bot's real round trip is zero because it is in this process; what it shows is a seeded
+    // plausible one, drawn from the id like everything else about it.
+    //
+    // The room's own ticking is what makes it wobble; see `wobble`.
+    p.ping = 18 + ((botCareer(id) * 7 + id * 29) % 64);
     return id;
   }
 
@@ -484,6 +608,20 @@ export class Room {
     // carry-over nobody would ever read as intentional.
     p.jammedUntil.fill(0);
     p.jamWep = -1;
+    // Inputs queued by the previous life go with it, and this line is a fix rather than
+    // tidiness. `step` respawns and then consumes, so without it the first thing a fresh
+    // body does is act on a tick of intent formed by a corpse — aimed somewhere else,
+    // walking somewhere else, and asking for a weapon this hand may no longer be dealt.
+    // That last one had a visible symptom: a bot that died holding the sniper came back
+    // with a shotgun and the SCOPE STILL UP, because `stepPlayer` read the dead man's
+    // `wep` and raised the glass while `applyWeapon` refused the swap — leaving it at
+    // 40% speed, unable to sprint, with nothing on screen to explain either.
+    p.inputs.length = 0;
+    // And the filler has nothing of the corpse's left to repeat either. Without this the
+    // first tick of a new life is stepped with the last movement the previous one sent —
+    // a fresh body that walks out of its spawn on its own while the player is still
+    // watching the death cam.
+    p.lastInput = null;
     // `fireHeld` is deliberately NOT cleared. Somebody who died with the button down
     // is still holding it, and a fresh latch would read that as a new click — one free
     // round on respawn from a weapon that is supposed to need a release first.
@@ -507,6 +645,12 @@ export class Room {
       while (p.inputs.length && consumed < C.MAX_INPUTS_PER_TICK) {
         const inp = p.inputs.shift();
         if (inp.seq <= p.lastSeq) continue;
+        // The loadout narrows the weapon BEFORE the step, not only after it. `applyWeapon`
+        // below is the authority on a swap and refuses one this player is not dealt — but
+        // `stepPlayer` reads `inp.wep` too, to decide whether a scope may be up at all, so
+        // an unnarrowed intent lets the two disagree: the room keeps the shotgun and the
+        // simulation raises a sniper's glass over it. One weapon per tick, decided here.
+        if (!p.allowed.has(inp.wep)) inp.wep = p.wep;
         stepPlayer(p, inp, C.TICK_DT, WORLD_BOXES);
         p.lastSeq = inp.seq;
         p.lastInput = inp;
@@ -529,9 +673,24 @@ export class Room {
       // movement buttons carry over — see FILLER_BUTTONS for why jump is one of
       // them and fire is not.
       if (consumed === 0) {
+        // `wep` and `sc` come from the SERVER's own state, never from the stale input, and
+        // that is a fix rather than pedantry. A filler is a repeat of somebody's movement,
+        // not a repeat of their assertions: `stepPlayer` reads `wep` to decide whether a
+        // scope may be up at all, so carrying a dead man's `wep: sniper, sc: 1` through a
+        // respawn raised the glass over the rifle the fresh hand was actually dealt — 40%
+        // speed, no sprint, and nothing on screen to explain either. Restating what the
+        // player is holding also keeps a genuine stall honest in the other direction: a
+        // scope that is up stays up and keeps settling, exactly as it would have with the
+        // packets arriving, and one that is down cannot come up while nobody is asking.
         const filler = p.lastInput
           ? { ...p.lastInput, buttons: p.lastInput.buttons & FILLER_BUTTONS }
           : { moveX: 0, moveZ: 0, yaw: p.yaw, pitch: p.pitch, buttons: 0 };
+        // Kept even though `respawn` now empties the queue and drops `lastInput` too, which
+        // closes the same hole from the other end: with those two off, THESE two lines still
+        // hold the glass down on a respawn on their own. The filler is the one step in the
+        // tick that never reaches `applyWeapon`, so it restates authority itself.
+        filler.wep = p.wep;
+        filler.sc = p.scope ?? 0;
         stepPlayer(p, filler, C.TICK_DT, WORLD_BOXES);
       }
 
@@ -772,9 +931,17 @@ export class Room {
       // the right default for a viewmodel and the wrong one for a ledger, because it would
       // file a kill credited to no weapon under a weapon the player may not even be
       // holding. An empty string names nothing and earns the total only.
+      // The TIER before and after, per track, because MSG.ROSTER carries tiers and a kill
+      // that moved a count without moving an emblem must not cost the room a push. The rank
+      // is the same question one line up: `rankOf` moves on a couple of dozen kills out of
+      // a whole career, so comparing is cheap and pushing on every kill is not.
+      let moved = rankOf(attacker.career) !== rankOf(attacker.career - 1);
       for (const key of tracksFor(wep >= 0 ? idAt(wep) : '', zone)) {
+        const was = tierOf(attacker.badges[key] ?? 0, key);
         attacker.badges[key] = (attacker.badges[key] ?? 0) + 1;
+        if (tierOf(attacker.badges[key], key) !== was) moved = true;
       }
+      if (moved) this.rosterRev++;
       this.onCareer?.(attacker.account, attacker.career, attacker.badges);
     }
     this.ctl.onKill(this, attacker ?? null, v);
@@ -963,7 +1130,14 @@ export class Room {
     // is a shot the client does not get to make more accurate than the movement it
     // reported. The client computes the same number from its predicted state purely to
     // size the crosshair.
-    const sm = spreadMul(p);
+    //
+    // The weapon id goes in as well, and that is the scope: `spreadMul` reads `p.scope`
+    // and `p.scopeMs` off the same body and multiplies the cone by up to forty for a shot
+    // taken from the hip or a fifth of a second too early. It is the same argument this
+    // whole call makes about velocity, applied to the one piece of state that used to
+    // never leave the browser at all — a no-scope is now a shot the client cannot make
+    // accurate by not telling us about it.
+    const sm = spreadMul(p, id);
     const aim = sm === 1 ? w : { ...w, spread: (w.spread ?? 0) * sm };
 
     // Rewind everyone to the frame this shooter was actually looking at. 0 for a bot,
@@ -1121,6 +1295,18 @@ export class Room {
       // times per career at 20Hz is exactly right.
       const rk = rankOf(p.career);
       if (rk > 0) player.rk = rk;
+      // Round-trip milliseconds, and the ONE roster-ish field that belongs in the snapshot
+      // rather than in MSG.ROSTER: a ping is a live reading. It moves every second, a
+      // scoreboard held open watches it move, and a value pushed on joins alone would be
+      // frozen at whatever it was when the last person walked in.
+      //
+      // Whole milliseconds, no r3(): tenths of a millisecond of round trip is not a number
+      // anybody reads, and a float here only invites somebody to average it later.
+      //
+      // Public, and every player has one — including bots, whose seeded value wobbles here.
+      // The absence of this field would be the bot flag that BOT_NAMES exists to avoid.
+      const pg = Math.round(p.bot ? wobble(p.ping, p.id, this.tick) : p.ping);
+      if (pg > 0) player.pg = pg;
       players.push(player);
     }
     // `proj` is omitted entirely when nothing is in the air, which is the common

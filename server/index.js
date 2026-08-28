@@ -84,7 +84,11 @@ export function createHost({ nowNs, ranks = NO_RANKS, log = () => {} }) {
     // The one wire between the simulation and the store, installed from this side so a
     // Room built anywhere else — the test suite builds four — persists nothing.
     room.onCareer = ranks.setCareer;
-    rooms.set(id, { room, clients: new Map() });
+    // `rosterSent` is the last `room.rosterRev` this room's clients were told about. -1 and
+    // not 0 so an empty room's first push is still a push: a Room starts at rev 0, and a
+    // sentinel that matched it would mean the first client to join a fresh room learned the
+    // roster only when the second one did.
+    rooms.set(id, { room, clients: new Map(), rosterSent: -1 });
   }
 
   const AVAILABLE = [...rooms.keys()];
@@ -168,6 +172,25 @@ export function createHost({ nowNs, ranks = NO_RANKS, log = () => {} }) {
       return;
     }
 
+    // WHO IS IN THE ROOM, when that has changed. One integer compare per broadcast, which is
+    // what lets the answer be checked twenty times a second and sent about twice a match:
+    // `rosterRev` moves on a join, a drop, and a kill that actually promoted somebody.
+    //
+    // No explicit call on the join path, and that is the point of doing it here. A push
+    // written into the handshake would have to be repeated in `drop`, in `syncBots`, and on
+    // the promotion inside `damage` — four call sites to keep in step, one of which lives in
+    // another file. `Room.add` and `Room.remove` bump the revision themselves, so every edge
+    // that can change a row is already covered by the one check below.
+    //
+    // Encoded once and sent many times, exactly like `pushLobby`.
+    if (slot.room.rosterRev !== slot.rosterSent) {
+      slot.rosterSent = slot.room.rosterRev;
+      const roster = encode({ t: MSG.ROSTER, players: slot.room.rosterState() });
+      for (const client of slot.clients.values()) {
+        if (client.isOpen()) client.send(roster);
+      }
+    }
+
     const msg = slot.room.snapshotBase();
     const ev = slot.room.drainEvents();
     if (ev.length) msg.ev = ev;
@@ -175,6 +198,11 @@ export function createHost({ nowNs, ranks = NO_RANKS, log = () => {} }) {
     for (const [id, client] of slot.clients) {
       if (!client.isOpen()) continue;
       const p = slot.room.players.get(id);
+      // The transport's measurement, onto the body, for the NEXT snapshot rather than this
+      // one — `snapshotBase` above has already been built. That one-snapshot lag is 50ms on
+      // a number that moves over seconds, and the alternative is walking every client twice
+      // per broadcast to collect pings before building the base that everyone shares.
+      if (p) p.ping = client.rtt?.() ?? 0;
 
       // Two per-recipient fields:
       //   ack  — newest input consumed from them; they replay everything after it.
@@ -239,6 +267,24 @@ export function createHost({ nowNs, ranks = NO_RANKS, log = () => {} }) {
             // Omitted entirely while empty, so a brand-new player's snapshot is byte-identical
             // to what it was before this field existed.
             ...(Object.keys(p.badges).length ? { bd: p.badges } : {}),
+            // The scope, and how long it has been open. Simulation state exactly like `jh`
+            // and the stamina trio above, and it has to come back for the same reason:
+            // `reconcile` replays every unacked input, and `stepPlayer` ADDS to `scopeMs`
+            // rather than deriving it, so a replay that started from the client's own
+            // running total would count those inputs twice and age the scope about three
+            // times too fast. The settle window is what decides whether a quick-scope
+            // lands, so a client whose crosshair thought it was settled while the host
+            // knew it was not is exactly the desync that makes a weapon feel broken.
+            //
+            // `sm` is ROUNDED, unlike the stamina, and the difference is what reads it: no
+            // position depends on this number, only a cone width and the ring that draws
+            // it, so a third of a millisecond of disagreement inside a 120ms window is
+            // invisible. The host's own unrounded copy is what resolves the shot.
+            //
+            // Both omitted while zero, which is every player not currently scoped —
+            // eleven weapons out of twelve and most of the twelfth's airtime — so an
+            // ordinary snapshot is byte-identical to what it was before the scope existed.
+            ...(p.scope ? { sc: p.scope, sm: Math.round(p.scopeMs) } : {}),
           }
         : null;
 
@@ -250,8 +296,21 @@ export function createHost({ nowNs, ranks = NO_RANKS, log = () => {} }) {
    * Seat a transport's socket.
    *
    * `client` is the whole of what a transport has to provide: `send(payload)` and
-   * `isOpen()`. Returns the two things the transport drives back — a message sink, and
-   * the teardown to run on close or error, which is idempotent so both can call it.
+   * `isOpen()`, plus an OPTIONAL `rtt()` in whole milliseconds. Returns the two things the
+   * transport drives back — a message sink, and the teardown to run on close or error,
+   * which is idempotent so both can call it.
+   *
+   * `rtt` is optional and not required because measuring one is a transport's business and
+   * only one transport can: `serve.js` has `ws.ping()` and a `pong` frame answered by the
+   * browser's own socket stack, so the number is measured rather than claimed. The in-page
+   * host in localserver.js has no wire at all and returns nothing, which reads as zero and
+   * shows a scoreboard with no ping column entry for the one player in it — correct, since
+   * the round trip really is zero. A transport that omits it entirely still works.
+   *
+   * IT IS MEASURED SERVER-SIDE ON PURPOSE, and the alternative is worth naming: the client
+   * already computes this number for its own HUD (see `rtt` in client/src/net.js) and could
+   * simply report it. Then the scoreboard would be showing twelve players' self-reported
+   * latency, which is a thing a client can lie about downward for free.
    */
   function connect(client) {
     let id = null;

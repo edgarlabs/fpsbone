@@ -217,17 +217,70 @@ const server = createServer((req, res) => {
 // requests carrying the upgrade header and leaves the rest to the handler above.
 const wss = new WebSocketServer({ server });
 
+/**
+ * How often a socket is pinged for the scoreboard's ping column, in ms.
+ *
+ * A second, which is slower than the column changes and far slower than it needs to be
+ * read. A ping frame is two bytes each way and the number it measures moves over seconds,
+ * so measuring it at snapshot rate would be twenty round trips a second per player to
+ * watch the same figure breathe.
+ *
+ * It doubles as a liveness probe at no extra cost: a socket whose peer has vanished without
+ * a close frame — a laptop lid, a dropped mobile connection — stops answering, and the
+ * `pong` that never arrives leaves its last measurement standing rather than growing without
+ * bound, which is why the reading below is a stored sample and not `now - sentAt`.
+ */
+const PING_MS = 1000;
+
 wss.on('connection', (ws) => {
-  // The two calls the host needs from a transport. `readyState` is compared against the
+  // ROUND TRIP, MEASURED HERE, because this is the only layer that can measure it: a
+  // WebSocket ping is answered by the peer's socket stack itself, with no page or script
+  // involved, so the number cannot be shaded by a client that would rather show a 5.
+  //
+  // Smoothed the same way client/src/net.js smooths its own, and with the same coefficient:
+  // one retransmission on a mobile connection should move a scoreboard column by a few
+  // milliseconds rather than spike it to 400 for a second.
+  let rtt = 0;
+  let sentAt = 0;
+  const beat = setInterval(() => {
+    if (ws.readyState !== ws.OPEN) return;
+    // A ping still outstanding means the last one was never answered; do not stack another
+    // on top of it, or a stalled peer accumulates a queue that all resolves at once and
+    // reads as one absurdly good sample.
+    if (sentAt) return;
+    sentAt = Date.now();
+    // `ws.ping` throws on a socket that closed between the check above and here, which is a
+    // race a once-a-second timer will eventually lose.
+    try {
+      ws.ping();
+    } catch {
+      sentAt = 0;
+    }
+  }, PING_MS);
+
+  ws.on('pong', () => {
+    if (!sentAt) return;
+    const sample = Date.now() - sentAt;
+    sentAt = 0;
+    rtt = rtt ? rtt * 0.8 + sample * 0.2 : sample;
+  });
+
+  // The three calls the host needs from a transport. `readyState` is compared against the
   // socket's own OPEN rather than the class constant, which is what ws documents.
   const conn = host.connect({
     send: (payload) => ws.send(payload),
     isOpen: () => ws.readyState === ws.OPEN,
+    rtt: () => rtt,
   });
 
+  const gone = () => {
+    clearInterval(beat);
+    conn.drop();
+  };
+
   ws.on('message', (raw) => conn.message(raw));
-  ws.on('close', conn.drop);
-  ws.on('error', conn.drop);
+  ws.on('close', gone);
+  ws.on('error', gone);
 });
 
 server.listen(PORT, () => {

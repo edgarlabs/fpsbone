@@ -20,3 +20,7 @@ ranks.json.pre-badges
 # deleted inside a single step; none of them is part of the game.
 .cm
 .probe-*.log
+
+# Patch and probe scratch: line-range splicers, mutation helpers, and the throwaway
+# distribution probes written to argue with a flaky assertion. Used and deleted per step.
+.tmp/

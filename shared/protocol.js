@@ -26,6 +26,34 @@ export const MSG = {
    *  so a client that has only just handshaken is never briefly showing every lobby as
    *  empty. Same shape, so one handler reads both. */
   LOBBY: 'lobby',
+  /**
+   * S->C  who is in YOUR room and what they are wearing on their sleeve:
+   * `{ players: [{ i, n, rk, bg }] }`, everyone in the room, bots included.
+   *
+   * A SECOND LIST OF PLAYERS, and the split is by RATE rather than by subject. The
+   * snapshot carries what changes every tick — position, health, score, ping — and is
+   * built and encoded twenty times a second. A name, a rank and a badge shelf change a
+   * handful of times per career, and putting them in the snapshot would mean paying for
+   * twelve badge tiers per player per tick to send the same bytes over and over. So they
+   * ride here, pushed on the edges that can move them: a join, a drop, and a kill that
+   * promotes somebody.
+   *
+   * Rank rides in BOTH, and that is deliberate rather than an oversight — `rk` was in the
+   * snapshot before this message existed, the nameplate over a body reads it there, and
+   * moving it would cost a frame of a blank rank on every join for nothing. This carries
+   * it too so the scoreboard has one row shape to render whether or not a snapshot has
+   * landed yet.
+   *
+   * TIERS, NEVER COUNTS. `bg` is `{ track: tier }` for the tracks a player has actually
+   * earned an emblem on — the same public/private line the snapshot's `rk` draws against
+   * the private `cv` and `bd`. What you have shot over a career is yours; the metal on
+   * your sleeve is what the room can see.
+   *
+   * NO BOT FLAG, for the reason room.js gives at BOT_NAMES: the moment one goes on the
+   * wire, somebody writes a client that outlines the humans. Bots appear here exactly as
+   * people do, prefixed name and all, and they carry a seeded ping in the snapshot for
+   * the same reason — an absent `pg` would have been that flag by omission. */
+  ROSTER: 'roster',
 };
 
 export const EV = {

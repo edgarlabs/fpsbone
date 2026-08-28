@@ -120,8 +120,16 @@
       #scope .h, #scope .v { position: absolute; background: rgba(10, 14, 20, 0.85); }
       #scope .h { left: 0; right: 0; top: 50%; height: 1px; }
       #scope .v { top: 0; bottom: 0; left: 50%; width: 1px; }
+      /* The centre gap is also the SCOPED-INACCURACY RING, CS2's, and the only feedback a
+         scoped player gets about whether the shot has settled: `--ring` is written per
+         frame from the cone the round can actually land in (see hud.scope), so it snaps
+         wide the instant the glass comes up and closes over the next fifth of a second.
+         Without it a quick-scope that missed is indistinguishable from a hitbox that
+         lied. The fallback is the fixed reticle it was before, for the frames before
+         anything has written the property. */
       #scope .gap {
-        position: absolute; left: 50%; top: 50%; width: 34px; height: 34px;
+        position: absolute; left: 50%; top: 50%;
+        width: var(--ring, 3.15vmin); height: var(--ring, 3.15vmin);
         transform: translate(-50%, -50%); border-radius: 50%;
         background: transparent; box-shadow: 0 0 0 2px rgba(10, 14, 20, 0.5);
       }
@@ -276,7 +284,7 @@
       /* ---- scoreboard ---- */
       #board {
         position: absolute; left: 50%; top: 50%; transform: translate(-50%, -50%);
-        min-width: 340px; padding: 18px 22px; display: none;
+        min-width: 470px; padding: 18px 22px; display: none;
         background: var(--panel); border: 1px solid var(--line);
         box-shadow: 0 8px 28px rgba(27, 36, 50, 0.18);
       }
@@ -285,6 +293,10 @@
       #board th { text-align: left; color: var(--dim); font-weight: 500; font-size: 11px; padding-bottom: 8px; }
       #board td { padding: 3px 0; }
       #board th:not(:first-child), #board td:not(:first-child) { text-align: right; width: 48px; }
+      /* The badge column is the one exception to the 48px right-aligned rule above: it holds a
+         word rather than a number. Left-aligned and wide enough for ELIMINATIONS, which is the
+         longest label in the badge table, so the column never reflows as the slot rotates. */
+      #board th.bgc, #board td.bgc { text-align: left; width: 132px; padding-left: 18px; }
       #board tr.me td { color: var(--self); }
       /* Team colour on the name only. Colouring the whole row would fight the
          `me` highlight, which is the more important of the two to find fast. */
@@ -300,6 +312,32 @@
         display: inline-block; min-width: 30px; margin-right: 8px; text-align: right;
         font-size: 10px; font-weight: 700; letter-spacing: 0.4px; color: var(--dim);
       }
+      /* ONE ROTATING BADGE per row. The metal says which tier and the text says which track —
+         the same division the badge card makes, with the same five colours, so a colour means
+         one thing everywhere in the game. See `badgeSlot` in hud.js for why it is one slot and
+         not a shelf, and why the rotation is best-first. */
+      #board td.bgc .bg {
+        font-size: 10px; font-weight: 700; letter-spacing: 0.5px;
+        color: var(--bd-metal, var(--dim));
+      }
+      #board td.bgc .bg i {
+        font-style: normal; font-size: 9px; font-weight: 500; opacity: 0.75;
+        margin-left: 3px; vertical-align: 1px;
+      }
+      /* The same five metals #badge uses, and deliberately the same hex values rather than a
+         shared variable: these are the colours of the emblems themselves, and a badge that
+         changed colour on a scoreboard but not on the card would be worse than either. */
+      #board td.bgc .bg.b1 { --bd-metal: #a9714b; } /* bronze */
+      #board td.bgc .bg.b2 { --bd-metal: #7d8896; } /* steel */
+      #board td.bgc .bg.b3 { --bd-metal: #9fabbb; } /* silver */
+      #board td.bgc .bg.b4 { --bd-metal: #c9a227; } /* gold */
+      /* Distinguished, the fifth and last emblem, is the same gold as Master — so it gets the
+         halo the card gives it, or the two would be indistinguishable in a table. */
+      #board td.bgc .bg.b5 { --bd-metal: #c9a227; text-shadow: 0 0 6px rgba(201, 162, 39, 0.55); }
+      /* PING, measured server-side and graded by `pingGrade`, so the boundaries are the same
+         ones the region cards in the menu use. Tabular figures because this is a column of
+         numbers that changes every second and digits of different widths make it jump. */
+      #board td.pg { font-variant-numeric: tabular-nums; font-size: 11px; }
       #board caption { text-align: left; padding-bottom: 12px; font-size: 11px; letter-spacing: 1.4px; color: var(--dim); }
 
       /* ---- overlays ---- */
@@ -597,11 +635,11 @@
          your screen, by 150 you are leading moving targets, past 250 you are playing a
          different match to everyone else — and the honest way to say that is a colour, not
          three digits the player has to interpret. */
-      .card u.p-good { color: var(--self); }
-      .card u.p-fair { color: #8a6a10; }
-      .card u.p-poor { color: #b8601c; }
-      .card u.p-bad { color: var(--accent); }
-      .card u.p-none { color: var(--dim); }
+      .card u.p-good, #board td.p-good { color: var(--self); }
+      .card u.p-fair, #board td.p-fair { color: #8a6a10; }
+      .card u.p-poor, #board td.p-poor { color: #b8601c; }
+      .card u.p-bad, #board td.p-bad { color: var(--accent); }
+      .card u.p-none, #board td.p-none { color: var(--dim); }
       /* Still measuring, or waking a spun-down instance. Dimmed rather than absent so the card
          does not change height when the number finally lands. */
       .card u.p-wait { color: var(--dim); opacity: 0.6; }
@@ -898,7 +936,7 @@
       <div id="board">
         <table>
           <caption id="board-cap">scores</caption>
-          <thead><tr><th>player</th><th>K</th><th>D</th></tr></thead>
+          <thead><tr><th>player</th><th class="bgc">badge</th><th>K</th><th>D</th><th>ping</th></tr></thead>
           <tbody id="board-rows"></tbody>
         </table>
       </div>

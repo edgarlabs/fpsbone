@@ -101,6 +101,94 @@ const AIR_SPREAD = 8;
  *  not move" rather than "stop to shoot". */
 const CROUCH_TIGHTEN = 0.4;
 
+// -- the scope, and what it costs not to use one
+//
+// "i notice how crazy hard to play with sniper ... i think we should copy how sniper
+// behaves uin cs2". The gun's cone was NOT what made it hard -- 0.0008 rad is a third of a
+// body's width at fifty units and it was that whether the scope was up, half up, or in the
+// player's pocket. Which is the real problem, backwards: a sniper that shoots the same from
+// the hip as it does through the glass is a sniper with no reason to scope, so the whole
+// mechanic the weapon is built around was decoration.
+//
+// CS2's model, and now this one: perfect through the glass once it has settled, a short
+// window after scoping in where it has not, worse on the second zoom, and hopeless from the
+// hip. The three numbers below are that model. Only a weapon with `alt: 'scope'` reads any
+// of them, so nine weapons out of twelve are untouched by this whole block.
+
+/**
+ * How much wider a scoped weapon's cone is when it is fired from the HIP.
+ *
+ * The AWP's no-scope in CS2 is not a hard shot, it is a lottery, and the ratio there is
+ * north of 300x. 40 is deliberately gentler and still says the same thing: 0.0008 rad
+ * becomes 0.032, against the 0.040 a body subtends at ten units. So a no-scope in
+ * somebody's face is about a coin flip, at twenty units it is a quarter of one, and
+ * past that it is not a shot anybody should be taking.
+ *
+ * This is the number that makes the scope worth opening, and it is why the two below can
+ * exist at all: without a hip cone to be better than, "settled" means nothing.
+ */
+const HIP_SPREAD = 40;
+
+/**
+ * How long the glass has to be STILL before the cone is at its tightest, in ms.
+ *
+ * CS2's quick-scope-versus-slow-scope window: whoever holds the angle has already paid it
+ * and whoever swings onto it has not, which is the reason a pre-aimed AWP beats a flick.
+ *
+ * Eased in QUADRATICALLY (see `scopeSpread`) rather than linearly, so most of the DROP
+ * happens in the first half of the window. A linear ramp is the harsher one — it holds
+ * the cone near hip width for far longer — and this weapon needed the forgiving curve.
+ *
+ * 120ms, DOWN FROM 200, and the number came off a measurement rather than a feel. At 200
+ * the freshly-scoped cone is 80cm across at 25m and a player is 80cm wide, so the first
+ * shot of every scope was a coin toss against a standing target; a PISTOL stands at 10cm
+ * at the same range and fires every 110ms against this weapon's 1200ms. That is the whole
+ * of "you get outgunned by a pistol": not the damage, not the cadence, but a scope that
+ * was less accurate than a sidearm for the first eighth of a second it was open, backed by
+ * a 1.2s penalty for the miss it caused. 120ms puts a still shooter inside 2cm and leaves
+ * the flick unrewarded, which is the CS2 trade and the one worth keeping.
+ *
+ * Exported because `scopeStep` in shared/movement.js clamps the timer to it: the settle
+ * now runs DOWN while the player is asking to move, and a decay needs a ceiling to decay
+ * from or standing still for a minute would buy a minute of accurate running.
+ */
+export const SCOPE_SETTLE_MS = 120;
+
+/**
+ * What the SECOND zoom costs on top of the first.
+ *
+ * CS2 does this too -- the scoped inaccuracy indicator visibly widens on a double scope --
+ * and it is most of why professional play barely uses one: the extra magnification buys
+ * you a bigger picture of a target you are now slightly less likely to hit. Modest on
+ * purpose. It should be a reason to prefer the first zoom, not a reason to never use the
+ * second.
+ */
+const SCOPE_STEP_SPREAD = 1.35;
+
+/**
+ * The cone multiplier the scope itself contributes: 1 for every weapon without one.
+ *
+ * Takes the weapon id rather than reading it off the player, because the player state
+ * carries an INDEX and a state that has been through a snapshot may not carry the loadout
+ * to resolve it against. `spreadMul`'s callers all know which weapon they are asking
+ * about; none of them should have to know how a scope is spelled.
+ *
+ * `s.scopeMs` is the time this scope has been open, accumulated by `stepPlayer` on both
+ * sides of the wire — so this is part of the shared simulation and the crosshair, the
+ * server's cone and the client's prediction cannot disagree about it. A state with no
+ * such field (an older snapshot, a spectator target that appeared this frame) reads 0,
+ * which is the honest answer for something we have just started watching: unsettled.
+ */
+function scopeSpread(s, wepId) {
+  if (!wepId || !scopes(wepId)) return 1;
+  const step = Math.max(0, Math.min(zoomStepCount(wepId), s.scope ?? 0));
+  if (step <= 0) return HIP_SPREAD;
+  // 1 at the instant the glass comes up, 0 once the window has run.
+  const green = 1 - Math.min(1, (s.scopeMs ?? 0) / SCOPE_SETTLE_MS);
+  const zoom = step > 1 ? SCOPE_STEP_SPREAD : 1;
+  return (1 + (HIP_SPREAD - 1) * green * green) * zoom;
+}
+
 /**
  * How much wider this shooter's cone is right now than the weapon's own `spread`.
  *
@@ -109,11 +197,19 @@ const CROUCH_TIGHTEN = 0.4;
  * `!s.grounded`: a partial state — a spectator target that appeared this frame, an older
  * snapshot — is missing the field rather than airborne, and the forgiving direction for
  * a missing field is the ground.
+ *
+ * `wepId` is OPTIONAL, and what it buys is the scope: pass it and a scoped weapon's cone
+ * also reflects whether the glass is up and how long it has been (see `scopeSpread`),
+ * leave it out and only the body terms apply. Optional rather than required because the
+ * body terms are the whole answer for nine of the twelve weapons and every caller that
+ * predates the scope model was asking about one of them — a required argument would have
+ * turned "the sniper now punishes a no-scope" into a change to every crosshair in the game.
  */
-export function spreadMul(s) {
+export function spreadMul(s, wepId = null) {
   const v = Math.hypot(s.vx ?? 0, s.vz ?? 0) / C.MOVE_SPEED;
   const air = s.grounded === false ? AIR_SPREAD : 0;
-  return (1 + MOVE_SPREAD * v * v + air) * (1 - CROUCH_TIGHTEN * (s.crouch ?? 0));
+  const body = (1 + MOVE_SPREAD * v * v + air) * (1 - CROUCH_TIGHTEN * (s.crouch ?? 0));
+  return body * scopeSpread(s, wepId);
 }
 
 /** `mag: null` means the weapon has no magazine at all, which is distinct from a
@@ -323,6 +419,11 @@ export const WEAPONS = {
     dmg: 100,
     intervalMs: 1200,
     range: 250,
+    // The cone THROUGH SETTLED GLASS, which is what this number always was and never
+    // said: `spreadMul` now multiplies it by 40 from the hip and eases that down over
+    // the 200ms after the scope opens (see HIP_SPREAD). So the pinpoint is still here,
+    // it just has to be earned by scoping and then waiting a fifth of a second — the
+    // CS2 bargain, and the reason the weapon has a scope at all.
     spread: 0.0008,
     mag: 5,
     reloadMs: 2600,
@@ -352,6 +453,20 @@ export const WEAPONS = {
     // The lowest in the table. A stoppage on a bolt gun that already fires once a
     // second costs more than on anything else, so it is once in forty magazines.
     jam: 0.005,
+    // How far a BOT holds off while carrying this, overriding ai.js's global band.
+    //
+    // "i notice how crazy hard to play with sniper". This line is most of the answer.
+    // The global band is 6 to 14 units, which is knife range, and it is where a bot's
+    // settled aim error of 0.012 rad sits well inside the 0.040 a body subtends — so
+    // nine bots each holding a one-shot rifle walked into your face and could not miss,
+    // while the scope you had just opened was showing you a wall. It was not a sniper
+    // duel, it was a knife fight where you were the only one without a knife.
+    //
+    // 18 to 40 is the range this weapon is FOR: 0.012 rad is 0.22u of error at 18 and
+    // 0.48u at 40, against a 0.4u half-width — so a bot still threatens at the near
+    // edge and genuinely has to aim at the far one, and both ends are far enough away
+    // that opening the glass is the right move rather than a death sentence.
+    hold: [18, 40],
   },
 
   // ── the rest of the arsenal
@@ -604,6 +719,24 @@ export const jamChanceOf = (id) => WEAPONS[id]?.jam ?? 0;
  */
 export const cycleMsOf = (id) => WEAPONS[id]?.cycleMs ?? 0;
 
+/**
+ * The `[near, far]` range a BOT should try to fight at while holding this weapon, or null
+ * for one with no opinion — which is every weapon but the sniper.
+ *
+ * Lives in the weapon table and not in ai.js on the same argument the rest of this file
+ * makes: how far away a gun wants to be used is a fact about the gun. ai.js had one
+ * global band for the whole arsenal, which is right for eleven weapons and catastrophic
+ * for the twelfth (see the sniper's `hold`). Returning null rather than the global band
+ * keeps that default in ai.js where its own reasoning is written down.
+ *
+ * Sanity-checked at import like `cycleMs`, because a band whose near edge is past its far
+ * one makes a bot oscillate instead of hold, and nothing about watching it would say why.
+ */
+export const holdBandOf = (id) => {
+  const b = WEAPONS[id]?.hold;
+  return Array.isArray(b) && b.length === 2 && b[0] > 0 && b[1] > b[0] ? [b[0], b[1]] : null;
+};
+
 // Checked at import, where the dev server and `npm run verify` both hit it, because the
 // failure is a visual desync that is hard to see and easy to introduce by lowering an
 // interval. A cycle that runs the whole interval also leaves no still frame between
@@ -612,6 +745,17 @@ for (const id of WEAPON_IDS) {
   const cm = cycleMsOf(id);
   if (cm > 0 && cm > WEAPONS[id].intervalMs * 0.8) {
     throw new Error(`${id} cycleMs ${cm} does not fit inside its ${WEAPONS[id].intervalMs}ms interval`);
+  }
+  // A declared band that `holdBandOf` refuses would be silently ignored, and a bot that
+  // quietly falls back to knife range is the exact bug this whole change is undoing.
+  if (WEAPONS[id].hold && !holdBandOf(id)) {
+    throw new Error(`${id} hold ${JSON.stringify(WEAPONS[id].hold)} is not an ascending [near, far]`);
+  }
+  // A weapon that wants to be used past its own reach cannot be, and the bot would hold
+  // an angle it can never shoot from.
+  const band = holdBandOf(id);
+  if (band && band[1] > WEAPONS[id].range) {
+    throw new Error(`${id} hold far edge ${band[1]} is outside its ${WEAPONS[id].range}u range`);
   }
 }
 
