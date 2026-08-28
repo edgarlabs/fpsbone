@@ -1,0 +1,16 @@
+# Keep the build context to what the image actually needs. Without this, node_modules and the
+# ~18MB snapshot zips in this directory are uploaded to the builder and then thrown away.
+node_modules/
+dist/
+*.zip
+*.log
+.probe/
+.env.local
+# Careers belong to whatever machine is hosting, not to the image — see the note in Dockerfile.
+ranks.json
+ranks.json.pre-badges
+# The test suite runs from a checkout, not from a deploy.
+verify.mjs
+fuzz.mjs
+ids.mjs
+probe-local.mjs

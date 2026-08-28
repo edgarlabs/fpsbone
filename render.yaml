@@ -1,0 +1,38 @@
+# Render blueprint: the whole deploy, so there is nothing to fill in on a dashboard.
+#
+# Render reads this on "New → Blueprint" and provisions what it describes. The service is a
+# plain Node web service rather than a Docker one — Render builds Node natively, which is
+# faster and skips needing Docker installed anywhere. The Dockerfile beside this file is for
+# the hosts that want one (Fly, Railway, Koyeb, a VPS); the two describe the same process.
+#
+# `build:server`, not `build`. That is the line that decides whether players can meet: it
+# bakes VITE_SERVER=origin into the bundle so the client opens a WebSocket back to whatever
+# host served the page. A plain `build` would come up here looking identical and quietly put
+# every player in a private room against bots — see client/src/localserver.js.
+#
+# WHAT THE FREE PLAN COSTS YOU, stated plainly: Render spins a free service down after about
+# fifteen minutes with no traffic, and the next request wakes it, which takes roughly a minute.
+# So the first person to open the link after a quiet spell waits, and the rooms they wake are
+# empty ones — scores and careers do not survive the sleep, because ranks.json lives in the
+# container's own filesystem. Everything after that is a normal server: WebSockets stay up as
+# long as somebody is connected, and a connected player is traffic, so a match in progress is
+# never spun down underneath it.
+#
+# Careers: point FPSBONE_RANKS at a mounted disk to keep them across restarts. A disk is a
+# paid feature, so the free deploy deliberately does not ask for one.
+
+services:
+  - type: web
+    name: fpsbone
+    runtime: node
+    plan: free
+    # Vite is a devDependency and the build needs it, so this is a full install.
+    buildCommand: npm ci && npm run build:server
+    # Not `npm start` — that would rebuild the client every time the service wakes.
+    startCommand: node server/serve.js
+    # Cheap, and answers before the filesystem is touched — see serveStatic in server/serve.js.
+    healthCheckPath: /healthz
+    envVars:
+      # PORT is injected by Render and read in server/serve.js; nothing to set here.
+      - key: NODE_VERSION
+        value: "22"

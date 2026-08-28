@@ -1,0 +1,12 @@
+# Keep the upload to the things the build actually reads. Without this, the six ~18MB
+# snapshot archives in this directory go up too — over a hundred megabytes of payload
+# that Vercel would unpack and then ignore.
+*.zip
+*.log
+node_modules/
+dist/
+.probe/
+ranks.json
+ranks.json.pre-badges
+verify.mjs
+fuzz.mjs

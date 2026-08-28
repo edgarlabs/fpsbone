@@ -1,0 +1,1179 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>fpsbone</title>
+    <style>
+      /* Kept in step with PALETTE in shared/constants.js by hand — the HUD is DOM,
+         so it cannot import it. Change one, change the other. */
+      :root {
+        --bg: #c3d0e2;
+        --accent: #c93a24;
+        --self: #0f7f68;
+        --ink: #1b2432;
+        --dim: #5d6a7d;
+        --panel: rgba(247, 250, 253, 0.94);
+        --line: rgba(27, 36, 50, 0.16);
+        --teamA: #2f6fb5;
+        --teamB: #d07a1e;
+        /* Spawn-protection cyan. Deliberately outside the team/accent set so it never
+           reads as "a player of some colour" — it is a state, not a side. Mirrored in
+           PALETTE.shield (shared/constants.js) for the avatar marker. */
+        --sp-col: #3cc8e6;
+        /* Headshot. Deliberately not `--accent` (that red is "you are being hurt") and
+           not `--self` (that green is "this is yours"): a headshot needs to be its own
+           unmistakable colour, because it is the one hit whose reading changes what you
+           do next. */
+        --head-col: #e0a21c;
+
+        /* Crosshair geometry. These are the DEFAULTS in client/src/settings.js
+           rendered as CSS, so the reticle is correct on the first frame — before the
+           HUD has read storage and written the player's own values over them. */
+        --ch-len: 9px;
+        --ch-gap: 4px;
+        --ch-thick: 2px;
+        --ch-col: #3cff8a;
+        --ch-out: 1px;
+        --ch-arm-out: 1px;
+        --ch-dot: none;
+        /* How far recoil has pushed the arms apart. Written on #cross itself from the
+           frame loop, never here — the default only exists so the settings panel's
+           preview, which shares the geometry rule below, has a value to read. */
+        --ch-bloom: 0px;
+      }
+      * { margin: 0; padding: 0; box-sizing: border-box; }
+      html, body { height: 100%; overflow: hidden; background: var(--bg); }
+      body {
+        font: 500 13px/1.4 ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+        color: var(--ink);
+        -webkit-font-smoothing: antialiased;
+      }
+      #game { display: block; width: 100vw; height: 100vh; cursor: none; }
+
+      #hud { position: fixed; inset: 0; pointer-events: none; user-select: none;
+             /* Dark ink reads on the pale walls, but not on the stair blocks or the
+                viewmodel — and #wep sits directly over the gun. A light shadow is
+                cheaper than positioning around the problem. */
+             text-shadow: 0 1px 2px rgba(255, 255, 255, 0.55); }
+
+      /* ---- crosshair ----
+         Coloured arms with a dark halo. The halo is not decoration: a bare crosshair
+         of any single colour vanishes against something — this level has both sunlit
+         pale walls and near-black cover, and the outline is what survives both.
+
+         Every dimension is a custom property so the settings panel can drive it, and
+         the geometry rule is shared with the panel's preview (`.xhair`) so what you
+         adjust is drawn by the same code as what you aim with. The container is a
+         zero-size box pinned at the exact centre; each arm is placed by translating
+         out from that point, which is why nothing here needs to know the total size. */
+      .xhair { position: absolute; left: 50%; top: 50%; width: 0; height: 0; }
+      .xhair i {
+        position: absolute; left: 0; top: 0; display: block;
+        background: var(--ch-col);
+      }
+      .xhair i:nth-child(-n + 4) { box-shadow: 0 0 0 var(--ch-arm-out) rgba(8, 12, 18, 0.8); }
+      /* The gap the arms are actually drawn at: the player's setting, opened up by
+         however far recoil has kicked the aim. One value, used by all four arms, so
+         they can never open unevenly. */
+      .xhair { --ch-open: calc(var(--ch-gap) + var(--ch-bloom)); }
+      /* up, down: thickness wide, length tall */
+      .xhair i:nth-child(1),
+      .xhair i:nth-child(2) { width: var(--ch-thick); height: var(--ch-len); }
+      .xhair i:nth-child(1) { transform: translate(-50%, calc(-1 * (var(--ch-open) + var(--ch-len)))); }
+      .xhair i:nth-child(2) { transform: translate(-50%, var(--ch-open)); }
+      /* left, right: length wide, thickness tall */
+      .xhair i:nth-child(3),
+      .xhair i:nth-child(4) { width: var(--ch-len); height: var(--ch-thick); }
+      .xhair i:nth-child(3) { transform: translate(calc(-1 * (var(--ch-open) + var(--ch-len))), -50%); }
+      .xhair i:nth-child(4) { transform: translate(var(--ch-open), -50%); }
+      /* centre dot, shown only when the setting is on */
+      .xhair i:nth-child(5) {
+        width: var(--ch-thick); height: var(--ch-thick); transform: translate(-50%, -50%);
+        box-shadow: 0 0 0 var(--ch-out) rgba(8, 12, 18, 0.8);
+        display: var(--ch-dot);
+      }
+      /* Every weapon that aims gets the full crosshair. The knife and the throwables
+         used to be dimmed to a quarter opacity to say "this does not shoot where the
+         dot is" — which read as the crosshair being missing, and cost the throwables
+         the one reference point a player has for aiming an arc. The sniper is the only
+         weapon that hides it, and only while scoped: the scope draws its own reticle
+         (see #cross in hud.scope). */
+
+      /* ---- sniper scope ----
+         The viewmodel is hidden while scoped (narrowing the FOV magnifies it until
+         the receiver covers the middle of the screen), so the scope has to supply the
+         whole aiming picture. Built from a ring with a huge spread shadow rather than
+         an image: the shadow blacks out everything outside the lens at any aspect
+         ratio, and vmin keeps the lens circular on ultrawide displays. */
+      #scope {
+        position: absolute; inset: 0; opacity: 0; pointer-events: none;
+        transition: none; /* driven per-frame from the aim blend, not by CSS */
+      }
+      #scope .lens {
+        position: absolute; left: 50%; top: 50%; width: 62vmin; height: 62vmin;
+        transform: translate(-50%, -50%); border-radius: 50%;
+        box-shadow: 0 0 0 100vmax rgba(8, 11, 16, 0.97), inset 0 0 3vmin 1vmin rgba(8, 11, 16, 0.55);
+      }
+      /* Reticle: full-width hairlines plus a centre gap, the readable part of a real
+         scope. Drawn over the lens so the crosshair itself can stay hidden. */
+      #scope .h, #scope .v { position: absolute; background: rgba(10, 14, 20, 0.85); }
+      #scope .h { left: 0; right: 0; top: 50%; height: 1px; }
+      #scope .v { top: 0; bottom: 0; left: 50%; width: 1px; }
+      #scope .gap {
+        position: absolute; left: 50%; top: 50%; width: 34px; height: 34px;
+        transform: translate(-50%, -50%); border-radius: 50%;
+        background: transparent; box-shadow: 0 0 0 2px rgba(10, 14, 20, 0.5);
+      }
+
+      /* ---- hitmarker ---- */
+      #hitmark {
+        position: absolute; left: 50%; top: 50%; width: 26px; height: 26px;
+        transform: translate(-50%, -50%) rotate(45deg); opacity: 0;
+        transition: opacity 90ms linear;
+      }
+      #hitmark i { position: absolute; background: var(--accent); box-shadow: 0 0 0 1px rgba(255, 255, 255, 0.7); }
+      #hitmark i:nth-child(1) { left: 12px; top: 0; width: 2px; height: 9px; }
+      #hitmark i:nth-child(2) { left: 12px; bottom: 0; width: 2px; height: 9px; }
+      #hitmark i:nth-child(3) { top: 12px; left: 0; height: 2px; width: 9px; }
+      #hitmark i:nth-child(4) { top: 12px; right: 0; height: 2px; width: 9px; }
+      /* Which zone it landed on. Body has no class and is untouched — it is most hits,
+         and the marker that has always meant "hit" must keep meaning exactly that.
+         `transform` is respecified in full because it replaces the base rule rather than
+         adding to it, and neither variant is transitioned: see hud.hitmarker. */
+      #hitmark.head { transform: translate(-50%, -50%) rotate(45deg) scale(1.4); }
+      #hitmark.head i { background: var(--head-col); height: 11px; }
+      #hitmark.head i:nth-child(3), #hitmark.head i:nth-child(4) { height: 2px; width: 11px; }
+      #hitmark.legs { transform: translate(-50%, -50%) rotate(45deg) scale(0.78); }
+      #hitmark.legs i { opacity: 0.6; }
+
+      /* ---- bottom-left vitals ---- */
+      #vitals { position: absolute; left: 24px; bottom: 22px; }
+      #hp-num { font-size: 34px; font-weight: 700; letter-spacing: -1px; line-height: 1; }
+      #hp-bar { margin-top: 6px; width: 168px; height: 4px; background: rgba(27, 36, 50, 0.18); }
+      #hp-fill { height: 100%; width: 100%; background: var(--self); transition: width 120ms linear; }
+      #vitals.hurt #hp-fill { background: var(--accent); }
+
+      /* Spawn-protection readout. Hidden until the server sends `sp`, then it holds
+         above the health bar and empties over the two seconds — the countdown answers
+         "how long am I safe", the bar makes it glanceable without reading the number.
+         `--sp-col` is the same cyan the protected avatars carry, so the shield you
+         wear and the shield you see on a teammate are one colour. */
+      #shield { display: none; margin-top: 8px; }
+      #shield.on { display: block; }
+      #sp-text { font-size: 12px; letter-spacing: 0.6px; color: var(--sp-col); }
+      #sp-text b { font-size: 14px; }
+      #sp-bar { margin-top: 3px; width: 168px; height: 3px; background: rgba(27, 36, 50, 0.18); }
+      /* No transition, unlike #hp-fill: this one is written every frame, and a 120ms
+         ease on a value that moves every frame only ever renders 120ms stale. */
+      #sp-fill { height: 100%; width: 100%; background: var(--sp-col); }
+
+      /* Sprint stamina, under the shield in the same column and following #sp-bar's rules
+         rather than #hp-bar's — written every frame, so no transition, for the reason
+         above. No new palette entry: the bar is `--self` because it is your own bar and
+         nobody else's, and it turns `--accent` when the server is refusing to honour the
+         sprint latch, which is the same red the health bar uses for "something is wrong
+         with you". That refusal ends on its own when stamina climbs back past
+         SPRINT_MIN_START, with no keypress to hang an explanation off, so the colour and
+         the one-word label ARE the explanation. Hidden while the bar is full and nothing
+         is armed — a permanently full bar is chrome, and chrome stops being read. */
+      #stamina { display: none; margin-top: 8px; }
+      #stamina.on { display: block; }
+      /* Only ever non-empty while blocked, so it is coloured for that case outright. The
+         min-height reserves the line so the bar underneath does not hop when it fills. */
+      #st-text { font-size: 12px; letter-spacing: 0.6px; color: var(--accent); min-height: 15px; }
+      #st-bar { margin-top: 3px; width: 168px; height: 3px; background: rgba(27, 36, 50, 0.18); }
+      #st-fill { height: 100%; width: 100%; background: var(--self); }
+      #stamina.blocked #st-fill { background: var(--accent); }
+
+      /* Career rank. Deliberately the quietest thing in this corner: it is the only readout
+         here that does not move during a fight, so it takes the small type and leaves the eye
+         to #hp-num. `visibility` rather than `display` so the health number does not jump down
+         the screen when the first snapshot carrying a rank arrives a frame or two in. */
+      #rank { font-size: 12px; letter-spacing: 0.6px; margin-bottom: 5px; visibility: hidden; }
+      #rank.on { visibility: visible; }
+      #rk-name { font-size: 13px; font-weight: 700; }
+      #rk-next { color: var(--dim); margin-left: 7px; }
+
+      /* ---- bottom-right weapon + ammo ---- */
+      #wep { position: absolute; right: 24px; bottom: 22px; text-align: right; color: var(--dim); }
+      #w-name { display: block; color: var(--ink); font-size: 20px; letter-spacing: 1px; font-weight: 700; }
+      #w-ammo { font-size: 15px; color: var(--ink); min-height: 21px; }
+      #w-ammo b { font-size: 21px; font-weight: 700; }
+      #w-ammo.empty b, #w-ammo.empty { color: var(--accent); }
+      /* JAMMED pulses, unlike RELOADING, which sits there. A reload is something you
+         started and are waiting out; a jam is something that happened to you and needs
+         to catch the eye of somebody who is looking at the middle of the screen. The
+         animation runs for slightly longer than JAM_CLEAR_MS so it never stops for a
+         frame and restart — it is removed with the class, not by finishing. */
+      #w-ammo.jam { color: var(--accent); animation: jam-flash 0.34s steps(1, end) infinite; }
+      @keyframes jam-flash { 0%, 60% { opacity: 1; } 61%, 100% { opacity: 0.35; } }
+      /* The slot strip is the answer to "which guns do I have" — it is always on
+         screen rather than hidden behind a menu you have to leave the match to see. */
+      #w-slots { margin-top: 7px; display: flex; gap: 5px; justify-content: flex-end; }
+      #w-slots span {
+        padding: 2px 6px; font-size: 10px; letter-spacing: 0.6px;
+        border: 1px solid var(--line); color: var(--dim);
+      }
+      #w-slots span.on { background: var(--ink); border-color: var(--ink); color: #f7fafd; text-shadow: none; }
+
+      /* ---- top-centre match state ---- */
+      #mode-bar {
+        position: absolute; left: 50%; top: 16px; transform: translateX(-50%);
+        text-align: center; color: var(--dim); font-size: 11px; letter-spacing: 1.4px;
+      }
+      #m-time { display: block; color: var(--ink); font-size: 24px; font-weight: 700; letter-spacing: 0; }
+      #mode-bar.over #m-time { color: var(--accent); }
+      /* Team scores, above the clock: ALPHA on the left, BRAVO on the right, in the same
+         two colours the scoreboard and the player avatars already use for the sides.
+         Hidden in a mode without teams — see `hud.mode`. */
+      #m-teams { display: block; font-size: 15px; font-weight: 700; letter-spacing: 1px; }
+      #m-teams s { text-decoration: none; color: var(--teamA); }
+      #m-teams u { text-decoration: none; color: var(--teamB); }
+      #m-teams em { font-style: normal; color: var(--dim); font-weight: 400; margin: 0 7px; }
+
+      /* ---- killfeed ---- */
+      #feed { position: absolute; right: 24px; top: 20px; text-align: right; }
+      #feed div { margin-bottom: 4px; opacity: 0.95; animation: slide 160ms ease-out; }
+      #feed b { color: var(--self); }
+      #feed s { color: var(--accent); text-decoration: none; }
+      #feed em { color: var(--dim); font-style: normal; font-size: 11px; }
+      /* Headshot, in the headshot gold. The killfeed is where a kill becomes public, so
+         it is also where the 4x multiplier stops being visible only to the shooter. */
+      #feed i { color: var(--head-col); font-style: normal; font-size: 11px; font-weight: 700; }
+      @keyframes slide { from { opacity: 0; transform: translateX(12px); } }
+
+      /* ---- damage vignette ---- */
+      #vignette {
+        position: absolute; inset: 0; opacity: 0;
+        background: radial-gradient(ellipse at center, transparent 42%, rgba(201, 58, 36, 0.6) 100%);
+        transition: opacity 260ms ease-out;
+      }
+
+      /* ---- full-screen wash ----
+         One element for two events that look the same on screen: dying, and being
+         flashbanged. Two elements would mean two things that can be at full opacity
+         at once, and a red flash under a white one is neither.
+
+         It has no transition of its own — the timings are far too different (a death
+         flash is gone in under a second, a flashbang can hold for three) so hud.js
+         drives it with a Web Animations keyframe instead.
+
+         Paint order is load-bearing and is the DOM order in #hud, so it is worth stating
+         what sits either side. ABOVE the vignette and the scope: the scope's surround is
+         a near-opaque ring over everything but the lens circle, and with the flash under
+         it a sniper caught by a bang saw white in a circle and black around it instead of
+         white. BELOW the crosshair and every text overlay: being blinded must not hide
+         the respawn counter, and CS2 leaves the crosshair up through a flash too. */
+      #flash {
+        position: absolute; inset: 0; opacity: 0; background: #fff;
+      }
+
+      /* ---- net stats ---- */
+      #net { position: absolute; left: 24px; top: 20px; color: var(--dim); font-size: 11px; line-height: 1.7; }
+      #net span { color: var(--ink); }
+
+      /* ---- scoreboard ---- */
+      #board {
+        position: absolute; left: 50%; top: 50%; transform: translate(-50%, -50%);
+        min-width: 340px; padding: 18px 22px; display: none;
+        background: var(--panel); border: 1px solid var(--line);
+        box-shadow: 0 8px 28px rgba(27, 36, 50, 0.18);
+      }
+      #board.show { display: block; }
+      #board table { width: 100%; border-collapse: collapse; }
+      #board th { text-align: left; color: var(--dim); font-weight: 500; font-size: 11px; padding-bottom: 8px; }
+      #board td { padding: 3px 0; }
+      #board th:not(:first-child), #board td:not(:first-child) { text-align: right; width: 48px; }
+      #board tr.me td { color: var(--self); }
+      /* Team colour on the name only. Colouring the whole row would fight the
+         `me` highlight, which is the more important of the two to find fast. */
+      #board tr.tA td:first-child { color: var(--teamA); }
+      #board tr.tB td:first-child { color: var(--teamB); }
+      /* Rank abbreviation, inside the name cell. Not its own column: every non-first column
+         in this table is right-aligned at a fixed 48px, which is narrower than "Staff
+         Sergeant" and narrower than most of the ladder. Right-aligned in a fixed gutter so
+         the abbreviations stack into a column and the names still start flush.
+         After tr.me and tr.tA/tB deliberately — equal specificity, later in source, so a
+         badge stays quiet instead of picking up the team or self colour the name wants. */
+      #board tr td .rk {
+        display: inline-block; min-width: 30px; margin-right: 8px; text-align: right;
+        font-size: 10px; font-weight: 700; letter-spacing: 0.4px; color: var(--dim);
+      }
+      #board caption { text-align: left; padding-bottom: 12px; font-size: 11px; letter-spacing: 1.4px; color: var(--dim); }
+
+      /* ---- overlays ---- */
+      .overlay {
+        position: absolute; inset: 0; display: grid; place-content: center; text-align: center;
+        background: rgba(211, 222, 236, 0.88); pointer-events: auto;
+      }
+      .overlay.hidden { display: none; }
+      .overlay h1 { font-size: 15px; font-weight: 600; letter-spacing: 3px; text-transform: uppercase; }
+      .overlay p { margin-top: 10px; color: var(--dim); }
+      .overlay kbd {
+        display: inline-block; padding: 1px 5px; margin: 0 1px;
+        border: 1px solid rgba(27, 36, 50, 0.24); border-radius: 3px; color: var(--ink);
+      }
+      /* ---- bind list ----
+         Twelve binds do not read as a sentence. They wrap as whole cells instead,
+         so a line break never splits "ctrl C crouch" down the middle the way a
+         run-on paragraph of <kbd>s does. */
+      #keys {
+        margin-top: 13px; display: flex; flex-wrap: wrap; justify-content: center;
+        gap: 6px 14px; color: var(--dim); font-size: 11px;
+      }
+      #keys span { white-space: nowrap; }
+      #keys em { font-style: normal; opacity: 0.72; }
+
+      /* Unmistakably red. It used to be a 15% tint, which on a pale map was almost
+         nothing — the report was "when i die i dont know, it just stops then spawns me
+         somewhere". A gradient rather than a flat wash so the middle stays readable
+         while the edges leave no doubt about what happened. */
+      #dead { pointer-events: none;
+              background: radial-gradient(ellipse at center,
+                            rgba(150, 22, 10, 0.34) 26%, rgba(126, 14, 6, 0.66) 100%); }
+      #dead h1 { color: var(--accent); }
+      #dead #respawn-in { font-size: 40px; font-weight: 700; margin-top: 4px; }
+      /* Who killed you, and with what. The playtest note asked for exactly this in
+         place of a spectator camera: the fight is over in 5 seconds, so the one
+         thing worth showing is what just happened. */
+      #killed-by { margin-top: 12px; font-size: 15px; color: var(--ink); }
+      #killed-by b { color: var(--accent); font-size: 17px; }
+      #killed-by span { color: var(--dim); }
+
+      /* ---- kill badge ---- */
+
+      /* Below the crosshair, centred, and nothing else lives here — which is why it is here.
+         The hitmarker owns the exact centre and the mode bar owns the top, so the band a
+         fifth of the way down is the one piece of the middle of the screen a card can take
+         without covering something a player is reading mid-fight. It is also where the eye
+         already is at the instant of a kill, which is the whole point: "each kill it shows
+         your badge" is only true if you see it without looking away from the fight.
+
+         pointer-events stays off the whole HUD; this is decoration over a pointer-locked
+         canvas and must never eat a click. */
+      #badge {
+        position: absolute; left: 50%; top: 18%; transform: translateX(-50%);
+        text-align: center; opacity: 0;
+        transition: opacity 130ms linear;
+        /* Every metal part of the emblem reads this one property, so five badges cost five
+           values rather than five copies of the artwork. */
+        --bd-metal: #a9714b;
+      }
+      #badge.on { opacity: 1; }
+
+      /* THE FIVE METALS. Silver and gold are the exact values client/src/render.js paints
+         the rank plates with (its SILVER and GOLD constants) — sharing the hex is the cheap
+         half of making the two ladders read as one career, and costs nothing. */
+      #badge.b1 { --bd-metal: #a9714b; } /* bronze */
+      #badge.b2 { --bd-metal: #7d8896; } /* steel */
+      #badge.b3 { --bd-metal: #9fabbb; } /* silver — render.js SILVER */
+      #badge.b4 { --bd-metal: #c9a227; } /* gold — render.js GOLD */
+      #badge.b5 { --bd-metal: #c9a227; } /* gold, plus the halo below */
+
+      /* THE EMBLEM: one drawing whose parts appear as the badge climbs, not five drawings.
+         Bare target at Marksman, rays at Sharpshooter, wreath at Expert, star at Master,
+         scroll at Distinguished — so the silhouette alone says which badge it is, before
+         any of the words have been read. That is the whole reason "the wreath opens up as
+         you climb" is a handful of CSS rules instead of an art pipeline.
+
+         Deliberately NOT the chevron/bar/oak/eagle vocabulary render.js draws for the plate
+         over a player's head: those are rank, this is qualification, and in real life the
+         two are different families precisely so they cannot be confused. */
+      #bd-emblem { display: block; width: 74px; height: 86px; margin: 0 auto 1px; overflow: visible; }
+      /* THE METAL TRAVELS BY INHERITANCE, not by a descendant selector.
+         Half this drawing arrives through `<use>` — the mirrored laurel, and every weapon
+         glyph out of the sprite at the top of the document — and a `<use>` clones its
+         target into a shadow tree that `#bd-emblem .metal { }` reaches in some browsers and
+         not others. `color` and `fill: currentColor` inherit across that boundary by
+         definition, in every engine. So the shapes carry no fill of their own and the
+         outlined ones say `stroke="currentColor"` as a presentation attribute. */
+      #bd-emblem { color: var(--bd-metal); fill: currentColor; }
+      /* Distinguished gets render.js's HALO around the whole emblem. A drop-shadow rather
+         than a second copy of every path underneath it: same read, one line. */
+      #badge.b5 #bd-emblem {
+        filter: drop-shadow(0 0 1.5px #f4f7fb) drop-shadow(0 0 4px rgba(244, 247, 251, 0.55));
+      }
+      /* Off by default, switched on per badge. `opacity` and not `display`, because
+         `display: none` on an SVG <g> is honoured inconsistently and a badge that renders
+         differently in two browsers is a badge nobody trusts. */
+      #bd-rays, #bd-wreath, #bd-star, #bd-scroll { opacity: 0; }
+      #badge.b2 #bd-rays, #badge.b3 #bd-rays,
+      #badge.b4 #bd-rays, #badge.b5 #bd-rays { opacity: 1; }
+      #badge.b3 #bd-wreath, #badge.b4 #bd-wreath, #badge.b5 #bd-wreath { opacity: 1; }
+      #badge.b4 #bd-star, #badge.b5 #bd-star { opacity: 1; }
+      #badge.b5 #bd-scroll { opacity: 1; }
+
+      /* Which category, in small caps under the emblem. The label is the part a player is
+         actually collecting — HEADSHOT and MACHINE GUN are the nouns the badges are named
+         after — so it comes first even though the tier is the bigger type. */
+      #bd-label { font-size: 10px; letter-spacing: 1.6px; color: var(--dim); }
+      #bd-tier {
+        font-size: 19px; font-weight: 700; letter-spacing: 0.8px; line-height: 1.15;
+        color: var(--ink); text-transform: uppercase;
+      }
+      /* TEN pips, filled to the level, with the number beside them. The same "a count of
+         marks reads as a shape" idea shared/ranks.js argues for the head plate — but ten
+         marks is past the point where a count reads at a glance, so the numeral carries it
+         and the pips carry how nearly full the badge is. Both, because in the third of a
+         second this card has, "nearly promoted" and "level 7" are different questions. */
+      #bd-row {
+        display: flex; align-items: center; justify-content: center;
+        gap: 8px; margin: 4px 0 3px;
+      }
+      #bd-pips { display: flex; gap: 3px; }
+      #bd-pips i {
+        width: 6px; height: 6px; border-radius: 50%;
+        box-shadow: inset 0 0 0 1px var(--ink); opacity: 0.35;
+      }
+      #bd-pips i.f { background: var(--ink); opacity: 1; }
+      #bd-level { font-size: 10px; letter-spacing: 1px; color: var(--dim); }
+      /* The running count, and how far the next level is. Quiet, because it is the part you
+         read when you have time and the badge is the part you read when you do not. */
+      #bd-count { font-size: 11px; color: var(--dim); }
+
+      /* The headshot track takes the headshot colour on its WORDS, and never on the metal.
+         Those are two different axes and collapsing them would lose one: the metal says
+         which of the five badges this is, the gold says which track earned it. Nothing else
+         needs a per-track colour — a weapon badge with a rifle on it has already said
+         which one it is. */
+      #badge.hs #bd-tier, #badge.hs #bd-label { color: var(--head-col); }
+      #badge.hs #bd-pips i { box-shadow: inset 0 0 0 1px var(--head-col); }
+      #badge.hs #bd-pips i.f { background: var(--head-col); }
+
+      /* A LEVEL UP is one of fifty. It gets the pip that just filled, in the accent colour,
+         and nothing else — no pop, no longer hold. Fifty steps only feel like a ladder if
+         each rung is quiet enough that the promotion at the top of it still reads as an
+         event. */
+      #badge.lv #bd-level { color: var(--accent); }
+      #badge.lv #bd-pips i.n { background: var(--accent); box-shadow: inset 0 0 0 1px var(--accent); }
+
+      /* A PROMOTION to the next badge is a different event from a kill and has to look like
+         one: the routine card is a receipt, this is the thing the ladder exists for, and it
+         happens about five times per track in a whole career. It gets the accent colour, a
+         line above the label, and a pop on the way in — and hud.badge holds it a second
+         longer so it is not swept away by the next kill. */
+      #badge.up #bd-tier { color: var(--accent); font-size: 23px; }
+      #badge.up #bd-label::before { content: 'promoted — '; color: var(--accent); }
+      #badge.up.on { animation: badge-pop 300ms cubic-bezier(0.2, 1.5, 0.5, 1); }
+      @keyframes badge-pop {
+        from { transform: translateX(-50%) scale(0.72); }
+        60%  { transform: translateX(-50%) scale(1.06); }
+        to   { transform: translateX(-50%) scale(1); }
+      }
+
+      /* ---- the killmark: bottom-centre, a star that grows a leg per chained kill ----
+
+         BOTTOM CENTRE because that is where CrossFire puts it, and the reason it works
+         there is worth stating: the badge card at 18% and the killmark at the bottom are
+         answering two different questions at the same instant, and a player has to be able
+         to take one without losing the other. Stacked in the same band they would compete;
+         at opposite ends of the centre line, the eye picks up the star peripherally — it is
+         a SHAPE, filling clockwise, which is exactly the kind of thing peripheral vision is
+         good at — while the card gets the look.
+
+         #vitals owns bottom-left and #wep owns bottom-right. The bottom centre was the last
+         empty piece of the HUD, which is also why the vertical is 13% rather than a pixel
+         offset: it has to stay off the bottom edge on a short window without ever drifting
+         into the crosshair on a tall one. */
+      #killmark {
+        position: absolute; left: 50%; bottom: 13%; transform: translateX(-50%);
+        text-align: center; opacity: 0;
+        transition: opacity 160ms linear;
+        /* The mark carries the accent while a chain is alive, and goes gold on the kill
+           that fills the sixth leg. One property, so the star, the wings, the glyph and the
+           name change together — a mark whose parts recolour in sequence looks broken. */
+        --km-col: var(--accent);
+      }
+      #killmark.on { opacity: 1; }
+      /* THE FULL STAR IS GOLD, and it is the same gold as the headshot marker and the
+         Master badge. Six legs is the top of this ladder the way Distinguished is the top
+         of the other one, and using a third colour for it would say they were unrelated. */
+      #killmark.full { --km-col: var(--head-col); }
+
+      /* Inheritance again, not descendant selectors — the glyph arrives through `<use>`
+         from the sprite at the top of the document and lands in a shadow tree. See the
+         note on #bd-emblem: `color` plus `fill: currentColor` is the one thing that
+         crosses that boundary in every engine. */
+      #km-star {
+        display: block; width: 118px; height: 66px; margin: 0 auto;
+        color: var(--km-col); fill: currentColor;
+      }
+      /* Legs are off until the chain reaches them, and they arrive CLOCKWISE FROM THE TOP —
+         l1 at twelve o'clock, then round. Filling in a fixed order is what lets the star be
+         read as a number without counting: three legs is always the same three legs, so the
+         silhouette itself is the count. Scaled from the centre rather than faded in, so a
+         leg landing mid-fight registers as movement in peripheral vision. */
+      .km-leg { opacity: 0; transform-box: view-box; transform-origin: 100px 46px; }
+      #killmark.k1 .l1, #killmark.k2 .l1, #killmark.k3 .l1,
+      #killmark.k4 .l1, #killmark.k5 .l1, #killmark.k6 .l1,
+      #killmark.k2 .l2, #killmark.k3 .l2, #killmark.k4 .l2,
+      #killmark.k5 .l2, #killmark.k6 .l2,
+      #killmark.k3 .l3, #killmark.k4 .l3, #killmark.k5 .l3, #killmark.k6 .l3,
+      #killmark.k4 .l4, #killmark.k5 .l4, #killmark.k6 .l4,
+      #killmark.k5 .l5, #killmark.k6 .l5,
+      #killmark.k6 .l6 { opacity: 1; }
+      /* The leg this kill just lit gets the pop. Only ever one of them has `.new`, so the
+         animation plays on the newest leg and the ones below it sit still — the difference
+         between "you gained a leg" and "here is a star", which at four seconds apart is the
+         only difference that matters. */
+      #killmark .km-leg.new { animation: km-leg 260ms cubic-bezier(0.2, 1.5, 0.5, 1); }
+      @keyframes km-leg {
+        from { transform: scale(0.3); }
+        60%  { transform: scale(1.15); }
+        to   { transform: scale(1); }
+      }
+
+      /* Wings, from the career badge and never from the chain. In CrossFire finishing a
+         Badge upgrades the killmark by adding wings to both sides of the circle, which is
+         the right direction for the two systems to touch: the badge decorates the mark, the
+         mark can never move the badge. Four feathers is Distinguished; Marksman flies bare,
+         because if everyone has wings then wings say nothing. */
+      #km-wings > g > polygon { opacity: 0; }
+      #killmark.w1 .f1, #killmark.w2 .f1, #killmark.w3 .f1, #killmark.w4 .f1,
+      #killmark.w2 .f2, #killmark.w3 .f2, #killmark.w4 .f2,
+      #killmark.w3 .f3, #killmark.w4 .f3,
+      #killmark.w4 .f4 { opacity: 0.85; }
+
+      /* DOUBLE KILL, and the rest. Empty at one kill — the most common event in the game
+         gets a lit leg and no words, or there is nothing left to escalate to at six. */
+      #km-name {
+        font-size: 13px; font-weight: 700; letter-spacing: 2px;
+        color: var(--km-col); min-height: 16px; margin-top: 1px;
+      }
+      #killmark.full #km-name { font-size: 15px; letter-spacing: 2.6px; }
+
+      /* THE WINDOW, DRAWN. CrossFire's original is an invisible timer and its own modern
+         TDM HUD gave up on that and started showing it, for the reason you would expect:
+         the whole mechanic is "is there time for one more", and a player who cannot see the
+         answer is not playing the mechanic, they are guessing at it. Drains right to left
+         from full — a bar that shrinks toward nothing reads as running out in a way a
+         growing one does not. Width is written every frame by hud.tick, so there is no
+         transition on it: a 120ms ease would lag the number beside it. */
+      #km-bar {
+        width: 96px; height: 3px; margin: 3px auto 0;
+        background: rgba(27, 36, 50, 0.18);
+      }
+      #km-fill { height: 100%; width: 100%; background: var(--km-col); }
+      /* The last second in the accent even on a full gold star: this is the only part of
+         the mark that is about urgency rather than achievement. */
+      #km-bar.low #km-fill { background: var(--accent); }
+      #km-secs { font-size: 10px; letter-spacing: 1px; color: var(--dim); margin-top: 2px; }
+
+      /* ---- start / settings menu ---- */
+      #start { overflow-y: auto; }
+      #menu { width: min(660px, 92vw); text-align: left; }
+      #menu h1 { text-align: center; margin-bottom: 4px; }
+      #menu > p { text-align: center; }
+      .grp { margin-top: 22px; }
+      .grp > label {
+        display: block; font-size: 10px; letter-spacing: 1.6px; text-transform: uppercase;
+        color: var(--dim); margin-bottom: 8px;
+      }
+      .cards { display: grid; grid-template-columns: repeat(auto-fit, minmax(120px, 1fr)); gap: 7px; }
+      .card {
+        padding: 9px 11px; cursor: pointer; background: var(--panel);
+        border: 1px solid var(--line); transition: border-color 110ms, background 110ms;
+      }
+      .card:hover:not(.dis):not(.full) { border-color: var(--ink); }
+      .card.on { border-color: var(--self); background: rgba(15, 127, 104, 0.1); }
+      .card.dis, .card.full { cursor: not-allowed; opacity: 0.42; }
+      /* The one card you cannot leave: your own lobby stays legible at ten of ten,
+         because it is full BECAUSE you are in it. */
+      .card.full.on { opacity: 1; cursor: default; }
+      .card b {
+        display: flex; justify-content: space-between; align-items: baseline; gap: 8px;
+        font-size: 12px; letter-spacing: 1px;
+      }
+      /* Occupancy. `u` for brevity in the template that builds these — nothing here is
+         underlined. */
+      .card u {
+        text-decoration: none; font-size: 10px; letter-spacing: 0.4px; color: var(--dim);
+        font-weight: 400;
+      }
+      .card.full u { color: var(--accent); }
+      .card i { font-style: normal; font-size: 10px; color: var(--dim); }
+      .chips { display: flex; flex-wrap: wrap; gap: 6px; }
+      .chip {
+        padding: 6px 11px; cursor: pointer; background: var(--panel);
+        border: 1px solid var(--line); font-size: 11px; letter-spacing: 0.8px;
+      }
+      .chip:hover { border-color: var(--ink); }
+      .chip.on { border-color: var(--self); background: rgba(15, 127, 104, 0.1); color: var(--self); }
+      .rows { display: grid; gap: 11px; }
+      .row { display: grid; grid-template-columns: 96px 1fr 54px; align-items: center; gap: 12px; }
+      .row > span:first-child { font-size: 11px; color: var(--dim); }
+      .row output { font-size: 11px; text-align: right; color: var(--ink); }
+      .row input[type="range"] { width: 100%; accent-color: var(--self); }
+      /* A row whose control does not apply right now. Dimmed and inert rather than
+         removed: a control that vanishes when you touch a nearby one reads as a bug,
+         and the greyed slider is what tells you the bot count belongs to "vs AI". */
+      .row.off { opacity: 0.38; }
+      .row.off input { pointer-events: none; }
+
+      /* ---- settings tabs ----
+         Four panels rather than one long scroll, the way CS2 splits its options.
+         Only one pane is in the DOM flow at a time, so the panel's height is set by
+         whichever tab you are on instead of by the longest one. */
+      .tabs { display: flex; gap: 2px; margin-top: 18px; border-bottom: 1px solid var(--line); }
+      .tab {
+        padding: 8px 14px; cursor: pointer; font: inherit; font-size: 11px;
+        letter-spacing: 1.4px; text-transform: uppercase;
+        color: var(--dim); background: transparent; border: 0; border-bottom: 2px solid transparent;
+        margin-bottom: -1px;
+      }
+      .tab:hover { color: var(--ink); }
+      .tab.on { color: var(--self); border-bottom-color: var(--self); }
+      .pane { display: none; }
+      .pane.on { display: block; }
+      /* The first group in a pane sits under the tab strip, which already provides
+         the separation the 22px margin was there for. */
+      .pane > .grp:first-child { margin-top: 18px; }
+
+      /* ---- keybind list ----
+         Two columns: eleven actions in one column makes the panel taller than most
+         laptop screens, and the Play button ends up below the fold on the tab a new
+         player is most likely to open. */
+      #binds { display: grid; grid-template-columns: repeat(auto-fit, minmax(210px, 1fr)); gap: 5px 14px; }
+      .bind { display: grid; grid-template-columns: 1fr auto; align-items: center; gap: 10px; }
+      .bind > span { font-size: 11px; color: var(--dim); }
+      .bind button {
+        min-width: 62px; padding: 5px 9px; cursor: pointer; font: inherit; font-size: 11px;
+        color: var(--ink); background: var(--panel); border: 1px solid var(--line);
+      }
+      .bind button:hover { border-color: var(--ink); }
+      /* Listening for a key. Deliberately loud: while this is on screen the next key
+         you press is consumed by the binder, and you need to know that at a glance. */
+      .bind button.arm {
+        border-color: var(--self); color: var(--self); background: rgba(15, 127, 104, 0.12);
+      }
+      .bind button.none { color: var(--accent); }
+
+      /* A line of explanation under a group — why a control is missing, or what the
+         browser will not let us do. Small print, not an error. */
+      .note { font-size: 11px; line-height: 1.5; color: var(--dim); }
+      .note b { color: var(--ink); font-weight: 600; }
+      .note.warn b { color: var(--accent); }
+
+      /* ---- crosshair preview ----
+         The real crosshair is behind an opaque overlay while the menu is open, so the
+         panel draws its own from the same CSS variables. Same rules, same result. */
+      #ch-preview {
+        position: relative; height: 96px; margin-top: 4px;
+        background: linear-gradient(135deg, #e8eef6 0%, #e8eef6 48%, #38404d 48%, #38404d 100%);
+        border: 1px solid var(--line);
+      }
+      /* Half pale, half dark, because a crosshair that reads on one and vanishes on
+         the other is the mistake this preview exists to catch. */
+      .swatches { display: flex; gap: 6px; }
+      .sw {
+        width: 26px; height: 26px; cursor: pointer; border: 1px solid var(--line);
+        box-shadow: inset 0 0 0 3px var(--panel);
+      }
+      .sw:hover { border-color: var(--ink); }
+      .sw.on { border-color: var(--ink); box-shadow: inset 0 0 0 2px var(--panel); }
+
+      .reset {
+        margin-top: 12px; padding: 5px 10px; cursor: pointer; font: inherit; font-size: 10px;
+        letter-spacing: 1.2px; text-transform: uppercase;
+        color: var(--dim); background: transparent; border: 1px solid var(--line);
+      }
+      .reset:hover { color: var(--ink); border-color: var(--ink); }
+
+      #play {
+        margin-top: 24px; width: 100%; padding: 13px; cursor: pointer;
+        font: inherit; font-weight: 700; letter-spacing: 2.4px; text-transform: uppercase;
+        color: #f7fafd; background: var(--self); border: 0;
+      }
+      #play:hover { filter: brightness(1.08); }
+      #start-status { margin-top: 14px; font-size: 11px; }
+    </style>
+  </head>
+  <body>
+    <!-- ════ badge glyph sprite ════
+         One silhouette per badge track, referenced by `<use href="#g-rifle">` from the
+         emblem down in #badge. The ids are the TRACK_KEYS out of shared/badges.js verbatim,
+         so hud.js needs no lookup table: the track key IS the glyph id, and a track that
+         ever loses its glyph is caught by a check in verify.mjs rather than by silently
+         drawing nothing.
+
+         A SNIPER badge has to be a different OBJECT from a KNIFE badge, not the same
+         picture with different words under it — that was the whole complaint the redesign
+         answers. Each glyph is authored around its own origin, spanning roughly ±34 by ±14,
+         and carries its own rotation, so the guns lie at an angle across the target while a
+         grenade and a snowball sit upright.
+
+         Rects and polygons rather than one clever path each: at 74px a silhouette reads by
+         its outline, and blocky shapes are the ones a person can still check by reading the
+         numbers. Kept out of the HUD tree with the standard sprite trick — width 0 and
+         overflow hidden, which `<use>` sees through. -->
+    <svg aria-hidden="true" style="position: absolute; width: 0; height: 0; overflow: hidden">
+      <defs>
+        <!-- ELIMINATIONS: crossed rifles, the generic infantry device. Level, not angled —
+             the X is the shape, and tilting it would just read as one gun. -->
+        <g id="g-kills">
+          <g transform="rotate(22)">
+            <rect x="-28" y="-2" width="58" height="4" />
+            <polygon points="-34,-4.5 -28,-2 -28,2 -34,6.5" />
+            <rect x="-10" y="2" width="6.5" height="8" />
+          </g>
+          <g transform="rotate(-22)">
+            <rect x="-28" y="-2" width="58" height="4" />
+            <polygon points="-34,-4.5 -28,-2 -28,2 -34,6.5" />
+            <rect x="-10" y="2" width="6.5" height="8" />
+          </g>
+        </g>
+        <!-- HEADSHOT: a head in profile with the strike at the temple. The burst reaches
+             past the skull outline on purpose — same fill as the head, so it only reads as
+             a hit if it breaks the silhouette. -->
+        <g id="g-hs">
+          <ellipse cx="-1" cy="-4" rx="11" ry="12" />
+          <rect x="-6" y="5" width="11" height="9" />
+          <g transform="translate(9 -9)">
+            <polygon points="0,-11 2,-3 -2,-3" />
+            <polygon points="0,11 2,3 -2,3" />
+            <polygon points="11,0 3,2 3,-2" />
+            <polygon points="-11,0 -3,2 -3,-2" />
+          </g>
+        </g>
+        <!-- KNIFE: handle, guard, tapered blade. -->
+        <g id="g-knife" transform="rotate(-28)">
+          <rect x="-32" y="-4.5" width="13" height="9" />
+          <rect x="-21" y="-7" width="4" height="14" />
+          <polygon points="-17,-3.5 25,-6 34,0 25,6 -17,3.5" />
+        </g>
+        <!-- PISTOL: short, and the only one with no shoulder stock — which is what makes it
+             read as a pistol at this size. -->
+        <g id="g-pistol" transform="rotate(-20)">
+          <rect x="-13" y="-8" width="27" height="5.5" />
+          <rect x="14" y="-7" width="5" height="3.5" />
+          <rect x="-13" y="-2.5" width="19" height="4.5" />
+          <polygon points="-1,2 8,2 8,5 5,8 1,8 -1,5" />
+          <polygon points="-13,2 -5,2 -9,14 -18,14" />
+        </g>
+        <!-- RIFLE: full stock, magazine, front sight. -->
+        <g id="g-rifle" transform="rotate(-28)">
+          <polygon points="-34,-1 -20,-4 -20,5 -34,6" />
+          <rect x="-20" y="-4" width="24" height="7" />
+          <rect x="4" y="-6" width="27" height="4" />
+          <rect x="24" y="-10" width="3" height="4" />
+          <polygon points="-6,3 3,3 1,13 -8,13" />
+          <polygon points="-18,3 -12,3 -15,12 -20,12" />
+        </g>
+        <!-- SNIPER: the scope is the whole tell. -->
+        <g id="g-sniper" transform="rotate(-28)">
+          <polygon points="-34,-1 -18,-4 -18,5 -34,7" />
+          <rect x="-18" y="-4" width="20" height="7" />
+          <rect x="2" y="-5" width="32" height="3" />
+          <rect x="-11" y="-14" width="23" height="5" />
+          <rect x="-8" y="-9" width="3" height="5" />
+          <rect x="6" y="-9" width="3" height="5" />
+          <rect x="-6" y="3" width="7" height="5" />
+          <polygon points="-16,3 -10,3 -13,11 -18,11" />
+        </g>
+        <!-- SMG: short barrel, folding strut for a stock, and a magazine longer than the
+             gun is — the silhouette everyone recognises. -->
+        <g id="g-smg" transform="rotate(-28)">
+          <rect x="-31" y="-3" width="17" height="3" />
+          <rect x="-14" y="-6" width="23" height="8" />
+          <rect x="9" y="-5" width="17" height="3" />
+          <polygon points="-5,2 4,2 3,14 -6,14" />
+          <polygon points="-13,2 -7,2 -10,11 -15,11" />
+        </g>
+        <!-- MACHINE GUN: box magazine and a bipod. -->
+        <g id="g-lmg" transform="rotate(-28)">
+          <polygon points="-34,0 -19,-4 -19,5 -34,7" />
+          <rect x="-19" y="-5" width="25" height="9" />
+          <rect x="6" y="-5" width="28" height="4" />
+          <rect x="-7" y="4" width="16" height="10" />
+          <polygon points="24,-1 20,13 22.5,13 25.5,3 28.5,13 31,13 27,-1" />
+          <polygon points="-17,4 -12,4 -14,12 -19,12" />
+        </g>
+        <!-- SEMI: a rifle with the furniture stripped back and a stubby magazine. -->
+        <g id="g-semi" transform="rotate(-28)">
+          <polygon points="-34,-2 -19,-4 -19,5 -34,7" />
+          <rect x="-19" y="-4" width="21" height="7" />
+          <rect x="2" y="-5" width="32" height="3" />
+          <rect x="-7" y="3" width="8" height="6" />
+          <polygon points="-17,3 -11,3 -14,11 -19,11" />
+        </g>
+        <!-- SHOTGUN: two tubes and a pump. -->
+        <g id="g-shotgun" transform="rotate(-28)">
+          <polygon points="-34,-3 -19,-6 -19,4 -34,7" />
+          <rect x="-19" y="-6" width="15" height="9" />
+          <rect x="-4" y="-6" width="38" height="3.4" />
+          <rect x="-4" y="-2" width="38" height="3.4" />
+          <rect x="6" y="1.8" width="15" height="4.5" />
+        </g>
+        <!-- GRENADE: upright, because a tilted grenade reads as a falling one. -->
+        <g id="g-grenade">
+          <rect x="-9.5" y="-5" width="19" height="17" rx="8" ry="7" />
+          <rect x="-4" y="-9" width="8" height="4.5" />
+          <rect x="-1" y="-13.5" width="11" height="2.6" />
+          <circle cx="11" cy="-11" r="4.2" fill="none" stroke="currentColor" stroke-width="2.2" />
+        </g>
+        <!-- SNOWBALL: outline plus dimples, so it is a snowball and not a cannonball. -->
+        <g id="g-snowball">
+          <circle cx="0" cy="1" r="12.5" fill="none" stroke="currentColor" stroke-width="2.6" />
+          <g>
+            <circle cx="-4.5" cy="-3" r="2.4" />
+            <circle cx="4" cy="2.5" r="2.8" />
+            <circle cx="-2" cy="7" r="1.9" />
+          </g>
+        </g>
+      </defs>
+    </svg>
+
+    <canvas id="game"></canvas>
+
+    <div id="hud">
+      <div id="vignette"></div>
+      <div id="scope"><div class="lens"></div><div class="h"></div><div class="v"></div><div class="gap"></div></div>
+      <div id="flash"></div>
+      <div id="cross" class="xhair"><i></i><i></i><i></i><i></i><i></i></div>
+      <div id="hitmark"><i></i><i></i><i></i><i></i></div>
+
+      <div id="net">
+        <div>rtt <span id="n-rtt">–</span></div>
+        <div>snap <span id="n-snap">–</span></div>
+        <div>pred <span id="n-pred">–</span></div>
+      </div>
+
+      <div id="mode-bar">
+        <b id="m-teams" hidden></b>
+        <b id="m-time">–</b>
+        <span id="m-label">…</span>
+      </div>
+
+      <div id="feed"></div>
+
+      <div id="vitals">
+        <!-- Career rank, and the distance to the next one. Above the health block rather than
+             under the bars, because a rank captions who you are across every match while the
+             three readouts below it are what is happening to you this second. Yours is in the
+             corner at all because it is the one head you never see; everybody else wears
+             theirs over their own. -->
+        <div id="rank">
+          <b id="rk-name">&ndash;</b><span id="rk-next"></span>
+        </div>
+        <div id="hp-num">100</div>
+        <div id="hp-bar"><div id="hp-fill"></div></div>
+        <div id="shield">
+          <div id="sp-text">safe <b id="sp-secs">2.0</b>s</div>
+          <div id="sp-bar"><div id="sp-fill"></div></div>
+        </div>
+        <div id="stamina">
+          <div id="st-text"></div>
+          <div id="st-bar"><div id="st-fill"></div></div>
+        </div>
+      </div>
+
+      <div id="wep">
+        <b id="w-name">–</b>
+        <div id="w-ammo"></div>
+        <div id="w-slots"></div>
+      </div>
+
+      <div id="board">
+        <table>
+          <caption id="board-cap">scores</caption>
+          <thead><tr><th>player</th><th>K</th><th>D</th></tr></thead>
+          <tbody id="board-rows"></tbody>
+        </table>
+      </div>
+
+      <div id="dead" class="overlay hidden">
+        <h1>eliminated</h1>
+        <div id="respawn-in">5.0</div>
+        <p id="killed-by"></p>
+      </div>
+
+      <!-- Kill badge. AFTER #dead on purpose: a trade — you kill somebody and their
+           teammate kills you in the same tick — must still show the card you earned, and
+           the death overlay is opaque enough to swallow it from underneath. -->
+      <div id="badge">
+        <!-- ONE emblem for all twelve tracks and all five badges. The weapon comes from the
+             <use> below (hud.js repoints its href); the badge comes from the b1..b5 class on
+             #badge, which is what makes each layer appear. Nothing here is ever rebuilt.
+
+             A target with the weapon crossed over it is the real US Army qualification
+             badge, which is exactly what this is a badge for — and is a different family
+             from the rank insignia render.js paints over players' heads, so the two can
+             never be mistaken for each other. -->
+        <svg id="bd-emblem" viewBox="0 0 100 116" aria-hidden="true">
+          <!-- Expert and up: laurel. One half authored, the other mirrored about x=50, so
+               the wreath cannot end up lopsided by a typo in one side's numbers. -->
+          <g id="bd-wreath">
+            <g id="bd-laurel">
+              <path fill="none" stroke="currentColor" stroke-width="3.4"
+                    d="M49 90 C32 89 19 77 19 61 C19 49 24 40 31 34" />
+              <g>
+                <ellipse cx="26" cy="79" rx="5.4" ry="2.7" transform="rotate(-52 26 79)" />
+                <ellipse cx="20" cy="70" rx="5.4" ry="2.7" transform="rotate(-74 20 70)" />
+                <ellipse cx="18" cy="58" rx="5.4" ry="2.7" transform="rotate(82 18 58)" />
+                <ellipse cx="21" cy="47" rx="5.4" ry="2.7" transform="rotate(62 21 47)" />
+                <ellipse cx="27" cy="38" rx="5.4" ry="2.7" transform="rotate(46 27 38)" />
+              </g>
+            </g>
+            <use href="#bd-laurel" transform="translate(100 0) scale(-1 1)" />
+          </g>
+          <!-- Sharpshooter and up: the four spikes that sit behind the target. -->
+          <g id="bd-rays">
+            <polygon points="0,-36 3.6,-13 -3.6,-13" transform="translate(50 60) rotate(45)" />
+            <polygon points="0,-36 3.6,-13 -3.6,-13" transform="translate(50 60) rotate(135)" />
+            <polygon points="0,-36 3.6,-13 -3.6,-13" transform="translate(50 60) rotate(225)" />
+            <polygon points="0,-36 3.6,-13 -3.6,-13" transform="translate(50 60) rotate(315)" />
+          </g>
+          <!-- The target is the constant. It is a MARKSMANSHIP badge; every one of the five
+               has it, and it is what says so at a glance. -->
+          <g id="bd-target">
+            <circle cx="50" cy="60" r="21" fill="none" stroke="currentColor" stroke-width="3.4" />
+            <circle cx="50" cy="60" r="14" fill="none" stroke="currentColor" stroke-width="3.4" />
+            <circle cx="50" cy="60" r="4.5" />
+          </g>
+          <!-- The weapon, crossed over the target. Each glyph carries its own rotation, so
+               a rifle lies at an angle and a grenade sits upright. -->
+          <g transform="translate(50 60)"><use id="bd-glyph" href="#g-rifle" /></g>
+          <!-- Master and up: the same five-pointed star client/src/render.js cuts for the
+               plates, at the same 0.382 inner radius, so the badge star and the general's
+               star are one star. -->
+          <g id="bd-star">
+            <polygon points="50,2 52.47,9.6 60.46,9.6 54,14.3 56.47,21.9 50,17.2 43.53,21.9 46,14.3 39.54,9.6 47.53,9.6" />
+          </g>
+          <!-- Distinguished only: the scroll. -->
+          <g id="bd-scroll">
+            <path d="M18 98 L82 98 L77 104 L82 110 L18 110 L23 104 Z" />
+          </g>
+        </svg>
+        <div id="bd-label"></div>
+        <div id="bd-tier"></div>
+        <div id="bd-row">
+          <div id="bd-pips"><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i></div>
+          <div id="bd-level"></div>
+        </div>
+        <div id="bd-count"></div>
+      </div>
+
+      <!-- THE KILLMARK. Six legs, one per chained kill, filling clockwise from twelve
+           o'clock; the weapon that scored it in the middle; wings from the career badge; and
+           the window drawn underneath as a bar that runs out.
+
+           After #dead for the same reason #badge is: a trade kill — your round lands after
+           theirs — still earned a leg, and the mark has to paint over the death overlay to
+           say so. It is also the last thing the mark ever gets to show, since dying is what
+           ends the chain.
+
+           One drawing, shown and hidden by class, exactly like the badge emblem: six legs
+           times four wing states times twelve glyphs is not a set of pictures anybody wants
+           to maintain, and every part of it is a triangle. -->
+      <div id="killmark">
+        <svg id="km-star" viewBox="0 0 200 112" aria-hidden="true">
+          <!-- Wings first, so the star and the glyph sit on top of them. -->
+          <g id="km-wings">
+            <g>
+              <polygon class="f1" points="120,34 154,31 151,34.4 120,38.6" />
+              <polygon class="f2" points="120,40.2 147.6,42.4 144.6,45.8 120,44.8" />
+              <polygon class="f3" points="120,46.4 141.2,53.8 138.2,57.2 120,51" />
+              <polygon class="f4" points="120,52.6 134.8,65.2 131.8,68.6 120,57.2" />
+            </g>
+            <!-- The left wing is the right one mirrored about the star's centre line, so
+                 there is one set of feather coordinates in this file and not two that can
+                 drift apart by a pixel. -->
+            <g transform="translate(200 0) scale(-1 1)">
+              <polygon class="f1" points="120,34 154,31 151,34.4 120,38.6" />
+              <polygon class="f2" points="120,40.2 147.6,42.4 144.6,45.8 120,44.8" />
+              <polygon class="f3" points="120,46.4 141.2,53.8 138.2,57.2 120,51" />
+              <polygon class="f4" points="120,52.6 134.8,65.2 131.8,68.6 120,57.2" />
+            </g>
+          </g>
+          <!-- The six legs, generated on a circle of radius 41 about (100,46) at 60°
+               intervals starting straight up, each a triangle back to a 16.5 radius. -->
+          <polygon class="km-leg l1" points="100,5 107.49,31.3 92.51,31.3" />
+          <polygon class="km-leg l2" points="135.51,25.5 116.48,45.14 108.99,32.16" />
+          <polygon class="km-leg l3" points="135.51,66.5 108.99,59.84 116.48,46.86" />
+          <polygon class="km-leg l4" points="100,87 92.51,60.7 107.49,60.7" />
+          <polygon class="km-leg l5" points="64.49,66.5 83.52,46.86 91.01,59.84" />
+          <polygon class="km-leg l6" points="64.49,25.5 91.01,32.16 83.52,45.14" />
+          <!-- The hub. Outlined rather than filled so the glyph inside it reads against the
+               game behind, which at the bottom of the screen is usually a floor. -->
+          <circle cx="100" cy="46" r="16.5" fill="none" stroke="currentColor" stroke-width="2.4" />
+          <!-- Which kill it was: the weapon, or the head for a headshot. Same sprite the
+               badge emblem draws from — the glyphs are authored at roughly ±34 about their
+               own origin, so 0.42 puts one inside a 16.5 hub with room to breathe. -->
+          <use id="km-glyph" href="#g-kills" transform="translate(100 46) scale(0.42)" />
+        </svg>
+        <div id="km-name"></div>
+        <div id="km-bar"><div id="km-fill"></div></div>
+        <div id="km-secs"></div>
+      </div>
+    </div>
+
+    <div id="start" class="overlay">
+      <div id="menu">
+        <h1>fpsbone</h1>
+        <!-- Rendered from the live bind map by menu.js rather than written out here.
+             The hand-maintained version drifted the moment binds became editable —
+             and it had already drifted before that, still promising a ctrl crouch that
+             only works under keyboard lock. Mouse buttons and slot keys are not
+             rebindable, so those entries are fixed strings in the renderer. -->
+        <div id="keys"></div>
+
+        <div class="tabs" id="tabs">
+          <button class="tab on" type="button" data-tab="game">game</button>
+          <button class="tab" type="button" data-tab="controls">controls</button>
+          <button class="tab" type="button" data-tab="crosshair">crosshair</button>
+          <button class="tab" type="button" data-tab="audio">audio</button>
+        </div>
+
+        <section class="pane on" data-pane="game">
+          <div class="grp">
+            <label for="modes">game mode</label>
+            <div class="cards" id="modes"></div>
+            <p class="note">
+              Every lobby has ten slots and <b>bots are whatever the players leave
+              empty</b> — one player is nine bots, six players is four, ten players is
+              none at all. There is no VS AI: a filling deathmatch turns into PvP by
+              itself. A <b>full</b> lobby cannot be joined until somebody leaves.
+            </p>
+            <!-- WHICH HOST THIS PAGE IS TALKING TO, and it is only ever filled in for the
+                 one where the answer is surprising. On a static deploy the whole server
+                 runs inside this tab (client/src/localserver.js), so the ten slots are
+                 real but the room is private: two phones on the same URL each get their
+                 own. Saying nothing there was the actual bug — the lobby looks identical
+                 either way, so somebody who joins on a phone and then on a PC has no way
+                 to tell why they cannot find themselves. main.js fills this, because the
+                 choice of host is made there and nowhere else. -->
+            <p class="note warn" id="host-note" hidden></p>
+          </div>
+
+          <div class="grp">
+            <label for="weps">spawn weapon</label>
+            <div class="chips" id="weps"></div>
+          </div>
+
+          <div class="grp">
+            <label>view</label>
+            <div class="rows">
+              <div class="row">
+                <span>gun hand</span>
+                <div class="chips" id="hands">
+                  <div class="chip" data-hand="right">RIGHT</div>
+                  <div class="chip" data-hand="left">LEFT</div>
+                </div>
+                <output></output>
+              </div>
+              <div class="row">
+                <span>field of view</span>
+                <input id="s-fov" type="range" min="70" max="110" step="1" />
+                <output id="o-fov">85</output>
+              </div>
+              <!-- CS2's viewmodel_fov. Worth exposing for the same reason it is there:
+                   how much of the screen the weapon fills is taste, and skins are
+                   coming, so a player who wants to see the whole gun should be able
+                   to pull it back and look at it. -->
+              <div class="row">
+                <span>weapon fov</span>
+                <input id="s-vmfov" type="range" min="40" max="75" step="1" />
+                <output id="o-vmfov">50</output>
+              </div>
+            </div>
+          </div>
+        </section>
+
+        <section class="pane" data-pane="controls">
+          <div class="grp">
+            <label>mouse</label>
+            <div class="rows">
+              <div class="row">
+                <span>sensitivity</span>
+                <input id="s-sens" type="range" min="0.3" max="3" step="0.05" />
+                <output id="o-sens">1.00</output>
+              </div>
+              <!-- CS2's zoom_sensitivity_ratio: how much the scope slows the mouse.
+                   Only scoped weapons are affected — a knife has nothing to aim. -->
+              <div class="row">
+                <span>zoom ratio</span>
+                <input id="s-zoom" type="range" min="0.2" max="1.5" step="0.05" />
+                <output id="o-zoom">0.65</output>
+              </div>
+            </div>
+          </div>
+
+          <div class="grp">
+            <label>keys</label>
+            <div id="binds"></div>
+            <p class="note" id="bind-note"></p>
+            <button class="reset" type="button" id="r-binds">reset keys</button>
+          </div>
+        </section>
+
+        <section class="pane" data-pane="crosshair">
+          <div class="grp">
+            <div id="ch-preview"><div class="xhair"><i></i><i></i><i></i><i></i><i></i></div></div>
+            <div class="rows" style="margin-top: 14px">
+              <div class="row">
+                <span>length</span>
+                <input id="s-chlen" type="range" min="0" max="24" step="1" />
+                <output id="o-chlen">9</output>
+              </div>
+              <div class="row">
+                <span>gap</span>
+                <input id="s-chgap" type="range" min="0" max="16" step="1" />
+                <output id="o-chgap">4</output>
+              </div>
+              <div class="row">
+                <span>thickness</span>
+                <input id="s-chthick" type="range" min="1" max="6" step="1" />
+                <output id="o-chthick">2</output>
+              </div>
+              <div class="row">
+                <span>centre dot</span>
+                <div class="chips" id="ch-dot">
+                  <div class="chip" data-on="0">OFF</div>
+                  <div class="chip" data-on="1">ON</div>
+                </div>
+                <output></output>
+              </div>
+              <div class="row">
+                <span>outline</span>
+                <div class="chips" id="ch-outline">
+                  <div class="chip" data-on="0">OFF</div>
+                  <div class="chip" data-on="1">ON</div>
+                </div>
+                <output></output>
+              </div>
+              <div class="row">
+                <span>colour</span>
+                <div class="swatches" id="ch-col"></div>
+                <output></output>
+              </div>
+            </div>
+            <button class="reset" type="button" id="r-cross">reset crosshair</button>
+          </div>
+        </section>
+
+        <section class="pane" data-pane="audio">
+          <div class="grp">
+            <label>volume</label>
+            <div class="rows">
+              <div class="row">
+                <span>master</span>
+                <input id="s-vol" type="range" min="0" max="1" step="0.01" />
+                <output id="o-vol">45%</output>
+              </div>
+            </div>
+            <p class="note">
+              Every sound is synthesized in the browser — there are no audio files to
+              load, so this is the only volume there is to set.
+            </p>
+          </div>
+        </section>
+
+        <button id="play" type="button">play</button>
+        <p id="start-status">connecting…</p>
+      </div>
+    </div>
+
+    <script type="module" src="/src/main.js"></script>
+  </body>
+</html>

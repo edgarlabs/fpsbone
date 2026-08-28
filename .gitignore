@@ -1,0 +1,17 @@
+node_modules/
+dist/
+Godot_v4.7.1-stable_win64.exe/
+*.log
+ranks.json
+
+# The snapshot archives in this directory are 145MB between them, which is most of what a
+# clone would be paying for and none of what it needs — the build produces dist/ from source.
+*.zip
+
+# Career store and its pre-migration copy. Machine-local state: whoever hosts owns their own,
+# and committing one would hand every clone somebody else's ranks. See server/ranks.js.
+ranks.json.pre-badges
+
+# Vite's local env overrides. .env.selfhost IS committed — it is the build's configuration,
+# not a secret — but anything ending .local is by convention personal.
+*.local
