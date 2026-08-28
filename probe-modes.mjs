@@ -76,6 +76,57 @@ const html = await page.text();
 say(page.ok && html.includes('<canvas'), 'the client is served from the same origin as the game',
     `${page.status}, ${html.length}b — same origin means wss: from an https: page, which is the only kind a browser will open`);
 
+
+// ─────────────────────────────────────────── the two endpoints the region menu is built on
+//
+// Measured against a real server rather than grepped for, because every part of this is a
+// property of the RESPONSE and not of the source: a caching proxy in front of the deploy, a
+// host that rewrites headers, or a CDN that answers /ping itself would each read as a working
+// server here and as a 0ms ocean in the menu.
+{
+  const t0 = Date.now();
+  const res = await fetch(`${base}/ping`, { cache: 'no-store' });
+  const dt = Date.now() - t0;
+  const j = res.ok ? await res.json() : null;
+  say(res.ok && j !== null, '/ping answers with json', `${res.status} in ${dt}ms — ${JSON.stringify(j)}`);
+  // The header the whole feature rests on. Without it the browser serves the second and third
+  // samples out of its own cache and every region on earth reports as being in the next room.
+  say((res.headers.get('cache-control') ?? '').includes('no-store'),
+      'and forbids caching, which is what stops a cached 200 reporting a 0ms ocean',
+      `cache-control: ${res.headers.get('cache-control') ?? '(none)'}`);
+  // A page served by ONE region has to ask EVERY region how far away it is, and those are
+  // cross-origin. Without this header the browser hands the page an opaque failure and every
+  // region except its own reads as unreachable.
+  say(res.headers.get('access-control-allow-origin') === '*',
+      'and allows a cross-origin read, without which four of five cards say unreachable',
+      `access-control-allow-origin: ${res.headers.get('access-control-allow-origin') ?? '(none)'}`);
+  say(typeof j?.humans === 'number' && j?.lob && typeof j.lob === 'object',
+      'carrying the occupancy the card shows beside the ping',
+      `${j?.humans} playing, lobbies ${JSON.stringify(j?.lob)}`);
+  // Two facts, one request: an empty region with a beautiful ping is not the better room.
+  say(Object.keys(j?.lob ?? {}).length > 1,
+      'for every lobby and not only the default one', Object.keys(j?.lob ?? {}).join(', '));
+
+  const reg = await fetch(`${base}/regions`, { cache: 'no-store' });
+  const table = reg.ok ? await reg.json() : null;
+  say(reg.ok && Array.isArray(table?.regions), '/regions answers with a table',
+      `${reg.status} — self=${JSON.stringify(table?.self)}, ${table?.regions?.length ?? 0} region(s)`);
+  say(reg.headers.get('access-control-allow-origin') === '*',
+      'and is readable cross-origin too, since one page reads the table and pings all of it');
+  // Not a failure: a single-region deploy legitimately has an empty table, and the menu hides
+  // the picker rather than showing one card. Said out loud because the difference between
+  // "configured and working" and "configured and silently alone" is invisible otherwise.
+  const named = (table?.regions ?? []).map((r) => `${r.id} ${r.host}`).join('  ');
+  console.log(table?.regions?.length
+    ? `      regions offered: ${named}${table.self ? `  (this one is ${table.self})` : ''}`
+    : '      regions offered: none — FPSBONE_REGIONS/FPSBONE_PEER_* unset, so the menu hides '
+      + 'the picker and offers this server alone');
+  // Every host in the table has to be one a browser can actually turn into a socket.
+  const badHost = (table?.regions ?? []).filter((r) => !/^https?:\/\/[^/]+$/.test(String(r.host)));
+  say(badHost.length === 0, 'and every address in it is a bare http(s) origin a socket can be built from',
+      badHost.length ? badHost.map((r) => `${r.id}=${r.host}`).join(' ') : 'endpoints get appended to these');
+}
+
 for (const mode of live) {
   const slots = MODES[mode].slots;
   const label = MODES[mode].label.padEnd(12);

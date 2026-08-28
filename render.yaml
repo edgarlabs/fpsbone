@@ -1,31 +1,64 @@
-# Render blueprint: the whole deploy, so there is nothing to fill in on a dashboard.
+# Render blueprint: the whole deploy, in two parts of the world, so there is nothing to fill in
+# on a dashboard.
 #
-# Render reads this on "New → Blueprint" and provisions what it describes. The service is a
-# plain Node web service rather than a Docker one — Render builds Node natively, which is
-# faster and skips needing Docker installed anywhere. The Dockerfile beside this file is for
-# the hosts that want one (Fly, Railway, Koyeb, a VPS); the two describe the same process.
+# Render reads this on "New → Blueprint" and provisions what it describes. The services are
+# plain Node web services rather than Docker ones — Render builds Node natively, which is faster
+# and skips needing Docker installed anywhere. The Dockerfile beside this file is for the hosts
+# that want one (Fly, Railway, Koyeb, a VPS); all of them describe the same process.
 #
-# `build:server`, not `build`. That is the line that decides whether players can meet: it
-# bakes VITE_SERVER=origin into the bundle so the client opens a WebSocket back to whatever
-# host served the page. A plain `build` would come up here looking identical and quietly put
-# every player in a private room against bots — see client/src/localserver.js.
+# `build:server`, not `build`. That is the line that decides whether players can meet: it bakes
+# VITE_SERVER=origin into the bundle so the client opens a WebSocket back to whatever host
+# served the page. A plain `build` would come up here looking identical and quietly put every
+# player in a private room against bots — see client/src/localserver.js.
 #
-# WHAT THE FREE PLAN COSTS YOU, stated plainly: Render spins a free service down after about
-# fifteen minutes with no traffic, and the next request wakes it, which takes roughly a minute.
-# So the first person to open the link after a quiet spell waits, and the rooms they wake are
-# empty ones — scores and careers do not survive the sleep, because ranks.json lives in the
-# container's own filesystem. Everything after that is a normal server: WebSockets stay up as
-# long as somebody is connected, and a connected player is traffic, so a match in progress is
-# never spun down underneath it.
+# WHY TWO SERVICES. A packet cannot outrun light, and light is slow across an ocean: Singapore
+# to Oregon is about 180ms round trip through fibre that does not travel in a straight line. At
+# 60Hz that is eleven ticks of the simulation between pressing fire and the server hearing
+# about it, and no amount of prediction hides it when two people shoot at each other. The only
+# fix is a shorter cable, so: one server near Asia, one near the US, and the menu shows the
+# measured ping to each and lets the player pick. A region is FIXED WHEN A SERVICE IS CREATED,
+# which is why this is two services and not one with a setting.
 #
-# Careers: point FPSBONE_RANKS at a mounted disk to keep them across restarts. A disk is a
-# paid feature, so the free deploy deliberately does not ask for one.
+# NOTHING IS TYPED BY HAND to connect them. Each service is told where the other one lives with
+# `fromService`, which Render fills in with the real hostname — including the suffix it adds if
+# a name was taken. Each also learns its own address from RENDER_EXTERNAL_HOSTNAME, so it can
+# appear in the menu under its region label instead of as an anonymous "THIS SERVER". See
+# `regionsFromEnv` in shared/regions.js for how the three sources combine.
+#
+# WHAT THE FREE PLAN COSTS YOU, stated plainly:
+#
+#   sleep       A free service spins down after about fifteen minutes with no traffic, and the
+#               next request wakes it, which takes roughly a minute. So the first person to
+#               open the link after a quiet spell waits, and the region cards say `waking…`
+#               rather than sitting blank while it happens. A connected player is traffic, so a
+#               match in progress is never spun down underneath it.
+#   hours       Free instance hours are 750 a month for the whole workspace, SHARED between
+#               these two — not 750 each. That is far less alarming than it sounds: a spun-down
+#               service draws none, so two mostly-idle regions cost about what one does. Two
+#               regions busy around the clock would not fit, which is a problem worth having.
+#   careers     Scores and career stats do not survive a spin-down: ranks.json lives in the
+#               container's own filesystem. Point FPSBONE_RANKS at a mounted disk to keep them.
+#               A disk is a paid feature, so this deliberately does not ask for one. Note the
+#               two regions keep SEPARATE careers either way — they are separate machines.
+#   regions     Free-tier availability per region is not something Render documents. If one of
+#               the two refuses to create on the free plan, the other still deploys and still
+#               works; the menu simply has one card in it and hides itself.
+#
+# ADDING A THIRD REGION is this file only — Ohio (`usc`), Virginia (`use`) or Frankfurt (`eu`),
+# whose ids are listed in shared/regions.js. Copy a service block, give it the region and the
+# id, and add a FPSBONE_PEER_ line to it and to every existing service. No rebuild of anything
+# else: hostnames reach the client at runtime over /regions, which is the entire reason they are
+# not compiled in.
 
 services:
+  # ── AMERICA · Oregon. Named plainly because it is also the one a single-region deploy would
+  #    be, and Oregon is Render's own default region, so a service created before this file
+  #    grew a second one is already this and keeps its URL.
   - type: web
     name: fpsbone
     runtime: node
     plan: free
+    region: oregon
     # Vite is a devDependency and the build needs it, so this is a full install. Render sets
     # NODE_ENV=production at RUNTIME only, so a bare `npm ci` here would already get dev deps —
     # `--include=dev` says it out loud so the line survives that default changing, and works
@@ -36,6 +69,35 @@ services:
     # Cheap, and answers before the filesystem is touched — see serveStatic in server/serve.js.
     healthCheckPath: /healthz
     envVars:
-      # PORT is injected by Render and read in server/serve.js; nothing to set here.
+      # PORT and RENDER_EXTERNAL_HOSTNAME are injected by Render; nothing to set for either.
       - key: NODE_VERSION
         value: "22"
+      - key: FPSBONE_REGION
+        value: usw
+      # Where the other region is, filled in by Render rather than guessed here. A bare
+      # hostname arrives and shared/regions.js gives it https, which is what Render serves.
+      - key: FPSBONE_PEER_SEA
+        fromService:
+          type: web
+          name: fpsbone-sea
+          property: host
+
+  # ── ASIA · Singapore.
+  - type: web
+    name: fpsbone-sea
+    runtime: node
+    plan: free
+    region: singapore
+    buildCommand: npm ci --include=dev && npm run build:server
+    startCommand: node server/serve.js
+    healthCheckPath: /healthz
+    envVars:
+      - key: NODE_VERSION
+        value: "22"
+      - key: FPSBONE_REGION
+        value: sea
+      - key: FPSBONE_PEER_USW
+        fromService:
+          type: web
+          name: fpsbone
+          property: host

@@ -592,6 +592,27 @@
         font-weight: 400;
       }
       .card.full u { color: var(--accent); }
+      /* PING, coloured by what it does to a duel rather than by how the number looks. The
+         boundaries are `pingGrade`'s in shared/regions.js: under 60ms the server agrees with
+         your screen, by 150 you are leading moving targets, past 250 you are playing a
+         different match to everyone else — and the honest way to say that is a colour, not
+         three digits the player has to interpret. */
+      .card u.p-good { color: var(--self); }
+      .card u.p-fair { color: #8a6a10; }
+      .card u.p-poor { color: #b8601c; }
+      .card u.p-bad { color: var(--accent); }
+      .card u.p-none { color: var(--dim); }
+      /* Still measuring, or waking a spun-down instance. Dimmed rather than absent so the card
+         does not change height when the number finally lands. */
+      .card u.p-wait { color: var(--dim); opacity: 0.6; }
+      /* FASTEST / THIS PAGE beside a region's name. Outlined in their own colour so they read
+         as labels on the card rather than as part of the region's name. */
+      .card b em {
+        font-style: normal; font-weight: 400; font-size: 9px; letter-spacing: 1.1px;
+        border: 1px solid currentColor; padding: 0 3px; margin-left: 5px; white-space: nowrap;
+      }
+      .card b em.best { color: var(--self); }
+      .card b em.mine { color: var(--dim); }
       .card i { font-style: normal; font-size: 10px; color: var(--dim); }
       .chips { display: flex; flex-wrap: wrap; gap: 6px; }
       .chip {
@@ -1026,6 +1047,29 @@
         </div>
 
         <section class="pane on" data-pane="game">
+          <!-- WHICH SERVER, and the ping beside it is the whole reason the choice is worth
+               offering. A packet cannot outrun light and light is slow across an ocean:
+               Singapore↔Oregon is about 180ms round trip through fibre, which is eleven ticks
+               of a 60Hz simulation between pressing fire and the server hearing about it.
+               Prediction can hide where YOU are going; it can never hide where somebody else
+               has already been. The only fix is a shorter cable.
+
+               Hidden until there are at least two — a checkout and a single-region deploy have
+               nothing to choose, and a picker with one card in it is furniture. menu.js decides
+               that, and fills the cards from pings it measures itself; nothing auto-connects,
+               because choosing for the player means either stalling this menu until every
+               region has answered or yanking the page onto another server mid-thought. -->
+          <div class="grp" id="grp-regions" hidden>
+            <label for="regions">server</label>
+            <div class="cards" id="regions"></div>
+            <p class="note">
+              Ping is the round trip to that server, measured from here. <b>Under 60ms a duel
+              feels the way it looks; past 250 you are playing a different match to everyone
+              else.</b> Lobbies belong to one server, so the counts below are for the one you
+              are on — switching reloads the page.
+            </p>
+          </div>
+
           <div class="grp">
             <label for="modes">game mode</label>
             <div class="cards" id="modes"></div>

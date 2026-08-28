@@ -12,6 +12,7 @@
 
 import { MODES, MODE_IDS } from '../../shared/modes.js';
 import { WEAPONS } from '../../shared/weapons.js';
+import { HERE, fastest, pingGrade } from '../../shared/regions.js';
 import { CH_COLORS } from './settings.js';
 import { ACTIONS, keyLabel, refuseReason, rebind } from './binds.js';
 
@@ -51,6 +52,8 @@ export function createMenu(settings, cbs) {
     keys: $('keys'),
     tabs: $('tabs'),
     modes: $('modes'),
+    regions: $('regions'),
+    regionsGrp: $('grp-regions'),
     weps: $('weps'),
     hands: $('hands'),
     binds: $('binds'),
@@ -74,6 +77,16 @@ export function createMenu(settings, cbs) {
    * absent count is the truth. See `setLobby`.
    */
   let lobby = {};
+  /**
+   * The servers this page can offer and their measured pings, as last reported by main.js.
+   *
+   * Empty until /regions answers, which is deliberately not waited on: the socket is already
+   * opening against the stored region while this fills in. See `setRegions` / `setPings`.
+   */
+  let regions = [];
+  /** Which region the game socket is actually on, or null if something outranked the setting
+   *  (a `?server=` override). Not read from `settings` because the setting is a request. */
+  let activeRegion = null;
   /** The action waiting for a key, or null. */
   let arming = null;
 
@@ -109,6 +122,85 @@ export function createMenu(settings, cbs) {
       ['<kbd>esc</kbd>', 'menu'],
     ];
     els.keys.innerHTML = parts.map(([k, label]) => `<span>${k} ${label}</span>`).join('');
+  }
+
+  // ───────────────────────────────────────────────────────────────── regions
+  /**
+   * The server picker: one card per region, with the round trip to it measured from here.
+   *
+   * The ping is the only reason this list is worth showing. A player who can see 38ms next to
+   * ASIA and 210ms next to AMERICA needs no explanation of why one duel felt fair and the
+   * other felt rigged — and the number is measured in this browser (client/src/regions.js)
+   * rather than claimed from a map, because a ping display that is wrong is worse than none:
+   * it moves somebody to a worse server and tells them it was the right call.
+   */
+  function renderRegions() {
+    // ONE SERVER IS NOT A CHOICE. A checkout, or a deploy that never named its peers, gets no
+    // picker at all rather than a single card that does nothing when clicked.
+    els.regionsGrp.hidden = regions.length < 2;
+    if (regions.length < 2) {
+      els.regions.replaceChildren();
+      return;
+    }
+
+    const best = fastest(regions);
+    els.regions.replaceChildren(
+      ...regions.map((r) => {
+        const on = r.id === activeRegion;
+        // A region that did not answer. Greyed rather than hidden: "unreachable" is a fact the
+        // player is owed, and on a free tier it usually means asleep rather than gone.
+        const down = r.state === 'down';
+        const card = document.createElement('div');
+        card.className = `card${on ? ' on' : ''}${down ? ' dis' : ''}`;
+
+        // The number, or what is happening instead of one. `waking…` is its own word because
+        // a spun-down free instance takes about a minute to answer, and a card that sat blank
+        // for a minute is indistinguishable from a card that is broken.
+        const ping = down
+          ? '<u class="p-none">unreachable</u>'
+          : Number.isFinite(r.ms)
+            ? `<u class="p-${pingGrade(r.ms)}">${r.ms}ms</u>`
+            : `<u class="p-wait">${r.state === 'waking' ? 'waking…' : '…'}</u>`;
+
+        // FASTEST IS A MARKER, NOT A DECISION — nothing auto-connects. See the comment on
+        // `fastest` in shared/regions.js for why choosing for the player is worse than this.
+        // THIS PAGE names the server that sent the html, which is not necessarily the one
+        // holding the match: pick ASIA from a page served by EUROPE and both are true at once.
+        const tags =
+          (best && r.id === best.id ? '<em class="best">FASTEST</em>' : '')
+          + (r.mine ? '<em class="mine">THIS PAGE</em>' : '');
+
+        // Occupancy is every human on that server across all of its lobbies, because the
+        // choice being made here is the server — which mode to join is the row below. An
+        // empty region with a beautiful ping is not the better room, so the count sits here.
+        const where = down
+          ? 'no answer — asleep, or not deployed'
+          : Number.isFinite(r.humans)
+            ? `${r.where} · ${r.humans} playing`
+            : r.where;
+        card.innerHTML = `<b><span>${r.label}${tags}</span>${ping}</b><i>${where}</i>`;
+
+        if (!on && !down) {
+          card.addEventListener('click', () => {
+            // The socket is opened once, at load, against one address — so changing which
+            // server that is needs a new page. The ADDRESS is stored alongside the id because
+            // an id alone cannot be dialled: hostnames arrive at runtime, so a returning
+            // player would otherwise wait on /regions before their socket could open.
+            settings.set({ region: r.id, regionHost: r.id === HERE ? '' : r.host });
+            // Any of these three left in the url would outrank or contradict what was just
+            // stored, so the click would appear to do nothing. Dropping them is the honest
+            // reading of "I want this server".
+            const u = new URL(location.href);
+            for (const k of ['server', 'region', 'regionHost']) u.searchParams.delete(k);
+            // Assigning an unchanged href does reload in every browser, but saying it outright
+            // costs one line and saves the next reader having to know that.
+            if (u.href === location.href) location.reload();
+            else location.href = u.href;
+          });
+        }
+        return card;
+      }),
+    );
   }
 
   // ─────────────────────────────────────────────────────────────────── modes
@@ -398,11 +490,41 @@ export function createMenu(settings, cbs) {
 
   note(BIND_HELP);
   buildBinds();
+  renderRegions();
   renderModes();
   renderWeapons();
   refreshAll();
 
   return {
+    /**
+     * The servers on offer, and which one this page's socket is actually on.
+     *
+     * Called once, after /regions answers — not before the connection, which dials the stored
+     * region without waiting for anything. `active` is passed rather than read from `settings`
+     * because the setting is a REQUEST: a `?server=` override outranks it, and marking a card
+     * the socket is not on would be the picker lying about the state it exists to show.
+     */
+    setRegions(list, active) {
+      if (!Array.isArray(list)) return;
+      regions = list;
+      activeRegion = active ?? null;
+      renderRegions();
+    },
+    /**
+     * Measured pings, merged in by id and repainted.
+     *
+     * Fed from every change `probeAll` reports rather than once at the end, so five cards fill
+     * in as their answers land instead of all at once behind the slowest region — which on a
+     * sleeping free instance is a minute of a blank list.
+     */
+    setPings(results) {
+      if (!Array.isArray(results)) return;
+      const by = new Map(results.map((r) => [r.id, r]));
+      // Merged onto what is already there, not replaced: the probe result carries the timing
+      // and the label came from the table, and neither knows the other's half.
+      regions = regions.map((r) => ({ ...r, ...(by.get(r.id) ?? {}) }));
+      renderRegions();
+    },
     /** Called on WELCOME with the modes the server reported it can host. */
     setAvailable(ids) {
       available = new Set(ids);

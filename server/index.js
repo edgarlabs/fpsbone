@@ -365,5 +365,5 @@ export function createHost({ nowNs, ranks = NO_RANKS, log = () => {} }) {
     return Math.max(0, Math.min(waitMs, 4));
   }
 
-  return { available: AVAILABLE, pending, connect, advance, rooms };
+  return { available: AVAILABLE, pending, connect, advance, rooms, occupancy: lobbyState };
 }

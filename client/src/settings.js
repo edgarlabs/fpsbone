@@ -8,6 +8,7 @@
 
 import { MODE_IDS, DEFAULT_MODE } from '../../shared/modes.js';
 import { WEAPON_IDS } from '../../shared/weapons.js';
+import { HERE, isRegion } from '../../shared/regions.js';
 import { DEFAULT_BINDS, normalizeBinds } from './binds.js';
 
 const KEY = 'fpsbone.settings';
@@ -31,6 +32,24 @@ const DEFAULTS = {
   mode: DEFAULT_MODE,
   wep: 'rifle',
   hand: 'right',
+
+  /**
+   * Which server, and its address — two fields for one choice, and the second one is what
+   * makes the first usable.
+   *
+   * The id alone cannot be dialled: a region's hostname comes from the server at runtime
+   * (see shared/regions.js), so a returning player who picked ASIA would have to wait for a
+   * /regions round trip before their socket could open — a stall on every single load, to
+   * re-learn something they already chose. Storing the address alongside it means the
+   * connection starts immediately and the region table, when it arrives, only has to correct
+   * an address that moved.
+   *
+   * HERE is the default and means "whoever served this page", which is right for a checkout,
+   * right for a single-region deploy, and the only answer that needs no configuration at all.
+   */
+  region: HERE,
+  regionHost: '',
+
   sens: 1,
   fov: 85,
 
@@ -67,6 +86,19 @@ const FROM_QS = PERSIST.filter((k) => k !== 'binds');
 const clamp = (v, lo, hi) => (v < lo ? lo : v > hi ? hi : v);
 const bool = (v) => v === true || v === 'true' || v === 1 || v === '1';
 
+/** A stored region address, or ''. Only a bare http(s) origin survives: the scheme is swapped
+ *  for ws(s) and endpoints are appended, so a path would 404 them and any other scheme would
+ *  reach `new WebSocket` as something nobody meant to dial. */
+function httpOrigin(v) {
+  if (typeof v !== 'string' || !v) return '';
+  try {
+    const u = new URL(v);
+    return (u.protocol === 'http:' || u.protocol === 'https:') && u.pathname === '/' ? u.origin : '';
+  } catch {
+    return '';
+  }
+}
+
 /** Validated on read, not on write. Storage is shared with whatever the previous
  *  version of this file wrote, so a stale or hand-edited value has to be
  *  survivable rather than merely unlikely. */
@@ -78,6 +110,16 @@ function coerce(raw) {
     mode: MODE_IDS.includes(s.mode) ? s.mode : DEFAULTS.mode,
     wep: WEAPON_IDS.includes(s.wep) ? s.wep : DEFAULTS.wep,
     hand: s.hand === 'left' ? 'left' : 'right',
+
+    // A region id from an older build, a hand-typed `?region=`, or a table that no longer
+    // lists it all arrive here the same way, and all fall back to the page's own server —
+    // the one address that cannot be stale.
+    region: isRegion(s.region) ? s.region : DEFAULTS.region,
+    // Kept only if it still parses as a bare http(s) origin. A stored path or a `javascript:`
+    // would be turned into a socket url and handed to `new WebSocket`, so this is validated
+    // where it is read rather than trusted because we wrote it.
+    regionHost: httpOrigin(s.regionHost),
+
     sens: clamp(n(s.sens, DEFAULTS.sens), 0.3, 3),
     fov: int(s.fov, DEFAULTS.fov, 70, 110),
 

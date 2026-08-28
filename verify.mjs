@@ -68,6 +68,10 @@ import {
   chestY, headBoxOf, legsTopOf,
 } from './shared/movement.js';
 import { MODES, MODE_IDS, TEAM_NAMES, DEFAULT_MODE } from './shared/modes.js';
+import {
+  REGIONS, REGION_IDS, HERE, isRegion, fastest, parseRegions, regionsFromEnv, wsOrigin, pingGrade,
+} from './shared/regions.js';
+import { socketFor } from './client/src/regions.js';
 import { TIERS, MAX_TIER, rankOf, toNextRank } from './shared/ranks.js';
 import {
   BADGES, TRACK_KEYS, SPECIAL_KEYS, TIER_NAMES, MAX_BADGE_TIER, MAX_LEVEL, MAX_STEP,
@@ -6832,6 +6836,561 @@ function fakeClient(host, mode, name) {
 
 console.log([...pM, ...fM].join('\n'));
 
+// ─────────────────────────────────────────── Part N: regions, pings, and the deploy
+console.log('\n=== Part N ' + '\u2014' + ' regions, ping grading, and the blueprint that has to agree ===\n');
+
+// WHY THIS PART EXISTS. Everything a player sees about regions is downstream of four things
+// that are each easy to get wrong and silent when wrong: a region table, a ping grader, an
+// environment parser, and a deploy file naming hosts nobody typed. A ping display that is
+// wrong is worse than none, because it moves somebody to a worse server and tells them it was
+// the right call. So the numbers, the words, and the colours are all pinned here.
+const pN = [];
+const fN = [];
+const okN = (cond, label, detail = '') => {
+  (cond ? pN : fN).push(`${cond ? 'PASS' : 'FAIL'}  ${label}${detail ? `  ${'\u2014'} ${detail}` : ''}`);
+};
+
+{
+  // ---------------------------------------------------------------- the table itself
+  okN(REGION_IDS.length >= 2, 'the region table names more than one place',
+      `${REGION_IDS.length}: ${REGION_IDS.join(', ')}`);
+  // An id travels inside `id=url` pairs in one environment variable, so a `=` or a `,` in one
+  // would split a peer address in half and the region would silently vanish from the menu.
+  const badId = REGION_IDS.filter((id) => !/^[a-z]{2,4}$/.test(id));
+  okN(badId.length === 0,
+      'every id is lowercase letters only, because ids ride inside a comma-separated env var',
+      badId.length ? `offending: ${badId.join(', ')}` : 'sea, usw, usc, use, eu');
+  const unlabelled = REGION_IDS.filter((id) => !REGIONS[id].label || !REGIONS[id].where);
+  okN(unlabelled.length === 0,
+      'and carries both a menu label and the exact place underneath it',
+      unlabelled.length ? unlabelled.join(', ') : 'a card with no `where` is a 40ms surprise');
+  okN(!Object.hasOwn(REGIONS, HERE),
+      `the "this server" id (${HERE}) is not also a real region, or one would shadow the other`);
+
+  okN(isRegion(HERE) && REGION_IDS.every(isRegion), 'isRegion accepts HERE and every listed id');
+  okN(!isRegion('sae') && !isRegion('') && !isRegion(undefined),
+      'and refuses a typo, an empty string, and nothing at all');
+  // `Object.hasOwn`, not `in`: with `in` this would be a region, and a stored `__proto__`
+  // would reach the socket code as a hostname lookup on Object.prototype.
+  okN(!isRegion('__proto__') && !isRegion('toString'),
+      'and is not fooled by an inherited property name');
+}
+
+{
+  // ---------------------------------------------------------------- pingGrade
+  // The boundaries are where the GAME changes, not where the numbers look tidy, so they are
+  // worth pinning exactly: an off-by-one here recolours a card and nothing else complains.
+  const cases = [
+    [0, 'good'], [59, 'good'], [59.9, 'good'],
+    [60, 'fair'], [149, 'fair'],
+    [150, 'poor'], [249, 'poor'],
+    [250, 'bad'], [1000, 'bad'],
+  ];
+  const wrong = cases.filter(([ms, want]) => pingGrade(ms) !== want);
+  okN(wrong.length === 0, 'pingGrade puts every boundary exactly where the duel changes',
+      wrong.length ? wrong.map(([ms, w]) => `${ms} wanted ${w} got ${pingGrade(ms)}`).join('; ')
+        : '<60 good, <150 fair, <250 poor, then bad');
+  okN(pingGrade(NaN) === 'none' && pingGrade(undefined) === 'none' && pingGrade(null) === 'none',
+      'and a region that never answered grades as `none` rather than as fast',
+      'NaN is what probeRegion returns for a server that is down');
+
+  const rank = { good: 0, fair: 1, poor: 2, bad: 3 };
+  let monotone = true;
+  for (let ms = 1; ms <= 400; ms++) {
+    if (rank[pingGrade(ms)] < rank[pingGrade(ms - 1)]) monotone = false;
+  }
+  okN(monotone, 'and never grades a slower ping as better than a faster one', 'swept 0..400ms');
+}
+
+{
+  // ---------------------------------------------------------------- wsOrigin
+  okN(wsOrigin('https://a.example.com') === 'wss://a.example.com',
+      'an https region becomes a wss socket, which is the only kind an https page may open');
+  okN(wsOrigin('http://localhost:8080') === 'ws://localhost:8080',
+      'and a plain http checkout becomes ws, port and all');
+  // A global replace would corrupt this, and the failure would be a socket to a host that
+  // does not exist rather than an error anybody could read.
+  okN(wsOrigin('https://http.example.com') === 'wss://http.example.com',
+      'and only the leading scheme is swapped, not every "http" in the address');
+}
+
+{
+  // ---------------------------------------------------------------- fastest
+  const rs = [
+    { id: 'sea', ms: 210 }, { id: 'usw', ms: NaN }, { id: 'eu', ms: 38 }, { id: 'usc', ms: 91 },
+  ];
+  okN(fastest(rs)?.id === 'eu', 'fastest picks the lowest ping', `got ${fastest(rs)?.id}`);
+  okN(fastest([{ id: 'a', ms: NaN }, { id: 'b', ms: NaN }]) === null && fastest([]) === null,
+      'and reports nothing rather than something when no region answered');
+  // Ties go to table order so a repaint does not move the FASTEST marker between two cards
+  // that are the same distance away.
+  okN(fastest([{ id: 'x', ms: 40 }, { id: 'y', ms: 40 }])?.id === 'x',
+      'and a tie goes to whoever is listed first, so the marker does not flicker');
+}
+
+
+{
+  // ---------------------------------------------------------------- parseRegions
+  const good = parseRegions('usw=https://us.example.com,sea=https://sg.example.com');
+  okN(good.regions.length === 2 && good.dropped.length === 0,
+      'parseRegions accepts a comma-separated `id=url` spec', JSON.stringify(good.regions.map((r) => r.id)));
+  // Table order, not spec order, so reordering a deploy config does not reshuffle the menu.
+  okN(good.regions.map((r) => r.id).join(',') === 'sea,usw',
+      'and returns them in table order however the env var was written',
+      `spec said usw first, got ${good.regions.map((r) => r.id).join(',')}`);
+  okN(good.regions[0].label === REGIONS.sea.label && good.regions[0].where === REGIONS.sea.where,
+      'carrying the compiled-in label and place, which no deploy config gets to invent');
+
+  okN(parseRegions('sea=https://a.example.com\tusw=https://b.example.com').regions.length === 2,
+      'whitespace separates as well as a comma, since env vars get pasted with newlines in them');
+
+  const nope = parseRegions([
+    'sae=https://typo.example.com',      // an id the table does not know
+    'sea=ftp://wrong.example.com',       // a scheme `new WebSocket` cannot be handed
+    'usw=https://host.example.com/game', // a path, which would 404 /ping and /regions
+    'eu=notaurlatall',                   // not a url in any reading
+  ].join(','));
+  okN(nope.regions.length === 0 && nope.dropped.length === 4,
+      'and refuses an unknown id, a non-http scheme, a url with a path, and junk',
+      `dropped ${nope.dropped.length}: ${nope.dropped.join(' ')}`);
+  okN(nope.dropped.every((d) => typeof d === 'string' && d.length > 0),
+      'reporting the raw text of each so a server can say what it ignored',
+      'silently offering fewer regions than somebody configured is the failure being avoided');
+
+  const dup = parseRegions('sea=https://first.example.com,sea=https://second.example.com');
+  okN(dup.regions.length === 1 && dup.regions[0].host === 'https://first.example.com'
+      && dup.dropped.length === 1,
+      'a duplicate id keeps the first address and reports the second',
+      `kept ${dup.regions[0]?.host}, dropped ${dup.dropped.join('')}`);
+
+  okN(parseRegions('sea=https://a.example.com/').regions[0]?.host === 'https://a.example.com',
+      'a trailing slash is a bare origin and survives, stored without it',
+      'endpoints are appended to this, so the stored form has to be the origin');
+
+  // Unset, in every shape an unset environment variable actually arrives in. Note `0` is NOT
+  // in this list on purpose: it stringifies to "0", which is junk rather than absence, and
+  // gets reported as dropped like any other unparseable chunk.
+  for (const empty of [undefined, null, '', '   ']) {
+    const r = parseRegions(empty);
+    okN(r.regions.length === 0 && r.dropped.length === 0,
+        `an unset spec (${JSON.stringify(empty)}) is no regions and no complaint`);
+  }
+  okN(parseRegions(0).dropped.length === 1 && parseRegions(0).regions.length === 0,
+      'while a spec of `0` is junk rather than absence, and is reported as dropped',
+      'the difference matters: one is nothing configured, the other is something wrong');
+}
+
+{
+  // ---------------------------------------------------------------- regionsFromEnv
+  // The whole environment path, tested with a plain object rather than by standing serve.js up
+  // with a doctored env — which is the reason it lives in shared/regions.js at all.
+  const e = regionsFromEnv({
+    FPSBONE_REGION: 'sea',
+    RENDER_EXTERNAL_HOSTNAME: 'fpsbone-sea.onrender.com',
+    FPSBONE_PEER_USW: 'fpsbone.onrender.com',
+  });
+  okN(e.region === 'sea', 'regionsFromEnv reads which region this process is', `got ${e.region}`);
+  okN(e.regions.length === 2 && e.regions.some((r) => r.id === 'sea') && e.regions.some((r) => r.id === 'usw'),
+      'and lists both itself and its peer, which is what stops the page you are on appearing '
+      + 'as an unlabelled "THIS SERVER" card next to named ones',
+      e.regions.map((r) => `${r.id} ${r.host}`).join('  '));
+  // A blueprint injects a bare hostname because that is all `fromService` can give it.
+  okN(e.regions.every((r) => r.host.startsWith('https://')),
+      'a bare hostname from the host gets https, because that is what those hosts serve',
+      e.regions.map((r) => r.host).join('  '));
+
+  okN(regionsFromEnv({ FPSBONE_REGION: 'sae' }).region === null
+      && regionsFromEnv({}).region === null,
+      'an unknown region id, or none, means this process is simply "here"');
+  const bare = regionsFromEnv({});
+  okN(bare.regions.length === 0 && bare.dropped.length === 0,
+      'and an empty environment offers no regions at all, which is what a checkout is');
+
+  okN(regionsFromEnv({ FPSBONE_REGION: 'sea', FPSBONE_HOST: 'mine.example.com' })
+    .regions[0]?.host === 'https://mine.example.com',
+      'FPSBONE_HOST names this server anywhere that is not Render');
+  okN(regionsFromEnv({
+    FPSBONE_REGION: 'sea', FPSBONE_HOST: 'chosen.example.com',
+    RENDER_EXTERNAL_HOSTNAME: 'injected.example.com',
+  }).regions[0]?.host === 'https://chosen.example.com',
+      'and outranks the one the host injected, since it was set on purpose');
+
+  // Precedence, which is the property most likely to be got wrong by a later edit: a person's
+  // FPSBONE_REGIONS beats a blueprint's injected var, and both beat this process's own guess.
+  const prec = regionsFromEnv({
+    FPSBONE_REGION: 'sea',
+    FPSBONE_HOST: 'self.example.com',
+    FPSBONE_PEER_SEA: 'injected.example.com',
+    FPSBONE_REGIONS: 'sea=https://hand.example.com',
+  });
+  okN(prec.regions.length === 1 && prec.regions[0].host === 'https://hand.example.com',
+      'a hand-written address wins over an injected one, and both over the process itself',
+      `resolved ${prec.regions[0]?.host}`);
+
+  const junk = regionsFromEnv({ FPSBONE_PEER_XX: 'nowhere.example.com', FPSBONE_PEER_SEA: '' });
+  okN(junk.regions.length === 0 && junk.dropped.length === 1,
+      'an injected peer for an id the table does not know is dropped, not offered blank',
+      `dropped ${junk.dropped.join('')}`);
+  okN(regionsFromEnv({ FPSBONE_HOST: 'a.example.com' }).regions.length === 0,
+      'and a host with no region set adds nothing, because there is no label to show it under');
+}
+
+{
+  // ---------------------------------------------------------------- socketFor
+  okN(socketFor(HERE, 'https://a.example.com') === null,
+      'socketFor returns null for "this server", which is the one case needing no address',
+      'null keeps the caller on the path that has always worked');
+  okN(socketFor(null, 'https://a.example.com') === null && socketFor('sea', '') === null,
+      'and for no region, or a region whose address we do not have');
+  okN(socketFor('sea', 'https://sg.example.com') === 'wss://sg.example.com',
+      'a chosen region becomes a wss url a browser on an https page will actually open',
+      socketFor('sea', 'https://sg.example.com'));
+  okN(socketFor('sea', 'http://localhost:8080') === 'ws://localhost:8080',
+      'and a local region stays ws, so a checkout can point at itself');
+}
+
+
+{
+  // ------------------------------------------------- the stored address, validated on read
+  // Lifted out of settings.js rather than imported, because that module reaches for
+  // localStorage the moment it loads. This one function is the last thing standing between a
+  // hand-edited storage entry and `new WebSocket`, so it is worth the regex.
+  const src = readFileSync('client/src/settings.js', 'utf8');
+  const from = src.indexOf('function httpOrigin(');
+  const to = src.indexOf('\n}', from);
+  okN(from > 0 && to > from, 'settings.js still has an httpOrigin validator to lift',
+      from > 0 ? `${to - from} chars` : 'NOT FOUND - the checks below are vacuous');
+  const httpOrigin = new Function(`${src.slice(from, to + 2)}\nreturn httpOrigin;`)();
+
+  okN(httpOrigin('https://a.example.com') === 'https://a.example.com'
+      && httpOrigin('http://localhost:8080') === 'http://localhost:8080',
+      'a stored region address survives if it is a bare http(s) origin');
+  // Each of these would be turned into a socket url and handed to `new WebSocket`.
+  const refused = [
+    'javascript:alert(1)', 'file:///etc/passwd', 'ftp://x.example.com',
+    'https://a.example.com/path', 'a.example.com', '', '   ', 'not a url',
+  ];
+  const leaked = refused.filter((v) => httpOrigin(v) !== '');
+  okN(leaked.length === 0,
+      'and anything else is thrown away rather than dialled',
+      leaked.length ? `LEAKED: ${leaked.join(' ')}` : `refused ${refused.length} shapes`);
+  okN([null, undefined, 42, {}, []].every((v) => httpOrigin(v) === ''),
+      'including values that are not strings at all, which is what a corrupt entry looks like');
+}
+
+{
+  // ------------------------------------------------- the colours the grades are drawn in
+  // A grade with no CSS rule renders as an uncoloured number, which is the one outcome worth
+  // less than showing nothing: the player reads three digits and has to interpret them alone.
+  const html = readFileSync('client/index.html', 'utf8');
+  const menuSrc = readFileSync('client/src/menu.js', 'utf8');
+
+  const grades = new Set([pingGrade(NaN)]);
+  for (let ms = 0; ms <= 600; ms++) grades.add(pingGrade(ms));
+  const missing = [...grades].filter((g) => !html.includes(`.card u.p-${g}`));
+  okN(missing.length === 0,
+      'every grade pingGrade can return has a colour in the stylesheet',
+      missing.length ? `no rule for: ${missing.join(', ')}` : [...grades].join(', '));
+  okN(html.includes('.card u.p-wait') && menuSrc.includes('p-wait'),
+      'and so does the "still measuring" state, so a card does not resize when the number lands');
+  okN(menuSrc.includes('p-${pingGrade('),
+      'the class is built from pingGrade rather than from a second list of boundaries',
+      'two lists of the same numbers is one list that will disagree with the other');
+
+  okN(html.includes('id="grp-regions"') && html.includes('id="regions"'),
+      'the markup the picker fills exists');
+  const grp = html.slice(html.indexOf('id="grp-regions"'), html.indexOf('id="grp-regions"') + 40);
+  okN(grp.includes('hidden'),
+      'and starts hidden, so a single-server deploy never shows a picker with one card in it',
+      grp.trim().split('\n')[0]);
+
+  okN(menuSrc.includes('setRegions(') && menuSrc.includes('setPings('),
+      'the menu exposes both halves of the picker: the list, and the numbers as they land');
+  const mainSrc = readFileSync('client/src/main.js', 'utf8');
+  okN(mainSrc.includes('menu.setRegions(') && mainSrc.includes('menu.setPings('),
+      'and main.js actually calls them, which is the wire the feature hangs on');
+  okN(mainSrc.includes('loadRegions()') && mainSrc.includes('probeAll('),
+      'asking this origin for the table and then timing what it names');
+
+  // A `?server=` left in the url outranks the stored region, so a click that did not remove it
+  // would silently do nothing and read as a broken picker.
+  okN(menuSrc.includes("'server'") && menuSrc.includes('searchParams.delete'),
+      'clicking a region clears the url override that would outrank it');
+
+  // Region above VITE_SERVER in the precedence chain: the bundle says whether there IS a
+  // server, the player says WHICH one. Reversed, choosing a region would do nothing on the
+  // only kind of build where regions exist at all.
+  const chain = mainSrc.slice(mainSrc.indexOf('const url ='), mainSrc.indexOf('const url =') + 220);
+  okN(chain.indexOf('regionUrl') > 0 && chain.indexOf('regionUrl') < chain.indexOf('bakedUrl'),
+      'and a chosen region outranks the server baked in at build time',
+      chain.split('\n').slice(1, 3).join(' ').trim());
+}
+
+
+{
+  // ------------------------------------------------- the blueprint, checked against the code
+  // A DEPLOY FILE IS SOURCE, and it is the kind whose mistakes only appear in production: a
+  // peer named after a region the table does not know, or a service pointing at a name no
+  // service has, comes up green and simply has nobody in it. Cheap to check here, expensive
+  // to notice there.
+  const yml = existsSync('render.yaml') ? readFileSync('render.yaml', 'utf8') : '';
+  okN(yml.length > 0, 'render.yaml exists, so the deploy is described in the repo, not a dashboard');
+
+  /** Enough of a YAML reader for one known file: services, their scalars, and their env vars. */
+  const services = [];
+  let cur = null;
+  let key = null;
+  for (const line of yml.split('\n')) {
+    if (line.startsWith('  - type:')) { cur = { env: {}, from: {} }; services.push(cur); key = null; continue; }
+    if (!cur) continue;
+    const scalar = line.match(/^    ([A-Za-z]+): (.+)$/);
+    if (scalar) { cur[scalar[1]] = scalar[2].replace(/^"(.*)"$/, '$1'); key = null; continue; }
+    const k = line.match(/^      - key: (.+)$/);
+    if (k) { key = k[1]; continue; }
+    const v = line.match(/^        value: (.+)$/);
+    if (v && key) { cur.env[key] = v[1].replace(/^"(.*)"$/, '$1'); key = null; continue; }
+    const n = line.match(/^          name: (.+)$/);
+    if (n && key) { cur.from[key] = n[1]; key = null; }
+  }
+
+  okN(services.length >= 2, 'and describes more than one region, which is the whole point of it',
+      services.map((s) => `${s.name} in ${s.region}`).join('  '));
+  okN(new Set(services.map((s) => s.name)).size === services.length,
+      'every service has its own name');
+  // Two free services in the same city is two-thirds of the free hours for none of the benefit.
+  okN(new Set(services.map((s) => s.region)).size === services.length,
+      'and its own region, since a region is fixed when a service is created',
+      services.map((s) => s.region).join(', '));
+  // Render's five, from its docs. A region name it does not know fails the whole blueprint.
+  const RENDER_REGIONS = ['oregon', 'ohio', 'virginia', 'frankfurt', 'singapore'];
+  const badRegion = services.filter((s) => !RENDER_REGIONS.includes(s.region));
+  okN(badRegion.length === 0, 'named with a region the host actually offers',
+      badRegion.length ? badRegion.map((s) => s.region).join(', ') : RENDER_REGIONS.join('/'));
+
+  const ids = services.map((s) => s.env.FPSBONE_REGION);
+  okN(ids.every((id) => Object.hasOwn(REGIONS, id)),
+      'every service is told a region id the compiled table knows', ids.join(', '));
+  okN(new Set(ids).size === ids.length, 'and no two services claim to be the same region');
+
+  // Every service must name every OTHER service, or a player on one has no way to reach the
+  // other and the menu shows a picker with one live card in it.
+  const peerIds = (s) => Object.keys({ ...s.env, ...s.from })
+    .filter((x) => x.startsWith('FPSBONE_PEER_'))
+    .map((x) => x.slice('FPSBONE_PEER_'.length).toLowerCase());
+  const unknownPeer = services.flatMap(peerIds).filter((id) => !Object.hasOwn(REGIONS, id));
+  okN(unknownPeer.length === 0, 'every peer var names a region the table knows',
+      unknownPeer.length ? unknownPeer.join(', ') : services.flatMap(peerIds).join(', '));
+
+  const wrong = services.filter((s, i) => {
+    const want = ids.filter((_, j) => j !== i).sort().join(',');
+    return peerIds(s).sort().join(',') !== want;
+  });
+  okN(wrong.length === 0,
+      'and each service is told about every other one, so either page can reach either server',
+      wrong.length ? wrong.map((s) => `${s.name} knows [${peerIds(s)}]`).join('; ')
+        : services.map((s) => `${s.name} to ${peerIds(s).join('/')}`).join('  '));
+
+  // `fromService` is what makes this zero-configuration: Render substitutes the real hostname,
+  // suffix and all. A name that matches no service in the file substitutes nothing.
+  const names = new Set(services.map((s) => s.name));
+  const dangling = services.flatMap((s) => Object.entries(s.from))
+    .filter((e) => !names.has(e[1]));
+  okN(dangling.length === 0,
+      'each peer address is filled in by the host from a service that exists in this file',
+      dangling.length ? dangling.map((e) => `${e[0]} to ${e[1]}`).join('; ')
+        : 'fromService, so nobody types a hostname and nobody gets the suffix wrong');
+  // And it must point at the service that IS that region, not merely at some service.
+  const byName = new Map(services.map((s) => [s.name, s]));
+  const crossed = services.flatMap((s) => Object.entries(s.from))
+    .filter((e) => byName.get(e[1])?.env.FPSBONE_REGION
+      !== e[0].slice('FPSBONE_PEER_'.length).toLowerCase());
+  okN(crossed.length === 0, 'and points at the service that actually is that region',
+      crossed.length ? crossed.map((e) => `${e[0]} to ${e[1]}`).join('; ') : 'each peer matched');
+
+  // THE LINE THAT DECIDES WHETHER PLAYERS CAN MEET. A plain `build` deploys a page that looks
+  // identical and puts everyone in a private in-tab room against bots.
+  const notServerBuild = services.filter((s) => !String(s.buildCommand).includes('run build:server'));
+  okN(notServerBuild.length === 0,
+      'every service builds with `build:server`, which is what bakes the socket target in',
+      notServerBuild.length ? notServerBuild.map((s) => s.name).join(', ')
+        : 'a plain `build` would ship localserver.js to everyone');
+  okN(services.every((s) => s.startCommand === 'node server/serve.js'),
+      'and starts the server directly rather than rebuilding the client on every wake');
+  okN(services.every((s) => s.plan === 'free'), 'and nothing here quietly asks for a paid plan');
+
+  const serveSrc = readFileSync('server/serve.js', 'utf8');
+  okN(services.every((s) => s.healthCheckPath === '/healthz') && serveSrc.includes("'/healthz'"),
+      'the health check path the blueprint names is one the server answers');
+
+  // The two endpoints the menu depends on, and the header without which the ping is a lie.
+  // Proven live against a running server by `npm run probe:modes`; asserted here so a rename
+  // cannot pass verify on its way to breaking the picker.
+  okN(serveSrc.includes("=== '/ping'") && serveSrc.includes("=== '/regions'"),
+      'the server answers both endpoints the browser measures and reads the table from');
+  const ping = serveSrc.slice(serveSrc.indexOf("=== '/ping'"), serveSrc.indexOf("=== '/regions'"));
+  okN(ping.includes("'cache-control': 'no-store'"),
+      'and /ping forbids caching, without which every region on earth reports as 0ms',
+      'the bug that looks like a triumph');
+  okN(ping.includes('...CORS'),
+      'and sends CORS, without which every region but your own reads as unreachable',
+      'the menu on one region has to ask all of them');
+}
+
+
+// ── THE CARD THE PLAYER ACTUALLY READS.
+// Everything above this line is a coupling: a class name that exists in both files, a call
+// that is wired up, a precedence that is in the right order. None of it runs `renderRegions`,
+// and the markup is exactly where a mistake is invisible to a test and obvious to a player —
+// a grade class spelled by hand instead of derived, an occupancy line that reads `undefined
+// playing`, a `down` card that is still clickable and dials a server that never answered.
+//
+// There is no DOM library in this checkout and installing one to render four cards would be
+// the tail wagging the dog, so the function is lifted out of menu.js by text and run against
+// a stub that records what it was handed. Lifted rather than copied on purpose: a copy of the
+// template in here would keep passing long after menu.js stopped agreeing with it.
+{
+  const menuSrc = readFileSync('client/src/menu.js', 'utf8');
+  const at = menuSrc.indexOf('function renderRegions()');
+  let end = -1;
+  for (let i = menuSrc.indexOf('{', at), d = 0; i > 0 && i < menuSrc.length; i++) {
+    if (menuSrc[i] === '{') d++;
+    else if (menuSrc[i] === '}' && --d === 0) { end = i + 1; break; }
+  }
+  const fnSrc = at < 0 || end < 0 ? '' : menuSrc.slice(at, end);
+  okN(fnSrc.includes('card.innerHTML') && fnSrc.endsWith('}'),
+      'renderRegions can be lifted whole out of menu.js and run without a browser',
+      `${fnSrc.length} chars, braces balanced`);
+
+  // The stub is the whole browser this needs: an element that remembers its class, its html
+  // and whether anybody bound a click to it.
+  const made = [];
+  const mkEl = () => {
+    const c = { className: '', innerHTML: '', clicks: [] };
+    c.addEventListener = (_ev, fn) => c.clicks.push(fn);
+    made.push(c);
+    return c;
+  };
+  const stubSet = { patch: null, set(p) { this.patch = p; return this; } };
+  const render = (list, active, href = 'https://here.example/?server=ws%3A%2F%2Fx&region=eu&keep=1') => {
+    made.length = 0;
+    const grp = { hidden: 'untouched' };
+    const box = { kids: 'untouched', replaceChildren: (...k) => { box.kids = k; } };
+    const loc = { href, reloaded: false, reload() { this.reloaded = true; } };
+    stubSet.patch = null;
+    new Function(
+      'els', 'regions', 'activeRegion', 'fastest', 'pingGrade', 'settings', 'HERE',
+      'document', 'location', 'URL',
+      `${fnSrc}${String.fromCharCode(10)}return renderRegions();`,
+    )({ regionsGrp: grp, regions: box }, list, active ?? null, fastest, pingGrade, stubSet, HERE,
+      { createElement: mkEl }, loc, URL);
+    return { grp, box, loc, cards: [...made] };
+  };
+
+  // Four regions covering every state a card has a different face for: answered fast and
+  // occupied, answered slowly, still waking, and never answered at all.
+  const fix = [
+    { id: 'sea', label: 'ASIA', where: 'Singapore', host: 'https://a.example', ms: 41, humans: 6, state: 'ok', mine: true },
+    { id: 'usw', label: 'AMERICA', where: 'Oregon, USA', host: 'https://b.example', ms: 212, humans: 0, state: 'ok' },
+    { id: 'eu', label: 'EUROPE', where: 'Frankfurt, Germany', host: 'https://c.example', ms: NaN, humans: null, state: 'waking' },
+    { id: 'use', label: 'AMERICA · EAST', where: 'Virginia, USA', host: 'https://d.example', ms: NaN, humans: null, state: 'down' },
+  ];
+
+  // ONE SERVER IS NOT A CHOICE — the hidden flag, from the function rather than from the html.
+  const one = render([fix[0]], 'sea');
+  okN(one.grp.hidden === true && Array.isArray(one.box.kids) && one.box.kids.length === 0,
+      'a single-region deploy draws no picker at all, rather than one card that does nothing',
+      `hidden=${one.grp.hidden}, ${one.cards.length} cards built`);
+  const none = render([], null);
+  okN(none.grp.hidden === true && none.cards.length === 0,
+      'and neither does a table that arrived empty');
+
+  const four = render(fix, 'usw');
+  okN(four.grp.hidden === false && four.cards.length === 4 && four.box.kids.length === 4,
+      'four regions draw four cards and reveal the group', `hidden=${four.grp.hidden}`);
+  const [sea, usw, eu, use] = four.cards;
+
+  // The number, and the colour it is wearing. `p-good` is derived from pingGrade in the
+  // source, so this asserts the two ends of that agree at the boundary that matters: 41ms is
+  // the reassuring colour and 212ms is not.
+  okN(sea.innerHTML.includes('<u class="p-good">41ms</u>'),
+      'a fast region shows its measured round trip in the colour that means "this will feel fine"',
+      sea.innerHTML.slice(sea.innerHTML.indexOf('<u')));
+  okN(usw.innerHTML.includes('<u class="p-poor">212ms</u>'),
+      'and an ocean away shows the same number in the colour that means "you will be leading targets"');
+  okN(eu.innerHTML.includes('<u class="p-wait">waking…</u>'),
+      'a sleeping free instance says waking… rather than sitting blank for a minute');
+  const pend = render(fix.map((r) => ({ ...r, ms: NaN, state: 'pending' })), 'usw');
+  okN(pend.cards.every((c) => c.innerHTML.includes('<u class="p-wait">…</u>')),
+      'and a probe still in flight says nothing yet in the same place the number will land');
+
+  // The unreachable card. Three separate things have to be true or it is a trap: it looks
+  // disabled, it says why, and it cannot be clicked — a card that dials a server which never
+  // answered reloads the page onto a socket that will never open.
+  okN(use.className.includes('dis') && use.innerHTML.includes('<u class="p-none">unreachable</u>'),
+      'a region that never answered is greyed and named unreachable, not hidden',
+      `class="${use.className}"`);
+  okN(use.innerHTML.includes('no answer — asleep, or not deployed'),
+      'and says which of the two it probably is, because on a free tier it is usually asleep');
+  okN(use.clicks.length === 0,
+      'and is not clickable, so nobody reloads the page onto a server that did not answer');
+
+  // FASTEST is on exactly one card and it is the lowest number on the screen.
+  const marked = four.cards.filter((c) => c.innerHTML.includes('FASTEST'));
+  okN(marked.length === 1 && marked[0] === sea,
+      'exactly one card is marked FASTEST, and it is the one with the lowest ping');
+  okN(sea.innerHTML.includes('<em class="mine">THIS PAGE</em>')
+      && four.cards.filter((c) => c.innerHTML.includes('THIS PAGE')).length === 1,
+      'and the server that sent the html is named once, on the region it actually is');
+  okN(usw.className.includes('on') && usw.clicks.length === 0
+      && sea.clicks.length === 1 && eu.clicks.length === 1,
+      'the region already connected is marked and unclickable; the others are clickable',
+      'clicking the one you are on would reload the page to arrive where you already are');
+
+  // Occupancy, including the case that reads as a bug: zero has to print as zero. `0 playing`
+  // is the fact a player chooses on — a beautiful ping to an empty room is not the better room
+  // — and a falsy test instead of Number.isFinite would silently drop exactly that card.
+  okN(sea.innerHTML.includes('Singapore · 6 playing'),
+      'a card carries where the server is and how many people are on it');
+  okN(usw.innerHTML.includes('Oregon, USA · 0 playing'),
+      'and an empty region says 0 playing rather than falling back to bare geography',
+      'the whole point of the count is telling those two apart');
+  okN(eu.innerHTML.includes('Frankfurt, Germany') && !eu.innerHTML.includes('playing'),
+      'while a region that has not answered yet claims no population at all');
+  const junk = new RegExp(['undefined', 'NaN', String.fromCharCode(92, 91) + 'object'].join('|'));
+  const dirty = four.cards.filter((c) => junk.test(c.innerHTML));
+  okN(dirty.length === 0,
+      'and no card leaks undefined, NaN or an object into text a player reads',
+      dirty.map((c) => c.innerHTML).join(' | ') || 'all four clean');
+
+  // The click. Two things, and the second is why a working store still produced a card that
+  // appeared to do nothing: `?server=` in the url outranks the setting that was just written.
+  const pick = render(fix, 'usw');
+  pick.cards[0].clicks[0]();
+  okN(stubSet.patch?.region === 'sea' && stubSet.patch?.regionHost === 'https://a.example',
+      'clicking a region stores the id AND the address, so the next load dials it immediately',
+      JSON.stringify(stubSet.patch));
+  const after = new URL(pick.loc.href);
+  okN(!after.searchParams.has('server') && !after.searchParams.has('region')
+      && !after.searchParams.has('regionHost'),
+      'and drops the query params that would outrank it, which is what made the click look dead',
+      pick.loc.href);
+  okN(after.searchParams.get('keep') === '1',
+      'while leaving every other param on the url alone');
+
+  const dflt = 'https://here.example/?server=ws%3A%2F%2Fx&region=eu&keep=1';
+  const hereList = [
+    { id: HERE, label: 'THIS SERVER', where: 'this machine', host: 'https://here.example', mine: false, ms: 3, state: 'ok' },
+    fix[1],
+  ];
+  const back = render(hereList, 'usw');
+  back.cards[0].clicks[0]();
+  okN(stubSet.patch?.region === HERE && stubSet.patch?.regionHost === '',
+      'and choosing the page’s own server stores no address, since that one cannot go stale');
+  okN(back.loc.reloaded === true || back.loc.href !== dflt,
+      'a pick always reloads, because the socket was opened once at load against one address',
+      back.loc.reloaded ? 'reload()' : back.loc.href);
+}
+console.log([...pN, ...fN].join('\n'));
 // ─────────────────────────────────────────── Part I: two live clients
 console.log('\n=== Part I — two live clients over the wire ===\n');
 
@@ -7024,8 +7583,9 @@ try {
 }
 
 const total = fail.length + fB.length + fC.length + fD.length + fE.length + fF.length
-  + fG.length + fH.length + fJ.length + fK.length + fL.length + fM.length + f2.length;
+  + fG.length + fH.length + fJ.length + fK.length + fL.length + fM.length + fN.length
+  + f2.length;
 console.log(
-  `\n${total === 0 ? 'ALL PASS' : `${total} FAILURE(S)`} — ${pass.length + pB.length + pC.length + pD.length + pE.length + pF.length + pG.length + pH.length + pJ.length + pK.length + pL.length + pM.length + p2.length} checks passed`,
+  `\n${total === 0 ? 'ALL PASS' : `${total} FAILURE(S)`} — ${pass.length + pB.length + pC.length + pD.length + pE.length + pF.length + pG.length + pH.length + pJ.length + pK.length + pL.length + pM.length + pN.length + p2.length} checks passed`,
 );
 process.exit(total === 0 ? 0 : 1);

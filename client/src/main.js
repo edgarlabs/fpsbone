@@ -23,6 +23,7 @@ import { TRACK_KEYS, badgeOf, levelOf, stepOf, tierOf } from '../../shared/badge
 import { SPREE_MS, wingsOf } from '../../shared/spree.js';
 import { getIdentity } from './identity.js';
 import { getSettings } from './settings.js';
+import { HERE, loadRegions, probeAll, socketFor } from './regions.js';
 import { createMenu } from './menu.js';
 import { createInput } from './input.js';
 import { createNet } from './net.js';
@@ -37,11 +38,18 @@ import { createAudio } from './audio.js';
 const qs = new URLSearchParams(location.search);
 const lag = Number(qs.get('lag')) || 0;
 const jitter = Number(qs.get('jitter')) || 0;
+/** Read before the host block below, because the region stored in it is now one of the
+ *  answers to "which server" — see the precedence list there. */
+const settings = getSettings();
 /**
- * Which host this client talks to. Three answers, in falling order of precedence, and the
- * middle one is what makes internet multiplayer possible from a build.
+ * Which host this client talks to. Four answers, in falling order of precedence, and the two
+ * in the middle are what make internet multiplayer possible from a build.
  *
  *   ?server=wss://host   this page, this once. The escape hatch, and it beats everything.
+ *   the chosen region    a server somewhere else in the world, picked in the menu and stored
+ *                        with its address so it can be dialled before any region table has
+ *                        loaded — see the `region` field in settings.js. This is the whole of
+ *                        what choosing ASIA over AMERICA does.
  *   VITE_SERVER          baked in when the bundle was built. The literal `origin` means
  *                        "whatever host served this page", which is the shape a deploy that
  *                        serves the client AND the WebSocket from one process takes — see
@@ -56,6 +64,11 @@ const jitter = Number(qs.get('jitter')) || 0;
  * timeout, which is a stall on every load and a wrong answer on a slow one. Whoever built
  * the bundle knows, so they say.
  *
+ * A REGION IS NOT THE SAME KIND OF FACT, which is why it sits above VITE_SERVER rather than
+ * inside it: the bundle says whether there is a server at all, and the player says which one.
+ * A chosen region also means the game socket is cross-origin — fine for a WebSocket, and the
+ * reason /ping and /regions send CORS headers while nothing else does.
+ *
  * `?local=1` still forces the in-page host, which is how the bots-only path stays reachable
  * from a real deploy for a quick offline match.
  */
@@ -63,12 +76,16 @@ const explicitServer = qs.get('server');
 /** Same-origin WebSocket URL: wss: from an https: page, or the browser refuses it as mixed
  *  content. The port rides along in `location.host`, so a non-standard one survives. */
 const sameOrigin = () => `${location.protocol === 'https:' ? 'wss:' : 'ws:'}//${location.host}`;
+/** The stored region, as a socket url — null for "this server", which is the default and the
+ *  only case that needs no address to work. */
+const regionUrl = socketFor(settings.region, settings.regionHost);
 const baked = import.meta.env.VITE_SERVER;
 const bakedUrl = baked ? (baked === 'origin' ? sameOrigin() : baked) : null;
 const useLocalHost =
-  qs.get('local') === '1' || (!explicitServer && !bakedUrl && !import.meta.env.DEV);
+  qs.get('local') === '1'
+  || (!explicitServer && !regionUrl && !bakedUrl && !import.meta.env.DEV);
 const url =
-  explicitServer ?? bakedUrl ?? `ws://${location.hostname || 'localhost'}:${C.NET_PORT}`;
+  explicitServer ?? regionUrl ?? bakedUrl ?? `ws://${location.hostname || 'localhost'}:${C.NET_PORT}`;
 
 /** What to say when there is no connection. The in-page host cannot be restarted out from
  *  under the page and there is no `npm run dev` to check, so telling someone to do either
@@ -108,7 +125,6 @@ const UNREACHABLE_MSG = useLocalHost
 
 const canvas = document.getElementById('game');
 const identity = getIdentity();
-const settings = getSettings();
 /** What we asked for, kept because the server may seat us somewhere else. */
 const requestedMode = settings.mode;
 
@@ -299,6 +315,32 @@ const menu = createMenu(settings, {
   onFov: null,
   onPlay: startPlaying,
 });
+
+/**
+ * Fill the server picker: ask this origin which regions exist, then time each one.
+ *
+ * DELIBERATELY AFTER THE SOCKET IS ALREADY OPENING. The connection dials the region stored in
+ * settings and must never wait on a fetch — this is measurement for the NEXT choice, not a
+ * step on the way into a match, so a slow or missing /regions costs nothing but a hidden
+ * picker. Which is exactly the single-server case the menu already handles, so the `catch`
+ * needs no message: there is nothing for a player to do about it and nothing to tell them.
+ */
+loadRegions()
+  .then((list) => {
+    // Which card is the one we are ON, which is not simply `settings.region`. The default
+    // `here` means "whoever served this page", and the table may already name that server as
+    // a region — leaving five cards unmarked while connected to one of them is the picker
+    // getting its own subject wrong. A `?server=` override outranks the setting entirely, and
+    // then the honest answer is that none of these is the one.
+    const active = explicitServer
+      ? null
+      : settings.region === HERE
+        ? (list.find((r) => r.mine)?.id ?? HERE)
+        : settings.region;
+    menu.setRegions(list, active);
+    return probeAll(list, (results) => menu.setPings(results));
+  })
+  .catch(() => {});
 
 viewmodel.setHand(settings.hand);
 input.setLoadout(loadout);
