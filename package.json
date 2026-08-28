@@ -16,7 +16,8 @@
     "ids": "node ids.mjs",
     "verify": "node ids.mjs && node verify.mjs",
     "fuzz": "node fuzz.mjs",
-    "probe:local": "node probe-local.mjs"
+    "probe:local": "node probe-local.mjs",
+    "probe:modes": "node probe-modes.mjs"
   },
   "dependencies": {
     "three": "^0.169.0",

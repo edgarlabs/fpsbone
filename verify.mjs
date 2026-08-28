@@ -6614,53 +6614,85 @@ function fakeClient(host, mode, name) {
 }
 
 {
-  // ── the backfill ladder, driven through the real host on a stopped clock
+  // ── the backfill ladder, driven through the real host on a stopped clock — and driven in
+  // EVERY mode the server stands up, not only deathmatch.
+  //
+  // Testing one mode here was a real hole rather than a tidy shortcut. The backfill lives in
+  // server/index.js and is written once for all rooms, but a mode's slot count comes from its
+  // own entry in shared/modes.js and a team mode routes every join through a controller that
+  // deathmatch does not have. So "one human gets nine bots" being true in dm is not evidence
+  // about sniper, snowball or team DM, and a player who picks one of those and finds a thin
+  // room is the bug this loop exists to catch.
   const host = createHost({ nowNs: () => 0n });
   const roomOf = (m) => host.rooms.get(m).room;
-  const seats = [];
-  const join = () => seats.push(fakeClient(host, DEFAULT_MODE, `m${seats.length}`));
+  const live = MODE_IDS.filter((id) => host.rooms.has(id));
+  const pending = MODE_IDS.filter((id) => !host.rooms.has(id));
 
-  const SLOTS = MODES[DEFAULT_MODE].slots;
-  okM(roomOf(DEFAULT_MODE).players.size === 0,
-      'a room nobody has joined holds nobody at all',
-      'slots-minus-zero bots would leave every mode on the server simulating a full match into the void');
+  okM(live.length === host.available.length && live.length > 1,
+      'the ladder below runs in every mode the server stands up, not just ' + DEFAULT_MODE,
+      `laddering ${live.join(', ')}${pending.length ? `  |  not built yet: ${pending.join(', ')}` : ''}`);
 
-  const up = [];
-  let laddered = true;
-  for (let humans = 1; humans <= SLOTS; humans++) {
+  okM(live.every((m) => roomOf(m).players.size === 0),
+      'a room nobody has joined holds nobody at all, in any of them',
+      live.map((m) => `${m} ${roomOf(m).players.size}`).join(' '));
+
+  const upTrace = [];
+  const downTrace = [];
+  const badUp = [];
+  const badOver = [];
+  const badDown = [];
+  const badEmpty = [];
+
+  for (const mode of live) {
+    const SLOTS = MODES[mode].slots;
+    const seats = [];
+    const join = () => seats.push(fakeClient(host, mode, `${mode}${seats.length}`));
+
+    const up = [];
+    for (let humans = 1; humans <= SLOTS; humans++) {
+      join();
+      const r = roomOf(mode);
+      up.push(`${humans}h/${r.bots.size}b`);
+      if (r.bots.size !== SLOTS - humans || r.players.size !== SLOTS) badUp.push(`${mode}@${humans}h`);
+    }
+    upTrace.push(`${mode} ${up.join(' ')}`);
+
+    // Nothing refuses the eleventh, deliberately — the menu greys a full lobby out instead,
+    // which is the honest place to say no. So an over-capacity room has to be harmless
+    // rather than merely unreachable, in every mode that can fill up.
     join();
-    const r = roomOf(DEFAULT_MODE);
-    up.push(`${humans}h/${r.bots.size}b`);
-    if (r.bots.size !== SLOTS - humans || r.players.size !== SLOTS) laddered = false;
-  }
-  okM(laddered, "each human who joins takes a bot's place, and the lobby stays exactly full",
-      up.join(' '));
+    const over = roomOf(mode);
+    if (over.bots.size !== 0 || over.players.size !== SLOTS + 1) {
+      badOver.push(`${mode}: ${over.players.size} bodies, ${over.bots.size} bots`);
+    }
 
-  // Nothing refuses the eleventh, deliberately — the menu greys a full lobby out instead,
-  // which is the honest place to say no. So an over-capacity room has to be harmless
-  // rather than merely unreachable.
-  join();
-  const over = roomOf(DEFAULT_MODE);
-  okM(over.bots.size === 0 && over.players.size === SLOTS + 1,
+    // ── and back down again
+    const down = [];
+    while (seats.length) {
+      seats.pop().conn.drop();
+      const r = roomOf(mode);
+      const humans = seats.length;
+      down.push(`${humans}h/${r.bots.size}b`);
+      const wantBots = humans ? Math.max(0, SLOTS - humans) : 0;
+      const wantBodies = humans ? Math.max(SLOTS, humans) : 0;
+      if (r.bots.size !== wantBots || r.players.size !== wantBodies) badDown.push(`${mode}@${humans}h`);
+    }
+    downTrace.push(`${mode} ${down.join(' ')}`);
+    if (roomOf(mode).players.size !== 0) badEmpty.push(mode);
+  }
+
+  okM(badUp.length === 0, "each human who joins takes a bot's place, and the lobby stays exactly full",
+      badUp.length ? `wrong at ${badUp.join(', ')}` : upTrace.join('  |  '));
+  okM(badOver.length === 0,
       'a player past capacity is seated rather than refused, with no bots left to take',
-      `${over.players.size} bodies, ${over.bots.size} bots`);
-
-  // ── and back down again
-  const down = [];
-  let unladder = true;
-  while (seats.length) {
-    seats.pop().conn.drop();
-    const r = roomOf(DEFAULT_MODE);
-    const humans = seats.length;
-    down.push(`${humans}h/${r.bots.size}b`);
-    const wantBots = humans ? Math.max(0, SLOTS - humans) : 0;
-    const wantBodies = humans ? Math.max(SLOTS, humans) : 0;
-    if (r.bots.size !== wantBots || r.players.size !== wantBodies) unladder = false;
-  }
-  okM(unladder, 'and a leaver hands their slot straight back to a bot, so the match never thins out',
-      down.join(' '));
-  okM(roomOf(DEFAULT_MODE).players.size === 0,
-      'the last player out empties the room again', 'no humans, no bodies, no simulation');
+      badOver.length ? badOver.join(' | ')
+                     : `${live.length} modes, each seated one past its slot count`);
+  okM(badDown.length === 0,
+      'and a leaver hands their slot straight back to a bot, so the match never thins out',
+      badDown.length ? `wrong at ${badDown.join(', ')}` : downTrace.join('  |  '));
+  okM(badEmpty.length === 0, 'the last player out empties the room again',
+      badEmpty.length ? `still populated: ${badEmpty.join(', ')}`
+                      : 'no humans, no bodies, no simulation, in any mode');
 }
 
 {

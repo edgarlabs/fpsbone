@@ -15,3 +15,8 @@ ranks.json.pre-badges
 # Vite's local env overrides. .env.selfhost IS committed — it is the build's configuration,
 # not a secret — but anything ending .local is by convention personal.
 *.local
+
+# Scratch files for commit messages and one-off patch scripts. They are written, used and
+# deleted inside a single step; none of them is part of the game.
+.cm
+.probe-*.log

@@ -14,3 +14,6 @@ verify.mjs
 fuzz.mjs
 ids.mjs
 probe-local.mjs
+# The all-modes socket probe runs against a deployed host from a checkout, not from inside
+# the image it is testing.
+probe-modes.mjs
