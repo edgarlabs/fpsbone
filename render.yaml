@@ -26,8 +26,11 @@ services:
     name: fpsbone
     runtime: node
     plan: free
-    # Vite is a devDependency and the build needs it, so this is a full install.
-    buildCommand: npm ci && npm run build:server
+    # Vite is a devDependency and the build needs it, so this is a full install. Render sets
+    # NODE_ENV=production at RUNTIME only, so a bare `npm ci` here would already get dev deps —
+    # `--include=dev` says it out loud so the line survives that default changing, and works
+    # verbatim on a host that does export NODE_ENV during the build.
+    buildCommand: npm ci --include=dev && npm run build:server
     # Not `npm start` — that would rebuild the client every time the service wakes.
     startCommand: node server/serve.js
     # Cheap, and answers before the filesystem is touched — see serveStatic in server/serve.js.
