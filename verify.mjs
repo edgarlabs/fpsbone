@@ -57,7 +57,7 @@
 // career file are the two things here that outlive the process.
 
 import { WebSocket } from 'ws';
-import { readFileSync, writeFileSync, existsSync, unlinkSync } from 'node:fs';
+import { readFileSync, writeFileSync, existsSync, unlinkSync, mkdirSync, rmdirSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import * as C from './shared/constants.js';
@@ -5619,6 +5619,40 @@ const okH = (cond, label, detail = '') => {
       'and it is written temp-then-renamed, so no reader ever sees half a file',
       'the temp path is gone after flush, which is what lets the boot parse treat a '
       + 'truncated file as impossible-but-survivable rather than as normal');
+
+  // A FAILED WRITE, forced rather than waited for. A directory sitting where the temp file
+  // goes makes writeFileSync fail the same way on every platform, and it stands in for the
+  // failure that actually happens: on Windows a scanner holding the store open for a moment
+  // turns the rename onto it into EBUSY, which is how this suite found the bug — four
+  // careers checks went red together in one run out of three. The warning is not the thing
+  // that matters. What matters is that the career is STILL IN HAND afterwards and something
+  // is scheduled to try again, because the alternative is one console line telling a player
+  // their afternoon is gone.
+  const held = await load('{"keep":10}');
+  mkdirSync(`${STORE}.tmp`);
+  const warned = [];
+  const realWarn = console.warn;
+  let threw = null;
+  try {
+    console.warn = (m) => warned.push(String(m));
+    held.setCareer('keep', 42);
+    held.flush();
+  } catch (e) {
+    threw = e.message;
+  } finally {
+    console.warn = realWarn;
+  }
+  const kept = held._stats().dirty;
+  rmdirSync(`${STORE}.tmp`);
+  held.flush();                             // the retry, now that the path is free again
+  const landed = existsSync(STORE) ? JSON.parse(readFileSync(STORE, 'utf8')) : null;
+  okH(threw === null && kept === true && landed?.keep?.k === 42 && warned.length === 1,
+      'a write that cannot land keeps the career and stays dirty, instead of dropping it',
+      threw ? `THREW OUT OF flush: ${threw} — a disk that argues would take the server with it`
+        : `the store stayed dirty=${kept} through a blocked write, said so once `
+          + `(${JSON.stringify(warned[0]?.trim() ?? null)}), and the same career landed as `
+          + `${JSON.stringify(landed?.keep ?? null)} on the next flush — a transient failure `
+          + 'costs seconds, not a career, and nothing else in the process retries');
 
   let crashed = null;
   let empty = null;

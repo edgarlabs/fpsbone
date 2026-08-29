@@ -131,24 +131,58 @@ function schedule() {
   timer.unref?.();
 }
 
+// A WRITE THAT FAILED IS NOT A WRITE THAT SHOULD BE FORGOTTEN, and the failure is not
+// hypothetical: on Windows, anything holding the store open for the moment it takes a virus
+// scanner to look at a JSON file that just appeared turns the rename onto it into
+// ERROR_SHARING_VIOLATION, which libuv reports as EBUSY. `npm run verify` caught this
+// exactly once in three runs and the four careers checks that read the file back went red
+// with it, which is the only reason anybody found out — a real player would have been told
+// by one line of console output that their afternoon was gone.
+//
+// So: a few attempts, backing off, and the waits are the point of the table rather than a
+// detail of it. They are paid ONLY after a write has already failed, so the hot path this
+// file's header defends is untouched; a hundred milliseconds of stall in the rare case that
+// the filesystem is arguing with something is a better trade than a lost career.
+const RETRY_MS = [0, 5, 20, 80];
+
+/** Sleep on this thread, which is a thing to do exactly once: after a failed write, where
+ *  the alternative is to hand the career back to whoever is holding the file. */
+function stall(ms) {
+  if (ms > 0) Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms);
+}
+
 /** Temp-then-rename, so a reader never sees a half-written file — the guarantee the boot
  *  parse above is allowed to rely on. */
 export function flush() {
   if (timer) { clearTimeout(timer); timer = null; }
   if (!dirty) return;
   dirty = false;
-  try {
-    // Always the new shape, which is what migrates a legacy file. `b` is omitted when
-    // empty rather than written as `{}` — most accounts on a fresh upgrade have no badges
-    // yet, and eight bytes each across five thousand of them is worth not spending.
-    const out = {};
-    for (const [id, r] of store) out[id] = Object.keys(r.b).length ? { k: r.k, b: r.b } : { k: r.k };
-    writeFileSync(TMP, JSON.stringify(out));
-    renameSync(TMP, FILE);
-  } catch (err) {
-    console.warn(`  careers: write failed (${err.code ?? err.message})`);
-    try { unlinkSync(TMP); } catch { /* nothing to clean up */ }
+  // Always the new shape, which is what migrates a legacy file. `b` is omitted when
+  // empty rather than written as `{}` — most accounts on a fresh upgrade have no badges
+  // yet, and eight bytes each across five thousand of them is worth not spending.
+  const out = {};
+  for (const [id, r] of store) out[id] = Object.keys(r.b).length ? { k: r.k, b: r.b } : { k: r.k };
+  const text = JSON.stringify(out);
+  let last = null;
+  for (const wait of RETRY_MS) {
+    stall(wait);
+    try {
+      writeFileSync(TMP, text);
+      renameSync(TMP, FILE);
+      return;
+    } catch (err) {
+      last = err;
+      // The half-written temp goes, always. It is the file the boot parse is allowed to
+      // assume cannot exist, and a failed rename is precisely when it does.
+      try { unlinkSync(TMP); } catch { /* nothing to clean up */ }
+    }
   }
+  console.warn(`  careers: write failed ${RETRY_MS.length}x (${last.code ?? last.message}) — kept`);
+  // And the work goes BACK on the queue. `dirty` was cleared on the way in so that a write
+  // in flight cannot be scheduled on top of itself; leaving it cleared here is what would
+  // turn a scanner blinking into a career that never lands, since nothing else retries —
+  // the next attempt would wait for a kill that a player who just quit will never score.
+  schedule();
 }
 
 /** A career for an account, or 0 for an anonymous client. Reading counts as use, so a
