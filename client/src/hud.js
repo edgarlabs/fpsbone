@@ -14,6 +14,10 @@ import {
   MAX_STEP, TRACK_KEYS, badgeOf, labelOf, levelOf, stepOf, tierName, toNextStep,
 } from '../../shared/badges.js';
 import { pingGrade } from '../../shared/regions.js';
+// The rank device, as the PNG the scoreboard's gutter wears. The SAME canvas render.js
+// hangs over the player's head -- see insignia.js for why that matters more than it
+// looks like it should.
+import { insigniaPng } from './insignia.js';
 import { SPREE_LEGS, SPREE_MS, legsOf, spreeName } from '../../shared/spree.js';
 
 const $ = (id) => document.getElementById(id);
@@ -90,6 +94,7 @@ export function createHud() {
     feed: $('feed'),
     board: $('board'),
     boardCap: $('board-cap'),
+    boardTally: $('board-tally'),
     boardRows: $('board-rows'),
     wName: $('w-name'),
     wAmmo: $('w-ammo'),
@@ -144,6 +149,9 @@ export function createHud() {
   /** The markup the scoreboard last wrote, so a frame that would write the same thing
    *  writes nothing. See `scoreboard`. */
   let boardHtml = '';
+  /** And the header band's tally, memoised the same way and for the same reason: it is
+   *  rebuilt from the score on every frame the board is held open. */
+  let boardTally = '';
   /**
    * The killmark: when the chain on screen runs out, and what its bar is drawing between.
    *
@@ -722,7 +730,7 @@ export function createHud() {
      * frame loop for as long as a key is held, and re-parsing twelve rows of identical HTML
      * sixty times a second is a cost paid on exactly the machines least able to absorb it.
      */
-    scoreboard(now, show, players, roster, selfId, caption) {
+    scoreboard(now, show, players, roster, selfId, caption, teams) {
       els.board.classList.toggle('show', show);
       if (!show) return;
       if (caption) els.boardCap.textContent = caption;
@@ -737,26 +745,42 @@ export function createHud() {
       const sorted = [...players].sort(
         (a, b) => b.k - a.k || a.d - b.d || String(a.n).localeCompare(String(b.n)),
       );
+      // THE TALLY in the header band. In a team mode this is the authoritative score out of
+      // `md.ts` — the same array the centre readout uses, so the board and the top of the
+      // screen cannot disagree about who is winning. In FFA there is no score to name, so it
+      // says how many are here, which is the only fact the header can add.
+      const tally = Array.isArray(teams)
+        ? `<span class="tA">${TEAM_NAMES[1]}</span> <b class="tA">${teams[0] | 0}</b>`
+          + `<span class="vs">vs</span>`
+          + `<b class="tB">${teams[1] | 0}</b> <span class="tB">${TEAM_NAMES[2]}</span>`
+        : `${sorted.length} in the room`;
+      if (tally !== boardTally) {
+        boardTally = tally;
+        els.boardTally.innerHTML = tally;
+      }
       const html = sorted
-        .map((p) => {
+        .map((p, i) => {
           const who = roster?.get?.(p.id);
           const cls = [p.id === selfId ? 'me' : '', p.tm === 1 ? 'tA' : p.tm === 2 ? 'tB' : '']
             .filter(Boolean)
             .join(' ');
-          // Rank rides inside the name cell as an abbreviation. The full name would not fit
-          // and the insignia would be a second drawing of the same thing that could disagree
-          // with the plate — an abbreviation cannot, because it makes no claim about a shape.
-          // Absent for a Private on both wires, so the gutter is simply empty.
           const tier = who?.rk ?? p.rk;
-          const rk = tier ? `<span class="rk">${esc(TIERS[tier]?.abbr ?? '')}</span>` : '';
+          // THE CONNECTION, as a number and as four bars. The grade behind both comes off
+          // `pingGrade`, which is the same function the region cards in the menu grade
+          // themselves with, so a player who picked ASIA because it was green does not find
+          // a different opinion of green on the scoreboard.
+          const grade = pingGrade(p.pg ?? NaN);
           return `<tr class="${cls}">`
-            + `<td>${rk}${esc(who?.n ?? p.n)}</td>`
+            + `<td class="pl">${i + 1}</td>`
+            + `<td class="ins">${insigniaCell(tier)}</td>`
+            + `<td class="who">${esc(who?.n ?? p.n)}</td>`
             + `<td class="bgc">${badgeSlot(who?.bg, spin)}</td>`
-            + `<td>${p.k}</td><td>${p.d}</td>`
+            + `<td class="num k">${p.k}</td><td class="num">${p.d}</td>`
             // A ping of 0 is not a ping of 0. It means nobody has measured one: a bot in the
             // in-page host, or a socket in the first second of its life before the first
-            // pong. An en dash says that; a "0ms" would be a claim.
-            + `<td class="pg p-${pingGrade(p.pg ?? NaN)}">${p.pg ? `${p.pg}` : '–'}</td>`
+            // echo. An en dash says that; a "0ms" would be a claim.
+            + `<td class="pg p-${grade}"><i class="sig l${SIGNAL_BARS[grade] ?? 0}"></i>`
+            + `<b>${p.pg ? `${p.pg}` : '–'}</b></td>`
             + `</tr>`;
         })
         .join('');
@@ -908,6 +932,50 @@ export function createHud() {
       }
     },
   };
+}
+
+/**
+ * How many of the four signal bars a ping grade lights.
+ *
+ * Derived here rather than in the stylesheet because `pingGrade` is the one authority on
+ * where the boundaries are: a fifth grade added to `shared/regions.js` would otherwise light
+ * zero bars silently, and verify checks that every grade it can return appears in this map.
+ */
+const SIGNAL_BARS = { good: 4, fair: 3, poor: 2, bad: 1, none: 0 };
+
+/**
+ * THE RANK LOGO in the scoreboard's gutter, as one CSS rule per tier written on demand.
+ *
+ * The device is a PNG of the SAME canvas render.js hangs over the player's head — see
+ * insignia.js. Two reasons it arrives as a background-image and not as an `<img src>`: a data
+ * URL of a couple of kilobytes repeated on every row of every rebuilt table is a lot of
+ * markup to diff sixty times a second, and a rule keyed by tier is written once per rank the
+ * player has ever seen and then costs nothing. `#board .rki.tN` is generated, so the tier
+ * number IS the cache key and `insHave` is only there to avoid inserting the same rule twice.
+ *
+ * A Private gets nothing: `insigniaPng` returns null for tier 0, the cell stays empty, and
+ * that is the same promise the plate makes — a private has no device to wear.
+ */
+const insHave = new Set();
+let insSheet = null;
+
+function insigniaCell(tier) {
+  const png = insigniaPng(tier);
+  if (!png) return '';
+  const t = tier | 0;
+  if (!insHave.has(t)) {
+    insHave.add(t);
+    if (!insSheet) {
+      const el = document.createElement('style');
+      document.head.appendChild(el);
+      insSheet = el.sheet;
+    }
+    // Height is fixed by the stylesheet and `contain` fits the width inside it, so a general's
+    // five stars and a corporal's two chevrons come out the same height. That is deliberate
+    // and it is the same rule the world plate follows.
+    insSheet?.insertRule(`#board td.ins .rki.t${t}{background-image:url("${png.url}")}`);
+  }
+  return `<i class="rki t${t}" title="${esc(TIERS[t]?.name ?? '')}"></i>`;
 }
 
 /**

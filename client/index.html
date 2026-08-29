@@ -281,48 +281,124 @@
       #net { position: absolute; left: 24px; top: 20px; color: var(--dim); font-size: 11px; line-height: 1.7; }
       #net span { color: var(--ink); }
 
-      /* ---- scoreboard ---- */
+      /* ---- scoreboard ----
+         "the scoreboard HUD is so bad it looks like design from 1900s" — it was a bare table
+         on a flat card, 11px everywhere, one weight, no hierarchy. What follows is the same
+         information given a shape: a header band that names the match, a hairline rule, then
+         rows on a 28px rhythm with the numbers in tabular figures so a column of them holds
+         still while the ping moves.
+
+         Two things carry most of it. The PANEL is a translucent sheet over a blurred game
+         rather than an opaque box in front of it, which is what makes it read as an overlay
+         belonging to 2026 instead of a dialog from a decade of them. And the RANK is the
+         device itself, as a background image on `.rki` written at runtime — the same canvas
+         that hangs over the player's head, so the board and the world cannot disagree. */
       #board {
         position: absolute; left: 50%; top: 50%; transform: translate(-50%, -50%);
-        min-width: 470px; padding: 18px 22px; display: none;
-        background: var(--panel); border: 1px solid var(--line);
-        box-shadow: 0 8px 28px rgba(27, 36, 50, 0.18);
+        min-width: 660px; display: none; overflow: hidden;
+        border-radius: 12px; border: 1px solid var(--line);
+        background: rgba(249, 251, 253, 0.82);
+        /* Blur first, then a touch of saturation: the pale walls behind this go grey under a
+           plain blur and the panel starts looking like frosted plastic. */
+        backdrop-filter: blur(18px) saturate(1.15);
+        -webkit-backdrop-filter: blur(18px) saturate(1.15);
+        /* A long soft drop for depth, and a 1px inner highlight along the top edge — the
+           cheapest way to make a translucent sheet read as glass rather than as a hole. */
+        box-shadow: 0 28px 64px rgba(27, 36, 50, 0.26), inset 0 1px 0 rgba(255, 255, 255, 0.7);
       }
       #board.show { display: block; }
-      #board table { width: 100%; border-collapse: collapse; }
-      #board th { text-align: left; color: var(--dim); font-weight: 500; font-size: 11px; padding-bottom: 8px; }
-      #board td { padding: 3px 0; }
-      #board th:not(:first-child), #board td:not(:first-child) { text-align: right; width: 48px; }
-      /* The badge column is the one exception to the 48px right-aligned rule above: it holds a
-         word rather than a number. Left-aligned and wide enough for ELIMINATIONS, which is the
-         longest label in the badge table, so the column never reflows as the slot rotates. */
-      #board th.bgc, #board td.bgc { text-align: left; width: 132px; padding-left: 18px; }
-      #board tr.me td { color: var(--self); }
-      /* Team colour on the name only. Colouring the whole row would fight the
-         `me` highlight, which is the more important of the two to find fast. */
-      #board tr.tA td:first-child { color: var(--teamA); }
-      #board tr.tB td:first-child { color: var(--teamB); }
-      /* Rank abbreviation, inside the name cell. Not its own column: every non-first column
-         in this table is right-aligned at a fixed 48px, which is narrower than "Staff
-         Sergeant" and narrower than most of the ladder. Right-aligned in a fixed gutter so
-         the abbreviations stack into a column and the names still start flush.
-         After tr.me and tr.tA/tB deliberately — equal specificity, later in source, so a
-         badge stays quiet instead of picking up the team or self colour the name wants. */
-      #board tr td .rk {
-        display: inline-block; min-width: 30px; margin-right: 8px; text-align: right;
-        font-size: 10px; font-weight: 700; letter-spacing: 0.4px; color: var(--dim);
+
+      /* The header band. Baseline-aligned rather than centred, so the small caps of the tally
+         sit on the same line as the mode name instead of floating in the middle of it. */
+      #board-head {
+        display: flex; align-items: baseline; justify-content: space-between; gap: 24px;
+        padding: 15px 22px 13px; border-bottom: 1px solid var(--line);
+        background: linear-gradient(rgba(27, 36, 50, 0.05), rgba(27, 36, 50, 0));
       }
-      /* ONE ROTATING BADGE per row. The metal says which tier and the text says which track —
-         the same division the badge card makes, with the same five colours, so a colour means
-         one thing everywhere in the game. See `badgeSlot` in hud.js for why it is one slot and
-         not a shelf, and why the rotation is best-first. */
+      #board-cap {
+        font-size: 13px; font-weight: 700; letter-spacing: 2.4px; text-transform: uppercase;
+        color: var(--ink);
+      }
+      /* The count, or the two team scores. Tabular so a side going from 9 to 10 does not
+         shove the label sideways. */
+      #board-tally {
+        font-size: 10px; font-weight: 600; letter-spacing: 1.5px; color: var(--dim);
+        font-variant-numeric: tabular-nums; white-space: nowrap;
+      }
+      #board-tally b { font-weight: 700; font-size: 12px; }
+      #board-tally .tA { color: var(--teamA); }
+      #board-tally .tB { color: var(--teamB); }
+      #board-tally .vs { opacity: 0.45; margin: 0 7px; }
+
+      .board-body { padding: 4px 0 8px; }
+      #board table { width: 100%; border-collapse: collapse; }
+      #board th {
+        text-align: left; padding: 9px 0 7px; font-size: 9px; font-weight: 600;
+        letter-spacing: 1.6px; text-transform: uppercase; color: var(--dim);
+        border-bottom: 1px solid var(--line);
+      }
+      #board td { padding: 0; height: 28px; vertical-align: middle; font-size: 12px; }
+      /* Side gutters on the table's own cells rather than on a wrapper, so the row tint and
+         the team edge run the full width of the panel and stop at it. */
+      #board th:first-child, #board td:first-child { padding-left: 22px; }
+      #board th:last-child, #board td:last-child { padding-right: 22px; }
+
+      /* Columns. Fixed widths on everything but the name, which takes the rest. */
+      #board th.pl, #board td.pl {
+        width: 34px; color: var(--dim); font-size: 11px; font-variant-numeric: tabular-nums;
+      }
+      #board th.ins, #board td.ins { width: 40px; }
+      #board th.num, #board td.num {
+        width: 46px; text-align: right; font-variant-numeric: tabular-nums;
+      }
+      #board td.num.k { font-weight: 700; }
+      #board th.pgh, #board td.pg { width: 92px; text-align: right; }
+      #board th.bgc, #board td.bgc { width: 148px; padding-left: 16px; }
+
+      /* THE RANK DEVICE. One rule per tier is written into a stylesheet of its own at runtime
+         by `insigniaCss` in hud.js, carrying the PNG the canvas encodes; this is the box it
+         lands in. `contain` because the devices are not one shape — a chevron patch is square
+         and a general's five stars are nearly twice as wide as they are tall — and a fixed
+         box with a contained image is what keeps every badge the same HEIGHT, which is the
+         same promise the plate over the head makes. */
+      #board td.ins .rki {
+        display: inline-block; width: 30px; height: 16px; vertical-align: -3px;
+        background: center / contain no-repeat;
+      }
+      #board tbody tr { box-shadow: inset 3px 0 0 transparent; }
+      /* Zebra, at an alpha low enough to be felt rather than seen. It exists to carry the eye
+         across a 660px row from a name to a ping, which is the one thing the old flat table
+         made genuinely hard. */
+      #board tbody tr:nth-child(even) { background: rgba(27, 36, 50, 0.032); }
+      /* The side, as an edge rather than as ink on the name: a coloured name competes with
+         the self highlight, and finding your own row fast matters more than either. */
+      #board tbody tr.tA { box-shadow: inset 3px 0 0 var(--teamA); }
+      #board tbody tr.tB { box-shadow: inset 3px 0 0 var(--teamB); }
+      #board tbody tr.me { background: rgba(15, 127, 104, 0.11); }
+      /* Only when there is no side to show. In a team mode the edge is the team's. */
+      #board tbody tr.me:not(.tA):not(.tB) { box-shadow: inset 3px 0 0 var(--self); }
+      #board tbody tr.me td.who { color: var(--self); font-weight: 700; }
+      #board tbody tr.tA td.who { color: var(--teamA); }
+      #board tbody tr.tB td.who { color: var(--teamB); }
+      #board td.who {
+        overflow: hidden; text-overflow: ellipsis; max-width: 220px; white-space: nowrap;
+      }
+
+      /* ONE ROTATING BADGE per row, as a chip. The metal says which tier and the text says
+         which track — the same division the badge card makes, with the same five colours, so
+         a colour means one thing everywhere in the game. See `badgeSlot` in hud.js for why it
+         is one slot and not a shelf, and why the rotation is best-first.
+         A bordered pill rather than bare coloured text: at 10px the text alone was the one
+         thing on this board that read as a mistake. */
       #board td.bgc .bg {
-        font-size: 10px; font-weight: 700; letter-spacing: 0.5px;
+        display: inline-flex; align-items: center; gap: 5px; padding: 2px 8px;
+        border-radius: 999px; font-size: 9px; font-weight: 700; letter-spacing: 0.7px;
         color: var(--bd-metal, var(--dim));
+        border: 1px solid color-mix(in srgb, var(--bd-metal, var(--dim)) 45%, transparent);
+        background: color-mix(in srgb, var(--bd-metal, var(--dim)) 11%, transparent);
       }
       #board td.bgc .bg i {
-        font-style: normal; font-size: 9px; font-weight: 500; opacity: 0.75;
-        margin-left: 3px; vertical-align: 1px;
+        font-style: normal; font-size: 9px; font-weight: 700; opacity: 0.7;
       }
       /* The same five metals #badge uses, and deliberately the same hex values rather than a
          shared variable: these are the colours of the emblems themselves, and a badge that
@@ -333,12 +409,41 @@
       #board td.bgc .bg.b4 { --bd-metal: #c9a227; } /* gold */
       /* Distinguished, the fifth and last emblem, is the same gold as Master — so it gets the
          halo the card gives it, or the two would be indistinguishable in a table. */
-      #board td.bgc .bg.b5 { --bd-metal: #c9a227; text-shadow: 0 0 6px rgba(201, 162, 39, 0.55); }
-      /* PING, measured server-side and graded by `pingGrade`, so the boundaries are the same
-         ones the region cards in the menu use. Tabular figures because this is a column of
-         numbers that changes every second and digits of different widths make it jump. */
-      #board td.pg { font-variant-numeric: tabular-nums; font-size: 11px; }
-      #board caption { text-align: left; padding-bottom: 12px; font-size: 11px; letter-spacing: 1.4px; color: var(--dim); }
+      #board td.bgc .bg.b5 { --bd-metal: #c9a227; box-shadow: 0 0 9px rgba(201, 162, 39, 0.4); }
+
+      /* PING, graded by `pingGrade`, so the boundaries are the same ones the region cards in
+         the menu use. Tabular figures because this is a column of numbers that changes every
+         second and digits of different widths make it jump.
+         The BARS are the part worth having: four of them, lit by grade, read as a connection
+         at a glance where three digits have to be compared against a number you remember. */
+      #board td.pg { font-variant-numeric: tabular-nums; }
+      #board td.pg b { font-weight: 600; }
+      #board td.pg .sig {
+        position: relative; display: inline-block; width: 15px; height: 10px;
+        margin-right: 7px; vertical-align: -1px;
+      }
+      /* Four bars, twice: the faint ground and the lit ones over it. `currentColor` on both,
+         so they are always the grade's own colour and never a second opinion about it. */
+      #board td.pg .sig::after,
+      #board td.pg .sig::before {
+        content: ''; position: absolute; left: 0; top: 0; bottom: 0;
+        background-repeat: no-repeat;
+        background-image:
+          linear-gradient(currentColor, currentColor), linear-gradient(currentColor, currentColor),
+          linear-gradient(currentColor, currentColor), linear-gradient(currentColor, currentColor);
+        background-size: 2px 3px, 2px 5px, 2px 7px, 2px 10px;
+        background-position: 0 100%, 4px 100%, 8px 100%, 12px 100%;
+      }
+      #board td.pg .sig::after { width: 15px; opacity: 0.2; }
+      /* And the lit ones, clipped to a width. The gradients are positioned from the left edge,
+         so a narrower box simply does not paint the bars past it — no second set of rules and
+         nothing to keep in step. One class per count, and hud.js derives the count from
+         pingGrade rather than from its own copy of the thresholds. */
+      #board td.pg .sig::before { width: 0; }
+      #board td.pg .sig.l1::before { width: 3px; }
+      #board td.pg .sig.l2::before { width: 7px; }
+      #board td.pg .sig.l3::before { width: 11px; }
+      #board td.pg .sig.l4::before { width: 15px; }
 
       /* ---- overlays ---- */
       .overlay {
@@ -933,12 +1038,34 @@
         <div id="w-slots"></div>
       </div>
 
+      <!-- The scoreboard. A header band that names the match and totals it, then one row per
+           player: place, rank device, name, badge, kills, deaths, connection.
+
+           #board-cap and #board-tally are written as text; every row comes from `scoreboard`
+           in hud.js. The rank gutter is deliberately EMPTY here — the device is a background
+           image on `.rki`, and the rule that carries it is written at runtime from the same
+           canvas render.js hangs over the player's head. See client/src/insignia.js. -->
       <div id="board">
-        <table>
-          <caption id="board-cap">scores</caption>
-          <thead><tr><th>player</th><th class="bgc">badge</th><th>K</th><th>D</th><th>ping</th></tr></thead>
-          <tbody id="board-rows"></tbody>
-        </table>
+        <div id="board-head">
+          <div id="board-cap">scores</div>
+          <div id="board-tally"></div>
+        </div>
+        <div class="board-body">
+          <table>
+            <thead>
+              <tr>
+                <th class="pl">#</th>
+                <th class="ins"></th>
+                <th class="who">player</th>
+                <th class="bgc">badge</th>
+                <th class="num">K</th>
+                <th class="num">D</th>
+                <th class="pgh">ping</th>
+              </tr>
+            </thead>
+            <tbody id="board-rows"></tbody>
+          </table>
+        </div>
       </div>
 
       <div id="dead" class="overlay hidden">

@@ -1016,6 +1016,10 @@ function frame(now) {
     latestRoster,
     selfId,
     matchOver ? `${mode.label} · final` : mode.label.toLowerCase(),
+    // The authoritative team score, or null in a mode that has no sides. Straight off the
+    // match state rather than counted from the roster: a side's score is the mode's own
+    // number and `tdm.js` is the only thing allowed to have an opinion about it.
+    match?.ts ?? null,
   );
   if (!selfAlive) hud.dead(respawnAt == null ? null : (respawnAt - now) / 1000, killer);
 

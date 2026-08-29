@@ -5712,6 +5712,11 @@ const bareJ = rdJ
   .replace(/\/\*[\s\S]*?\*\//g, '')
   .replace(/(^|[^:])\/\/[^\n]*/gm, '$1');
 const hudJ = readFileSync('client/src/hud.js', 'utf8');
+/** The rank device's own module. It used to be a section of render.js, and it moved out
+ *  the day the scoreboard started wearing the same drawing -- see the header of
+ *  insignia.js. Read as text like every other client file here, for the reason Part D
+ *  explains: none of them can be imported. */
+const insJ = readFileSync('client/src/insignia.js', 'utf8');
 const idxJ = readFileSync('server/index.js', 'utf8');
 
 /** Lift a whole function BODY out of a client module and make it callable.
@@ -5733,7 +5738,7 @@ const liftFn = (src, name, params, extra = '') => {
 /** The plate constants, read out of the module rather than restated here. Restating them
  *  would make every check below pass against a source that no longer says the same thing. */
 const constJ = (name) => {
-  const m = new RegExp(`\\nconst ${name} = ([-\\d.]+);`).exec(rdJ);
+  const m = new RegExp(`\\nconst ${name} = ([-\\d.]+);`).exec(`${rdJ}${insJ}`);
   return m ? Number(m[1]) : NaN;
 };
 const PLATE = {
@@ -5913,9 +5918,9 @@ driveJ('the plate devices', () => {
     // leaves, neither of which is a rank anybody wears. Real insignia is not a count of
     // identical marks; it is a family (cloth patch or metal pin) carrying a SHAPE. So the
     // properties below are the ones the new drawing actually promises.
-    const dev = liftFn(rdJ, 'deviceOf', ['band', 'pips'],
+    const dev = liftFn(insJ, 'deviceOf', ['band', 'pips'],
       `const GOLD = 'GOLD', SILVER = 'SILVER';`);
-    const fw = liftFn(rdJ, 'fieldWidth', ['dev'],
+    const fw = liftFn(insJ, 'fieldWidth', ['dev'],
       `const FIELD_H = ${PLATE.H}, FIELD_W1 = ${constJ('FIELD_W1')}, `
       + `FIELD_W_STEP = ${constJ('FIELD_W_STEP')}, FIELD_W_MAX = ${PLATE.W_MAX};`);
     if (!dev || !fw) return;
@@ -5925,7 +5930,7 @@ driveJ('the plate devices', () => {
 
     // 1. Every device resolves to something drawable, with nothing falling through. A stack
     //    needs at least one mark; a row needs a glyph that PINS actually has.
-    const pins = new Set([...(/\nconst PINS = \{([\s\S]*?)\n\};/.exec(rdJ)?.[1] ?? '')
+    const pins = new Set([...(/\nconst PINS = \{([\s\S]*?)\n\};/.exec(insJ)?.[1] ?? '')
       .matchAll(/\n  (\w+)\(c\) \{/g)].map((m) => m[1]));
     const undrawable = devs.filter(({ d }) => (d.stack
       ? !(d.chev > 0 || d.rock > 0 || d.star > 0)
@@ -5981,6 +5986,109 @@ driveJ('the plate devices', () => {
         `worst ${most} marks — three chevrons, three rockers and a device in the void, which `
         + 'is exactly what a sergeant major wears');
 });
+
+// ─────────────────────────────── one drawing, two consumers
+//
+// The scoreboard wears the rank device now — "not text RANK but its RANK logo" — and the
+// comment it replaced was not wrong about the risk: an insignia drawn a second time for a
+// table is a second thing that can disagree with the plate over the player's head, and it
+// would disagree quietly, in a game where the two are never on screen together.
+//
+// The answer is structural rather than careful. insignia.js owns the drawing and knows nothing
+// about where it lands; render.js wraps the canvas in a texture and hud.js encodes the same
+// canvas as a PNG. So the checks here are about the SHAPE of that arrangement: that the drawing
+// exists in exactly one file, and that both consumers reach for it rather than for a copy.
+{
+  const drawn = (src) => /function (stackTex|rowTex)\(/.test(src) || /const PINS = \{/.test(src);
+  okJ(drawn(insJ) && !drawn(rdJ) && !drawn(hudJ),
+      'the rank device is drawn in exactly one file, and neither consumer holds a copy of it',
+      `insignia.js draws it; render.js is ${rdJ.split('\n').length} lines and hud.js `
+      + `${hudJ.split('\n').length}, and neither contains stackTex, rowTex or PINS — a second `
+      + 'drawing is the one bug this whole arrangement exists to make impossible');
+
+  okJ(/import \{ insigniaCanvas, FIELD_H \} from '\.\/insignia\.js';/.test(rdJ)
+      && /import \{ insigniaPng \} from '\.\/insignia\.js';/.test(hudJ)
+      && /export function insigniaCanvas\(tier\)/.test(insJ)
+      && /export function insigniaPng\(tier\)/.test(insJ),
+      'and both of them import it: the world plate as a canvas, the scoreboard as a PNG',
+      'one export each and no THREE inside insignia.js, which is what lets the same drawing '
+      + 'be a GPU texture over a head and a background-image in a table cell');
+
+  const bareIns = insJ
+    .replace(/\/\*[\s\S]*?\*\//g, '')
+    .replace(/(^|[^:])\/\/[^\n]*/gm, '$1');
+  okJ(!/\bTHREE\b/.test(bareIns) && !/import .* from 'three'/.test(insJ),
+      'the drawing knows nothing about three.js, so nothing about it is renderer-shaped',
+      'plateTexOf in render.js is where a canvas becomes a texture; the day this file needs a '
+      + 'THREE import is the day it has stopped being a drawing — and this reads the code with '
+      + 'the prose taken out, because the header of that file has to be allowed to say the word');
+
+  // ── the PNG itself, against a canvas that records rather than rasterises.
+  //
+  // insignia.js cannot be imported without a `document`, so one is provided: a 2D context that
+  // answers every call the drawing makes and counts them. What is being measured is not the
+  // pixels — nothing here can see pixels — but the three promises the scoreboard leans on: a
+  // Private has no device, every other rank produces one, and asking twice costs nothing.
+  const calls = [];
+  const ctx2d = new Proxy({}, {
+    get: (_t, k) => (k === 'fillStyle' || k === 'strokeStyle' || k === 'lineWidth'
+      || k === 'lineJoin' ? '' : (...a) => { calls.push(`${String(k)}(${a.length})`); }),
+    set: () => true,
+  });
+  const made = [];
+  globalThis.document = {
+    createElement: () => {
+      const cv = {
+        width: 0, height: 0,
+        getContext: () => ctx2d,
+        toDataURL: () => `data:image/png;base64,CV${made.length}`,
+      };
+      made.push(cv);
+      return cv;
+    },
+    head: { appendChild: () => {} },
+  };
+  const ins = await import('./client/src/insignia.js');
+
+  const threw = [];
+  const png = (t) => {
+    try {
+      return ins.insigniaPng(t);
+    } catch (e) {
+      threw.push(`${t}: ${e?.message ?? e}`);
+      return undefined;
+    }
+  };
+  const all = TIERS.map((_, t) => png(t));
+  const nothing = [999, -1, undefined, null, NaN].map(png);
+  const coerced = [1.5, '16'].map(png);
+  okJ(!threw.length && all[0] === null
+      && all.slice(1).every((e) => e && /^data:image\/png/.test(e.url) && e.h > 0)
+      && nothing.every((e) => e === null)
+      && coerced[0] === all[1] && coerced[1] === all[16],
+      'every rank above Private encodes to a PNG, a Private encodes to nothing, and junk is nothing',
+      threw.length ? `THREW ON ${threw.join('; ')}`
+        : `${all.length - 1} devices drawn over ${calls.length} canvas calls; 999, -1, undefined, `
+          + 'null and NaN all come back null, so a rank the client does not have leaves the gutter '
+          + 'empty rather than drawing an empty field for it, and 1.5 and "16" land on tier 1 and '
+          + 'tier 16 rather than anywhere new');
+
+  const drawnCount = made.length;
+  const again = TIERS.map((_, t) => png(t));
+  okJ(made.length === drawnCount && again.every((e, t) => e === all[t]),
+      'and the same rank asked for twice is the same object, drawn once',
+      `${drawnCount} canvases for ${TIERS.length - 1} ranks, and a second pass over the whole `
+      + 'ladder made none — the board rebuilds while TAB is held, and rasterising a chevron per '
+      + 'frame per row is the cost that cache exists to refuse');
+
+  const urls = new Set(all.slice(1).map((e) => e.url));
+  okJ(urls.size === TIERS.length - 1,
+      'and no two ranks share a cache entry, so no player wears somebody else\u2019s insignia',
+      `${urls.size} distinct entries for ${TIERS.length - 1} ranks — the cache is keyed by tier, `
+      + 'which is the only thing the drawing depends on');
+
+  delete globalThis.document;
+}
 
 // ─────────────────────────────── tier zero, the dead, and who owns `visible`
 {
@@ -6077,47 +6185,64 @@ driveJ('the rank readout', () => {
             : 'no throw from a fresh career to five hundred past the top of the ladder');
     }
 
-    // The scoreboard rank gutter, as the two lifted statements that build it. `rk` now arrives
-    // on BOTH wires — MSG.ROSTER carries it per career and the snapshot carries it per tick —
-    // so what is lifted is the merge as well as the render, and an index the client's table
-    // does not have still has to come out blank rather than as the word undefined.
-    const gut = /const tier = ([^\n]*);\s*\n\s*const rk = ([^\n]*);/.exec(hudJ);
+    // The scoreboard rank gutter, as the two lifted pieces that build it: the merge that picks
+    // WHICH tier a row wears, and the cell that turns that tier into the device. `rk` arrives on
+    // BOTH wires — MSG.ROSTER carries it per career and the snapshot carries it per tick — so the
+    // merge is worth a check of its own, and an index the client's table does not have still has
+    // to come out blank rather than as the word undefined.
+    const gut = /\n\s*const tier = (who[^\n]*);/.exec(hudJ);
     okJ(!!gut, 'the scoreboard rank gutter is still where this suite looks for it',
-        gut ? `${gut[1]} then ${gut[2]}`.replace(/\s+/g, ' ')
-          : 'no match — the gutter was rewritten');
-    if (gut) {
-      const cell = new Function('who', 'p', 'TIERS', 'esc',
-          `const tier = ${gut[1]}; const rk = ${gut[2]}; return rk;`);
+        gut ? gut[1].replace(/\s+/g, ' ') : 'no match — the gutter was rewritten');
+    const cellFn = liftFn(hudJ, 'insigniaCell',
+        ['tier', 'insigniaPng', 'esc', 'TIERS', 'insHave', 'document'], 'let insSheet = null;');
+    if (gut && cellFn) {
+      const tierOf = new Function('who', 'p', `return ${gut[1]};`);
+      // A stand-in for the drawing: the real one is run a few blocks up against a stubbed
+      // canvas. What is measured here is the gutter's own decisions, and those are the same
+      // whether the device is 40 bytes or 4 kilobytes.
+      const pngFake = (v) => {
+        const t = v | 0;
+        return !(t > 0) || t >= TIERS.length ? null : { url: `data:image/png;base64,R${t}` };
+      };
+      const doc = { createElement: () => ({ sheet: { insertRule: () => {} } }), head: { appendChild: () => {} } };
+      const id = (x) => String(x);
+      const cellOf = (who, p) => cellFn(tierOf(who, p), pngFake, id, TIERS, new Set(), doc);
+
       // THE MERGE, and which wire wins. Both numbers come off `rankOf` on the same career, so
       // they agree in every ordinary case — but the roster is the message that carries who
       // somebody IS, and the snapshot's copy exists for the plate. The precedence has to be
       // the roster, and the fallback has to exist: there is one tick between a join bumping
       // the revision and the push going out, and a board opened inside it would be rankless.
-      const merged = cell({ rk: 20 }, { rk: 3 }, TIERS, (s) => String(s));
-      const fellBack = cell(undefined, { rk: 20 }, TIERS, (s) => String(s));
-      okJ(merged.includes(TIERS[20].abbr) && fellBack.includes(TIERS[20].abbr),
+      okJ(tierOf({ rk: 20 }, { rk: 3 }) === 20 && tierOf(undefined, { rk: 20 }) === 20
+          && cellOf({ rk: 20 }, { rk: 3 }).includes('t20'),
           'the roster outranks the snapshot for the gutter, and the snapshot is still the fallback',
-          `roster 20 over snapshot 3 → ${merged}, no roster row at all → ${fellBack}`);
-      const id = (s) => String(s);
+          `roster 20 over snapshot 3 → tier ${tierOf({ rk: 20 }, { rk: 3 })}, no roster row at all `
+          + `→ tier ${tierOf(undefined, { rk: 20 })}, which the cell wears as `
+          + `${cellOf({ rk: 20 }, { rk: 3 })}`);
+
       // A throw is reported as the text it would have rendered, because that is what it costs:
       // an exception thrown building one row takes the whole scoreboard, not one gutter.
       const bad = [];
+      const junkish = (out) => out.some((s2) => /undefined|NaN|null/.test(s2));
       const shown = (rk) => {
         try {
-          return cell(undefined, { rk }, TIERS, id);
+          return cellOf(undefined, { rk });
         } catch (e) {
           bad.push(`${rk}: ${e?.message ?? e}`);
           return `${e?.message ?? e}`;
         }
       };
-      const junk = [999, -1, 0, undefined, null, 1.5, '16'].map((v) => shown(v));
-      okJ(!bad.length && !junk.some((s) => /undefined|NaN/.test(s))
-          && shown(0) === '' && shown(20).includes('GA'),
+      const blank = [999, -1, 0, undefined, null].map((v) => shown(v));
+      const coerced = [1.5, '16'].map((v) => shown(v));
+      okJ(!bad.length && blank.every((s2) => s2 === '')
+          && coerced.every((s2) => /^<i class="rki t\d+" title="[^"]+"><\/i>$/.test(s2))
+          && !junkish([...blank, ...coerced, shown(20)]) && shown(20).includes(TIERS[20].name),
           'a rank the client does not have leaves the scoreboard gutter empty, not printing junk',
           bad.length ? `THREW ON ${bad.join('; ')}`
-          : `tier 20 shows ${shown(20)}, and 999, -1, 0, undefined, null, 1.5 and "16" all come `
-          + 'back clean — the abbreviation is used rather than the insignia precisely because a '
-          + 'second drawing of the same rank could disagree with the plate, and text cannot');
+          : `tier 20 shows ${shown(20)}; 999, -1, 0, undefined and null all come back as an empty `
+          + `cell, and 1.5 and "16" land on a real rank (${coerced.join(' ')}) — the device is a `
+          + 'lookup, and a lookup that misses is the same nothing a Private gets rather than a '
+          + 'broken image with the word undefined in its title');
     }
 });
 
@@ -8937,35 +9062,61 @@ const okO = (cond, label, detail = '') => {
   const sig = /\n {4}scoreboard\(([^)]*)\) \{/.exec(hudJ);
   const boardSrc = sig ? braced(hudJ, sig.index + sig[0].length - 1) : null;
   const rot = /\n\s*const BADGE_ROT_MS = (\d+);/.exec(hudJ);
+  // The rank gutter's cell, and the map from a ping grade to a count of lit bars. Both are
+  // module-level in hud.js for the same reason the badge slot is: they are the parts of a row
+  // that have a rule of their own, and lifting them means the checks below run the code that
+  // ships rather than a paraphrase of it.
+  const cellAt = hudJ.indexOf('function insigniaCell(');
+  const cellSrc = cellAt < 0 ? null : hudJ.slice(cellAt, hudJ.indexOf('{', cellAt))
+    + braced(hudJ, hudJ.indexOf('{', cellAt));
+  const barsSrc = /\nconst SIGNAL_BARS = (\{[^}]*\});/.exec(hudJ);
 
-  okO(!!escSrc && !!slotSrc && !!boardSrc && !!rot,
-      'the scoreboard and the badge slot can be lifted whole out of hud.js and run',
-      escSrc && slotSrc && boardSrc && rot
+  okO(!!escSrc && !!slotSrc && !!boardSrc && !!rot && !!cellSrc && !!barsSrc,
+      'the scoreboard, the badge slot and the rank cell can be lifted whole out of hud.js and run',
+      escSrc && slotSrc && boardSrc && rot && cellSrc && barsSrc
         ? `badgeSlot ${slotSrc.length} chars, scoreboard ${boardSrc.length} chars, `
-          + `BADGE_ROT_MS=${rot[1]}ms, braces balanced`
+          + `insigniaCell ${cellSrc.length} chars, BADGE_ROT_MS=${rot[1]}ms, braces balanced`
         : 'no match — one of them was renamed or reshaped, so nothing below it is measured');
 
-  if (escSrc && slotSrc && boardSrc && rot) {
+  if (escSrc && slotSrc && boardSrc && rot && cellSrc && barsSrc) {
     const ROT = Number(rot[1]);
+    const BARS = new Function(`return ${barsSrc[1]};`)();
     // Every closure variable becomes a parameter, and `boardHtml` is declared in the wrapper
     // rather than in the body so it survives between calls — the early-out below is a claim
     // about the SECOND call with the same rows, and a body that redeclared it would pass by
     // never having remembered anything.
     const make = new Function('els', 'TIERS', 'pingGrade', 'TRACK_KEYS', 'tierName', 'labelOf',
-      'BADGE_ROT_MS',
-      `const esc = ${escSrc[1]};\n${slotSrc}\nlet boardHtml = '';\n`
+      'BADGE_ROT_MS', 'TEAM_NAMES', 'insigniaPng', 'document',
+      `const esc = ${escSrc[1]};\n${slotSrc}\n`
+      + `const SIGNAL_BARS = ${barsSrc[1]};\n`
+      + `const insHave = new Set();\nlet insSheet = null;\n${cellSrc}\n`
+      + `let boardHtml = '';\nlet boardTally = '';\n`
       + `return ({ scoreboard(${sig[1]}) ${boardSrc} }).scoreboard;`);
 
     let html = '';
     let writes = 0;
     let shown = null;
     let cap = '';
+    let tally = '';
+    let tallyWrites = 0;
     const els = {
       board: { classList: { toggle: (_c, on) => { shown = on; } } },
       boardCap: { set textContent(v) { cap = v; }, get textContent() { return cap; } },
+      boardTally: { set innerHTML(v) { tally = v; tallyWrites++; }, get innerHTML() { return tally; } },
       boardRows: { set innerHTML(v) { html = v; writes++; }, get innerHTML() { return html; } },
     };
-    const board = make(els, TIERS, pingGrade, TRACK_KEYS, tierName, labelOf, ROT);
+    // The device arrives as a data URL out of insignia.js, which needs a canvas — Part J runs
+    // the real one against a stubbed 2D context. What matters HERE is what the row does with
+    // it: one rule per rank ever seen, written once, and a cell that names the rank it drew.
+    const rules = [];
+    const pngFake = (tier) => (tier > 0 && tier < TIERS.length
+      ? { url: `data:image/png;base64,RANK${tier}`, w: 128, h: 33 } : null);
+    const docFake = {
+      createElement: () => ({ sheet: { insertRule: (r) => rules.push(r) } }),
+      head: { appendChild: () => {} },
+    };
+    const board = make(els, TIERS, pingGrade, TRACK_KEYS, tierName, labelOf, ROT,
+                       TEAM_NAMES, pngFake, docFake);
 
     // A cast with something to say in every column: a ranked leader, a shelf of three tracks
     // to rotate through, a player with nothing at all, two teams, and a name with markup in it.
@@ -8981,8 +9132,8 @@ const okO = (cond, label, detail = '') => {
       [3, { i: 3, n: 'BOT Ivy', bg: { sniper: 3 } }],
       [4, { i: 4, n: 'nothing' }],
     ]);
-    const draw = (now = 0, show = true, caption = 'deathmatch') => {
-      board(now, show, snap, roster, 2, caption);
+    const draw = (now = 0, show = true, caption = 'deathmatch', teams = null) => {
+      board(now, show, snap, roster, 2, caption, teams);
       return html;
     };
 
@@ -8994,36 +9145,66 @@ const okO = (cond, label, detail = '') => {
         'four players in the room draw four rows, once, under the caption they were given',
         `${rows.length} rows, ${writes} write(s) to the table body, caption "${cap}"`);
 
-    // THE THREE THINGS THE PLAYER SAID WERE MISSING, each in its own column.
+    // THE RANK, AS ITS OWN DEVICE. This column used to print an abbreviation, and the comment
+    // defending it said an insignia "would be a second drawing of the same thing that could
+    // disagree with the plate". The player's answer was "not text RANK but its RANK logo", and
+    // the drift that abbreviation was avoiding is gone for a better reason than text: there is
+    // ONE drawing now, in insignia.js, and render.js and hud.js are both consumers of it.
     const ga = rowWith('ranked');
-    okO(ga.includes(`<span class="rk">${TIERS[20].abbr}</span>`)
-        && !rowWith('nothing').includes('class="rk"'),
-        'a rank rides in the name cell as the abbreviation the plate uses, and a Private has none',
-        `${ga} — the full name would not fit and an insignia would be a second drawing of the `
-        + 'same rank that could disagree with the plate; an abbreviation makes no claim about a shape');
+    okO(new RegExp(`<td class="ins"><i class="rki t20" title="${TIERS[20].name}"></i></td>`).test(ga)
+        && rowWith('nothing').includes('<td class="ins"></td>')
+        && !first.includes('class="rk"'),
+        'a rank is worn as the insignia itself, from the same drawing as the plate, and a Private has none',
+        `${(/<td class="ins">.*?<\/td>/.exec(ga) ?? [''])[0]} — the device is a background-image `
+        + 'keyed by tier, so the row carries a class and not two kilobytes of data URL per player');
+
+    // One rule per rank ever seen, inserted once. Two ranks in this cast carry a device, and a
+    // board redrawn four times must not insert eight rules: the sheet is the cache.
+    const tiersSeen = [...new Set([...roster.values()].map((r) => r.rk).filter(Boolean))];
+    okO(rules.length === tiersSeen.length
+        && rules.every((r) => /^#board td\.ins \.rki\.t\d+\{background-image:url\("data:image\/png/.test(r)),
+        'and the device is one CSS rule per tier, written on demand and never twice',
+        `${rules.length} rule(s) for ${tiersSeen.length} ranked player(s): `
+        + `${rules.map((r) => (/\.rki\.(t\d+)/.exec(r) ?? [])[1]).join(', ')} — a data URL repeated `
+        + 'on every row of a table rebuilt while TAB is held is markup nobody needs to diff');
 
     // THE GRADE COMES OFF `pingGrade`, not out of a literal here, because the claim is that the
     // row and the region card share ONE definition of these colours. A board carrying its own
     // copy of the thresholds would drift from the menu the first time either of them moved, and
     // the drift would be invisible: both still print three digits, in two different inks.
-    const pgOf = (row) => (/<td class="pg p-([a-z]+)">([^<]*)</.exec(row) ?? []).slice(1).join(':');
+    const pgOf = (row) => (/<td class="pg p-([a-z]+)"><i class="sig l(\d)"><\/i><b>([^<]*)</
+      .exec(row) ?? []).slice(1).join(':');
+    const want = (ms) => `${pingGrade(ms)}:${BARS[pingGrade(ms)]}:${ms > 0 ? ms : '–'}`;
     const cells = [pgOf(ga), pgOf(rowWith('BOT Ivy')), pgOf(rowWith('nothing'))];
-    okO(cells[0] === `${pingGrade(240)}:240`
-        && cells[1] === `${pingGrade(18)}:18`
-        && cells[2] === `${pingGrade(NaN)}:–`,
+    okO(cells[0] === want(240) && cells[1] === want(18) && cells[2] === want(NaN),
         'a ping is printed with the grade colour pingGrade gives it, and an unmeasured one is a dash',
         `240 → ${cells[0]}, 18 → ${cells[1]}, no field at all → ${cells[2]} — a 0 would be a `
         + 'claim about a round trip nobody has taken yet, so the field is omitted and the column '
         + 'says so with a dash rather than with a number');
 
+    // THE BARS, which are the part a player reads without comparing three digits to a number
+    // they remember. The count comes off the same grade as the colour, so a green ping cannot
+    // show two bars — and the map has to answer every grade `pingGrade` can produce or a valid
+    // connection lights none of them and looks broken.
+    const gradeNames = [...new Set(['none', 'good', 'fair', 'poor', 'bad',
+      ...[NaN, 0, 59, 60, 149, 150, 249, 250, 4000].map(pingGrade)])];
+    const barless = gradeNames.filter((g) => !(g in BARS));
+    const idxH = readFileSync('client/index.html', 'utf8');
+    const litless = [...new Set(Object.values(BARS))]
+      .filter((n) => n > 0 && !idxH.includes(`.sig.l${n}::before`));
+    okO(!barless.length && !litless.length && BARS.none === 0 && BARS.good === 4,
+        'and every grade lights a number of bars the stylesheet can actually draw',
+        barless.length ? `NO BAR COUNT FOR ${barless.join(', ')}`
+          : litless.length ? `NO CSS FOR l${litless.join(', l')}`
+          : `${gradeNames.map((g) => `${g}=${BARS[g]}`).join(' ')} — an unmeasured ping lights `
+            + 'nothing, which is the same claim the en dash makes beside it');
+
     // And the stylesheet has to answer every name that function can return. A grade with no rule
     // behind it is a ping printed in the table's default ink: the digits still read, and the
     // colour that was the entire reason for grading them silently does not — which is the same
     // class of bug as the empty columns that started this part.
-    const indexH = readFileSync('client/index.html', 'utf8');
-    const grades = [...new Set(['none', 'good', 'fair', 'poor', 'bad',
-      ...[NaN, 0, 59, 60, 149, 150, 249, 250, 4000].map(pingGrade)])];
-    const unstyled = grades.filter((g) => !indexH.includes(`#board td.p-${g}`));
+    const grades = gradeNames;
+    const unstyled = grades.filter((g) => !idxH.includes(`#board td.p-${g}`));
     okO(unstyled.length === 0 && grades.length === 5,
         'and every grade that function can return has a rule behind it in the stylesheet',
         unstyled.length ? `NO CSS FOR ${unstyled.join(', ')}`
@@ -9079,12 +9260,36 @@ const okO = (cond, label, detail = '') => {
         + 'first roster lands — a board opened on the first frame of a match is complete');
 
     // ── the order, and the early-out
-    const order = rows.map((r) => (/<td>(?:<span class="rk">[^<]*<\/span>)?([^<]*)</.exec(r) ?? [])[1]);
+    const order = rows.map((r) => (/<td class="who">([^<]*)</.exec(r) ?? [])[1]);
     okO(order.join('|') === ['ranked', '&lt;script&gt;x&lt;/script&gt;', 'BOT Ivy', 'nothing'].join('|'),
         'rows are sorted by kills, then by fewest deaths, then by name',
         `${order.join(' > ')} — two players on nine kills are split by deaths (1 before 2), `
         + 'which is the only tiebreak that means anything on a scoreboard');
 
+    // ── the header band, which is the other half of what "looks like design from 1900s" bought:
+    // a bare table had nowhere to put the score, so the score lived only in the middle of the
+    // screen. `md.ts` is the mode's own array, so the two cannot disagree about who is winning.
+    const ffaTally = tally;
+    const twSoFar = tallyWrites;
+    draw(0, true, 'team deathmatch', [7, 5]);
+    okO(/^\d+ in the room$/.test(ffaTally)
+        && tally.includes(`<b class="tA">7</b>`) && tally.includes(`<b class="tB">5</b>`)
+        && tally.includes(TEAM_NAMES[1]) && tally.includes(TEAM_NAMES[2])
+        && tallyWrites === twSoFar + 1,
+        'the header names the match and carries the authoritative score, or the seat count in a FFA',
+        `"${ffaTally}" in deathmatch, and 7-5 in a team mode — straight off md.ts rather than `
+        + 'counted from the roster, because a side\u2019s score is the mode\u2019s own number and '
+        + 'tdm.js is the only thing allowed to have an opinion about it');
+
+    // And it is memoised like the rows are: this runs from the frame loop for as long as TAB is
+    // held, and a header rewritten sixty times a second is the same waste in a smaller cell.
+    const twBefore = tallyWrites;
+    draw(0, true, 'team deathmatch', [7, 5]);
+    draw(0, true, 'team deathmatch', [7, 5]);
+    okO(tallyWrites === twBefore, 'and a tally that has not changed is not rewritten either',
+        `${tallyWrites - twBefore} further write(s) to the header across two more draws`);
+
+    draw();
     const before = writes;
     draw(0);
     draw(0);
