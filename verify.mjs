@@ -7916,10 +7916,30 @@ function fakeClient(host, mode, name, hello = {}) {
 
   const menuSrc = readFileSync('client/src/menu.js', 'utf8');
   const netSrc = readFileSync('client/src/net.js', 'utf8');
+  const mainSrc = readFileSync('client/src/main.js', 'utf8');
+  const lobbyHtml = readFileSync('client/index.html', 'utf8');
   okM(menuSrc.includes('setPopulation(next)') && menuSrc.includes('roomPop.bots')
       && netSrc.includes("emit('population', m.pop)"),
       'the browser receives the rich counts and renders bots beside human occupancy',
       'the mode card no longer hides a bot-filled match behind a humans-only fraction');
+  okM(['lobby', 'inventory', 'settings'].every((screen) => lobbyHtml.includes(`data-screen="${screen}"`))
+      && lobbyHtml.includes('id="open-settings"') && menuSrc.includes('function showScreen(id)'),
+      'phase three exposes separate lobby, inventory and settings screens',
+      'the game no longer drops every pre-match control into one direct-start panel');
+  okM(lobbyHtml.includes('id="profile-rank-icon"') && lobbyHtml.includes('id="profile-rank-fill"')
+      && menuSrc.includes('insigniaPng(tier)') && menuSrc.includes('setPlayerStats(next)')
+      && mainSrc.includes('menu.setPlayerStats({ career:'),
+      'the lobby profile renders the player’s real career rank, insignia and match stats',
+      'rank presentation must be driven by the owner-only snapshot rather than placeholder text');
+  okM(lobbyHtml.includes('id="inventory-preview-name"') && lobbyHtml.includes('id="inventory-gun"')
+      && menuSrc.includes('function renderInventoryPreview(id)')
+      && lobbyHtml.includes('<b>community skins</b>') && lobbyHtml.includes('marketplace offline'),
+      'inventory has a working weapon preview and an explicit reviewed-skins boundary',
+      'the marketplace remains offline while the loadout surface is ready for future cosmetics');
+  okM(mainSrc.includes('menu.setPopulation(m.pop ?? {})')
+      && lobbyHtml.includes('id="lobby-region"') && menuSrc.includes('renderRegionSummary()'),
+      'the first lobby paint includes authoritative population plus live region and ping context',
+      'players should not need a second server event before seeing what they are joining');
 }
 
 {

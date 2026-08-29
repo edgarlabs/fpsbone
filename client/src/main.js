@@ -312,6 +312,7 @@ const BURST_EARSHOT = {
 
 // ─────────────────────────────────────────────────────────── connection & UI
 const menu = createMenu(settings, {
+  identity,
   onWeapon: (id) => input.setWeapon(indexOf(id)),
   onHand: (h) => viewmodel.setHand(h),
   onSens: (v) => input.setSens(v),
@@ -424,6 +425,7 @@ net.on('welcome', (m) => {
   menu.setActiveRegion(activeGameRegion);
   menu.setAvailable(m.avail ?? []);
   menu.setLobby(m.lob ?? {});
+  menu.setPopulation(m.pop ?? {});
   applyMode(m.mode ?? requestedMode);
 
   hud.setStatus(
@@ -559,6 +561,7 @@ net.on('snapshot', (m) => {
     // and the HUD wants the career behind it, which only the owner is sent. Fed every
     // snapshot and early-outed inside the HUD — a career changes a handful of times an hour.
     hud.rank(m.self.cv ?? 0);
+    menu.setPlayerStats({ career: m.self.cv ?? 0, kills: mine?.k ?? 0, deaths: mine?.d ?? 0 });
     // Badge counts, private for the same reason `cv` is, and omitted entirely while every
     // track is zero -- so `?? {}` is a player who has not scored yet, not a missing field.
     //

@@ -714,10 +714,123 @@
       #km-secs { font-size: 11px; letter-spacing: 1.2px; color: var(--dim); margin-top: 2px; }
 
       /* ---- start / settings menu ---- */
-      #start { overflow-y: auto; }
-      #menu { width: min(660px, 92vw); text-align: left; }
-      #menu h1 { text-align: center; margin-bottom: 4px; }
-      #menu > p { text-align: center; }
+      #start {
+        overflow-y: auto; place-content: stretch; padding: clamp(10px, 2vw, 24px);
+        background:
+          radial-gradient(circle at 16% 24%, rgba(28, 119, 112, 0.2), transparent 31%),
+          radial-gradient(circle at 86% 72%, rgba(50, 89, 132, 0.16), transparent 34%),
+          linear-gradient(145deg, #080d14, #101923 52%, #081017);
+      }
+      #menu {
+        --ink: #eef4f8; --dim: #8291a2; --panel: rgba(16, 25, 35, 0.92);
+        --line: rgba(190, 216, 230, 0.14); --self: #35c49b; --accent: #f05d49;
+        width: min(1180px, 100%); height: calc(100vh - 48px); min-height: 580px; margin: auto;
+        display: flex; flex-direction: column; text-align: left; overflow: hidden;
+        color: var(--ink); background: rgba(9, 15, 22, 0.86); border: 1px solid var(--line);
+        box-shadow: 0 28px 90px rgba(0, 0, 0, 0.38); backdrop-filter: blur(18px);
+      }
+      #menu h1 { margin: 2px 0 0; font-size: 25px; letter-spacing: -0.7px; text-transform: none; }
+      .lobby-topbar {
+        min-height: 72px; display: grid; grid-template-columns: 1fr auto 1fr; align-items: center;
+        gap: 24px; padding: 0 24px; border-bottom: 1px solid var(--line);
+        background: rgba(5, 10, 16, 0.72);
+      }
+      .lobby-brand { display: flex; align-items: center; gap: 12px; }
+      .lobby-brand b { font-size: 17px; letter-spacing: 3px; text-transform: uppercase; color: #fff; }
+      .lobby-brand span { padding-left: 12px; border-left: 1px solid var(--line); color: var(--dim); font-size: 9px; letter-spacing: 1.2px; text-transform: uppercase; }
+      #screen-tabs { align-self: stretch; display: flex; align-items: stretch; gap: 4px; }
+      .screen-tab {
+        position: relative; min-width: 104px; padding: 0 18px; border: 0; background: transparent;
+        color: var(--dim); cursor: pointer; font: inherit; font-size: 11px; letter-spacing: 1.5px;
+        text-transform: uppercase;
+      }
+      .screen-tab::after { content: ''; position: absolute; left: 16px; right: 16px; bottom: 0; height: 2px; background: transparent; }
+      .screen-tab:hover { color: var(--ink); }
+      .screen-tab.on { color: var(--ink); }
+      .screen-tab.on::after { background: var(--self); box-shadow: 0 0 12px rgba(53, 196, 155, 0.6); }
+      #open-settings {
+        justify-self: end; width: 38px; height: 38px; display: grid; align-content: center; gap: 4px;
+        padding: 9px; border: 1px solid var(--line); background: rgba(255,255,255,0.025); cursor: pointer;
+      }
+      #open-settings span { display: block; height: 2px; background: var(--dim); }
+      #open-settings span:nth-child(2) { width: 70%; justify-self: end; }
+      #open-settings:hover { border-color: var(--self); }
+      #open-settings:hover span { background: var(--self); }
+      .lobby-body { flex: 1; min-height: 0; overflow: auto; }
+      .screen { display: none; box-sizing: border-box; height: 100%; padding: 24px; }
+      .screen.on { display: block; }
+      .screen[data-screen="inventory"].on { display: flex; flex-direction: column; }
+      .lobby-grid { display: grid; grid-template-columns: 310px minmax(0, 1fr); gap: 24px; height: 100%; min-height: 0; }
+      .player-panel, .match-browser, .inventory-list, .inventory-preview {
+        border: 1px solid var(--line); background: rgba(13, 22, 31, 0.82);
+      }
+      .player-panel { padding: 18px; display: flex; flex-direction: column; }
+      .panel-kicker { color: var(--self); font-size: 9px; letter-spacing: 1.8px; text-transform: uppercase; }
+      .operator-stage {
+        position: relative; flex: 1; min-height: 205px; margin: 14px -18px 16px; overflow: hidden;
+        background: linear-gradient(180deg, rgba(53,196,155,0.05), transparent 70%),
+          repeating-linear-gradient(90deg, transparent 0 39px, rgba(255,255,255,0.025) 40px);
+      }
+      .operator-stage::before { content: ''; position: absolute; inset: 14% 9% 8%; border: 1px solid rgba(53,196,155,0.12); transform: skewY(-6deg); }
+      .operator { position: absolute; left: 50%; bottom: 24px; width: 154px; height: 225px; transform: translateX(-50%); filter: drop-shadow(0 18px 12px rgba(0,0,0,.48)); }
+      .operator i { position: absolute; display: block; background: linear-gradient(145deg, #34485a, #172431); border: 1px solid rgba(183,211,225,.16); }
+      .op-head { left: 60px; top: 2px; width: 43px; height: 45px; border-radius: 46% 46% 38% 38%; }
+      .op-head::after { content: ''; position: absolute; left: 4px; right: 4px; top: 18px; height: 8px; background: #101a24; border-top: 2px solid #35c49b; }
+      .op-body { left: 42px; top: 41px; width: 76px; height: 105px; clip-path: polygon(15% 0,85% 0,100% 100%,0 100%); }
+      .op-body::after { content: ''; position: absolute; left: 15px; right: 15px; top: 24px; height: 43px; border: 1px solid rgba(53,196,155,.26); background: repeating-linear-gradient(0deg, transparent 0 8px, rgba(53,196,155,.08) 9px); }
+      .op-arm { left: 15px; top: 67px; width: 126px; height: 25px; transform: rotate(-10deg); border-radius: 12px; }
+      .op-rifle { left: 12px; top: 78px; width: 142px; height: 18px; transform: rotate(8deg); background: linear-gradient(180deg, #111a22, #263848) !important; }
+      .op-rifle::before { content: ''; position: absolute; width: 48px; height: 13px; right: -31px; top: 2px; background: #111a22; }
+      .op-rifle::after { content: ''; position: absolute; left: 51px; top: 15px; width: 18px; height: 29px; background: #192633; transform: skew(-8deg); }
+      .op-leg { top: 141px; width: 31px; height: 82px; border-radius: 4px; }
+      .op-leg.l { left: 45px; transform: rotate(3deg); } .op-leg.r { left: 83px; transform: rotate(-3deg); }
+      .operator-floor { position: absolute; left: 16%; right: 16%; bottom: 17px; height: 1px; background: var(--self); box-shadow: 0 0 22px rgba(53,196,155,.55); }
+      .profile-name { font-size: 19px; font-weight: 700; letter-spacing: .4px; color: #fff; }
+      .profile-rank { display: grid; grid-template-columns: 48px 1fr; align-items: center; gap: 11px; margin-top: 14px; }
+      .profile-rank img { width: 46px; height: 28px; object-fit: contain; }
+      .profile-rank b, .profile-rank span { display: block; }
+      .profile-rank b { font-size: 11px; letter-spacing: .8px; text-transform: uppercase; }
+      .profile-rank span { margin-top: 2px; color: var(--dim); font-size: 9px; }
+      .career-bar { height: 3px; margin-top: 10px; background: rgba(255,255,255,.08); }
+      .career-bar i { display: block; width: 0; height: 100%; background: var(--self); box-shadow: 0 0 10px rgba(53,196,155,.45); }
+      .profile-stats { display: grid; grid-template-columns: repeat(3,1fr); gap: 1px; margin-top: auto; padding-top: 18px; }
+      .profile-stats div { padding: 11px 7px; text-align: center; background: rgba(255,255,255,.035); }
+      .profile-stats span, .profile-stats b { display: block; }
+      .profile-stats span { color: var(--dim); font-size: 8px; letter-spacing: .8px; text-transform: uppercase; }
+      .profile-stats b { margin-top: 4px; color: #fff; font-size: 16px; }
+      .match-browser { padding: 22px; overflow: hidden; }
+      .browser-head { display: flex; align-items: flex-start; justify-content: space-between; gap: 18px; padding-bottom: 16px; border-bottom: 1px solid var(--line); }
+      #lobby-region { color: var(--dim); font-size: 10px; letter-spacing: 1px; text-transform: uppercase; text-align: right; }
+      .match-browser #keys { justify-content: flex-start; padding-top: 17px; margin-top: 20px; border-top: 1px solid var(--line); }
+      .screen-heading { max-width: 720px; margin-bottom: 22px; }
+      .screen-heading p { margin-top: 7px; font-size: 11px; }
+      .inventory-grid { flex: 1; min-height: 0; display: grid; grid-template-columns: minmax(260px, .85fr) minmax(340px, 1.4fr); gap: 20px; }
+      .inventory-list, .inventory-preview { padding: 20px; }
+      .inventory-list > label { display: block; margin-bottom: 10px; color: var(--dim); font-size: 9px; letter-spacing: 1.4px; text-transform: uppercase; }
+      #weps { display: grid; gap: 7px; }
+      .inventory-item { position: relative; display: grid; grid-template-columns: 34px 1fr auto; align-items: center; gap: 10px; padding: 12px; cursor: pointer; border: 1px solid var(--line); background: rgba(255,255,255,.025); }
+      .inventory-item:hover { border-color: var(--dim); }
+      .inventory-item.on { border-color: var(--self); background: rgba(53,196,155,.08); }
+      .inventory-item > span { color: var(--dim); font-size: 9px; }
+      .inventory-item b { font-size: 11px; letter-spacing: 1px; }
+      .inventory-item i { color: var(--dim); font-style: normal; font-size: 9px; }
+      .inventory-preview { position: relative; display: flex; flex-direction: column; align-items: center; justify-content: center; overflow: hidden; text-align: center; }
+      .inventory-preview::before { content: ''; position: absolute; inset: 0; background: radial-gradient(circle, rgba(53,196,155,.1), transparent 56%), repeating-linear-gradient(135deg, transparent 0 19px, rgba(255,255,255,.018) 20px); }
+      .inventory-preview > * { position: relative; }
+      .preview-tag { align-self: flex-start; position: absolute; top: 18px; left: 18px; color: var(--self); font-size: 8px; letter-spacing: 1.4px; text-transform: uppercase; }
+      #inventory-gun { width: min(390px, 80%); height: 118px; position: relative; transform: rotate(-5deg); filter: drop-shadow(0 22px 14px rgba(0,0,0,.55)); }
+      #inventory-gun i { position: absolute; display: block; background: linear-gradient(180deg, #34495a, #101a23); border: 1px solid rgba(190,220,230,.18); }
+      #inventory-gun i:nth-child(1) { left: 4%; right: 9%; top: 37px; height: 27px; clip-path: polygon(0 20%,65% 0,100% 30%,99% 75%,22% 100%,0 70%); }
+      #inventory-gun i:nth-child(2) { left: 56%; top: 61px; width: 27px; height: 49px; transform: skew(-12deg); }
+      #inventory-gun i:nth-child(3) { right: 0; top: 43px; width: 24%; height: 10px; }
+      .inventory-preview h2 { margin-top: 20px; color: #fff; font-size: 23px; letter-spacing: 3px; }
+      .inventory-preview > p { margin-top: 4px; font-size: 9px; letter-spacing: 1px; text-transform: uppercase; }
+      .market-note { width: min(440px, 90%); margin-top: 30px; padding: 14px; text-align: left; border: 1px solid var(--line); background: rgba(5,10,16,.56); }
+      .market-note b, .market-note span { display: block; }
+      .market-note b { text-transform: uppercase; font-size: 10px; letter-spacing: 1.2px; }
+      .market-note span { margin-top: 5px; color: var(--dim); font-size: 9px; }
+      .market-note em { display: inline-block; margin-top: 9px; padding: 2px 5px; color: var(--dim); border: 1px solid var(--line); font-size: 8px; font-style: normal; letter-spacing: 1px; text-transform: uppercase; }
+      .settings-screen { max-width: 900px; margin: 0 auto; }
       .grp { margin-top: 22px; }
       .grp > label {
         display: block; font-size: 10px; letter-spacing: 1.6px; text-transform: uppercase;
@@ -854,13 +967,26 @@
       }
       .reset:hover { color: var(--ink); border-color: var(--ink); }
 
-      #play {
-        margin-top: 24px; width: 100%; padding: 13px; cursor: pointer;
-        font: inherit; font-weight: 700; letter-spacing: 2.4px; text-transform: uppercase;
-        color: #f7fafd; background: var(--self); border: 0;
-      }
+      .lobby-footer { min-height: 72px; display: flex; align-items: center; justify-content: flex-end; gap: 20px; padding: 12px 24px; border-top: 1px solid var(--line); background: rgba(5,10,16,.76); }
+      #play { min-width: 255px; padding: 12px 14px; display: flex; align-items: center; justify-content: space-between; cursor: pointer; font: inherit; font-weight: 700; letter-spacing: 1.8px; text-transform: uppercase; color: #06130f; background: var(--self); border: 0; }
+      #play i { padding: 2px 5px; font-size: 8px; font-style: normal; color: rgba(6,19,15,.7); border: 1px solid rgba(6,19,15,.24); }
       #play:hover { filter: brightness(1.08); }
-      #start-status { margin-top: 14px; font-size: 11px; }
+      #start-status { margin: 0; font-size: 10px; text-align: right; }
+      @media (max-width: 820px) {
+        #start { padding: 0; }
+        #menu { height: 100vh; min-height: 580px; border: 0; }
+        .lobby-topbar { grid-template-columns: 1fr auto; padding: 0 14px; }
+        .lobby-brand span, #open-settings { display: none; }
+        #screen-tabs { grid-column: 2; }
+        .screen-tab { min-width: 0; padding: 0 9px; font-size: 9px; }
+        .screen { height: auto; min-height: 100%; padding: 14px; }
+        .screen[data-screen="inventory"].on { display: block; }
+        .lobby-grid, .inventory-grid { height: auto; grid-template-columns: 1fr; }
+        .operator-stage { height: 210px; }
+        .player-panel { min-height: 420px; }
+        .lobby-footer { position: sticky; bottom: 0; padding: 10px 14px; }
+        #play { min-width: 190px; }
+      }
     </style>
   </head>
   <body>
@@ -1205,22 +1331,48 @@
 
     <div id="start" class="overlay">
       <div id="menu">
-        <h1>fpsbone</h1>
-        <!-- Rendered from the live bind map by menu.js rather than written out here.
-             The hand-maintained version drifted the moment binds became editable —
-             and it had already drifted before that, still promising a ctrl crouch that
-             only works under keyboard lock. Mouse buttons and slot keys are not
-             rebindable, so those entries are fixed strings in the renderer. -->
-        <div id="keys"></div>
+        <header class="lobby-topbar">
+          <div class="lobby-brand"><b>fpsbone</b><span>regional combat network</span></div>
+          <nav id="screen-tabs" aria-label="Main menu">
+            <button class="screen-tab on" type="button" data-screen="lobby">lobby</button>
+            <button class="screen-tab" type="button" data-screen="inventory">inventory</button>
+            <button class="screen-tab" type="button" data-screen="settings">settings</button>
+          </nav>
+          <button id="open-settings" type="button" aria-label="Open settings" title="Settings">
+            <span></span><span></span><span></span>
+          </button>
+        </header>
 
-        <div class="tabs" id="tabs">
-          <button class="tab on" type="button" data-tab="game">game</button>
-          <button class="tab" type="button" data-tab="controls">controls</button>
-          <button class="tab" type="button" data-tab="crosshair">crosshair</button>
-          <button class="tab" type="button" data-tab="audio">audio</button>
-        </div>
+        <div class="lobby-body">
+          <section class="screen on" data-screen="lobby">
+            <div class="lobby-grid">
+              <aside class="player-panel">
+                <div class="panel-kicker">active operator</div>
+                <div class="operator-stage" aria-hidden="true">
+                  <div class="operator">
+                    <i class="op-head"></i><i class="op-body"></i><i class="op-arm"></i>
+                    <i class="op-rifle"></i><i class="op-leg l"></i><i class="op-leg r"></i>
+                  </div>
+                  <span class="operator-floor"></span>
+                </div>
+                <div class="profile-name" id="profile-name">player</div>
+                <div class="profile-rank">
+                  <img id="profile-rank-icon" alt="" />
+                  <div><b id="profile-rank-name">Private</b><span id="profile-rank-progress">loading career…</span></div>
+                </div>
+                <div class="career-bar"><i id="profile-rank-fill"></i></div>
+                <div class="profile-stats">
+                  <div><span>career kills</span><b id="profile-career">0</b></div>
+                  <div><span>match kills</span><b id="profile-kills">0</b></div>
+                  <div><span>deaths</span><b id="profile-deaths">0</b></div>
+                </div>
+              </aside>
 
-        <section class="pane on" data-pane="game">
+              <section class="match-browser">
+                <div class="browser-head">
+                  <div><span class="panel-kicker">matchmaking</span><h1>Choose your fight</h1></div>
+                  <div id="lobby-region">connecting…</div>
+                </div>
           <!-- WHICH SERVER, and the ping beside it is the whole reason the choice is worth
                offering. A packet cannot outrun light and light is slow across an ocean:
                Singapore↔Oregon is about 180ms round trip through fibre, which is eleven ticks
@@ -1234,7 +1386,7 @@
                because choosing for the player means either stalling this menu until every
                region has answered or yanking the page onto another server mid-thought. -->
           <div class="grp" id="grp-regions" hidden>
-            <label for="regions">server</label>
+            <label for="regions">region</label>
             <div class="cards" id="regions"></div>
             <p class="note">
               Ping is the round trip to that server, measured from here. <b>Under 60ms a duel
@@ -1244,7 +1396,7 @@
             </p>
           </div>
 
-          <div class="grp">
+          <div class="grp mode-group">
             <label for="modes">game mode</label>
             <div class="cards" id="modes"></div>
             <p class="note">
@@ -1263,13 +1415,43 @@
                  choice of host is made there and nowhere else. -->
             <p class="note warn" id="host-note" hidden></p>
           </div>
+                <div id="keys"></div>
+              </section>
+            </div>
+          </section>
 
-          <div class="grp">
-            <label for="weps">spawn weapon</label>
-            <div class="chips" id="weps"></div>
-          </div>
+          <section class="screen" data-screen="inventory">
+            <div class="screen-heading"><span class="panel-kicker">arsenal</span><h1>Inventory</h1>
+              <p>Choose the base weapon you spawn with when the mode allows it. Cosmetic ownership will attach here later without changing weapon power.</p>
+            </div>
+            <div class="inventory-grid">
+              <div class="inventory-list">
+                <label for="weps">available loadout</label>
+                <div id="weps"></div>
+              </div>
+              <div class="inventory-preview">
+                <div class="preview-tag">equipped · standard issue</div>
+                <div id="inventory-gun"><i></i><i></i><i></i></div>
+                <h2 id="inventory-preview-name">RIFLE</h2>
+                <p id="inventory-preview-meta">base finish · gameplay stats locked</p>
+                <div class="market-note"><b>community skins</b><span>Creator submissions and NFT-backed cosmetics arrive only after review. No pay-to-win stats.</span><em>marketplace offline</em></div>
+              </div>
+            </div>
+          </section>
 
-          <div class="grp">
+          <section class="screen settings-screen" data-screen="settings">
+            <div class="screen-heading"><span class="panel-kicker">preferences</span><h1>Settings</h1>
+              <p>Changes apply immediately and stay on this device.</p>
+            </div>
+            <div class="tabs" id="tabs">
+              <button class="tab on" type="button" data-tab="graphics">graphics</button>
+              <button class="tab" type="button" data-tab="controls">controls</button>
+              <button class="tab" type="button" data-tab="crosshair">crosshair</button>
+              <button class="tab" type="button" data-tab="audio">audio</button>
+            </div>
+
+            <section class="pane on" data-pane="graphics">
+              <div class="grp">
             <label>view</label>
             <div class="rows">
               <div class="row">
@@ -1296,9 +1478,9 @@
               </div>
             </div>
           </div>
-        </section>
+            </section>
 
-        <section class="pane" data-pane="controls">
+            <section class="pane" data-pane="controls">
           <div class="grp">
             <label>mouse</label>
             <div class="rows">
@@ -1323,9 +1505,9 @@
             <p class="note" id="bind-note"></p>
             <button class="reset" type="button" id="r-binds">reset keys</button>
           </div>
-        </section>
+            </section>
 
-        <section class="pane" data-pane="crosshair">
+            <section class="pane" data-pane="crosshair">
           <div class="grp">
             <div id="ch-preview"><div class="xhair"><i></i><i></i><i></i><i></i><i></i></div></div>
             <div class="rows" style="margin-top: 14px">
@@ -1368,9 +1550,9 @@
             </div>
             <button class="reset" type="button" id="r-cross">reset crosshair</button>
           </div>
-        </section>
+            </section>
 
-        <section class="pane" data-pane="audio">
+            <section class="pane" data-pane="audio">
           <div class="grp">
             <label>volume</label>
             <div class="rows">
@@ -1385,10 +1567,14 @@
               load, so this is the only volume there is to set.
             </p>
           </div>
-        </section>
+            </section>
+          </section>
+        </div>
 
-        <button id="play" type="button">play</button>
-        <p id="start-status">connecting…</p>
+        <footer class="lobby-footer">
+          <p id="start-status">connecting…</p>
+          <button id="play" type="button"><span>join selected match</span><i>enter</i></button>
+        </footer>
       </div>
     </div>
 

@@ -1,4 +1,4 @@
-// The start-screen menu: mode picker, spawn-weapon picker, and the settings panel.
+// The lobby shell: profile, match browser, inventory and settings.
 //
 // It extends the existing `#start` overlay rather than adding a second screen, so
 // the same click that dismisses it is the click that grabs pointer lock — and
@@ -13,8 +13,10 @@
 import { MODES, MODE_IDS } from '../../shared/modes.js';
 import { WEAPONS } from '../../shared/weapons.js';
 import { HERE, fastest, pingGrade } from '../../shared/regions.js';
+import { TIERS, MAX_TIER, rankOf, toNextRank } from '../../shared/ranks.js';
 import { CH_COLORS } from './settings.js';
 import { ACTIONS, keyLabel, refuseReason, rebind } from './binds.js';
+import { insigniaPng } from './insignia.js';
 
 const $ = (id) => document.getElementById(id);
 
@@ -50,6 +52,8 @@ const BIND_HELP =
 export function createMenu(settings, cbs) {
   const els = {
     keys: $('keys'),
+    screenTabs: $('screen-tabs'),
+    openSettings: $('open-settings'),
     tabs: $('tabs'),
     modes: $('modes'),
     regions: $('regions'),
@@ -62,8 +66,21 @@ export function createMenu(settings, cbs) {
     chOutline: $('ch-outline'),
     chCol: $('ch-col'),
     play: $('play'),
+    lobbyRegion: $('lobby-region'),
+    profileName: $('profile-name'),
+    profileRankIcon: $('profile-rank-icon'),
+    profileRankName: $('profile-rank-name'),
+    profileRankProgress: $('profile-rank-progress'),
+    profileRankFill: $('profile-rank-fill'),
+    profileCareer: $('profile-career'),
+    profileKills: $('profile-kills'),
+    profileDeaths: $('profile-deaths'),
+    inventoryGun: $('inventory-gun'),
+    inventoryName: $('inventory-preview-name'),
+    inventoryMeta: $('inventory-preview-meta'),
   };
   const panes = [...document.querySelectorAll('.pane')];
+  const screens = [...document.querySelectorAll('.screen')];
 
   /** Which modes the server can actually host. Until WELCOME lands we assume all
    *  of them, so the menu is usable while still connecting; the first snapshot
@@ -89,10 +106,22 @@ export function createMenu(settings, cbs) {
   /** Which region the game socket is actually on, or null if something outranked the setting
    *  (a `?server=` override). Not read from `settings` because the setting is a request. */
   let activeRegion = null;
+  let playerStats = { career: 0, kills: 0, deaths: 0 };
   /** The action waiting for a key, or null. */
   let arming = null;
 
-  // ───────────────────────────────────────────────────────────────────── tabs
+  // ───────────────────────────────────────────────────────────── main screens
+  function showScreen(id) {
+    disarm();
+    for (const tab of els.screenTabs.children) tab.classList.toggle('on', tab.dataset.screen === id);
+    for (const screen of screens) screen.classList.toggle('on', screen.dataset.screen === id);
+  }
+  for (const tab of els.screenTabs.children) {
+    tab.addEventListener('click', () => showScreen(tab.dataset.screen));
+  }
+  els.openSettings.addEventListener('click', () => showScreen('settings'));
+
+  // ───────────────────────────────────────────────────────────── settings tabs
   for (const tab of els.tabs.children) {
     tab.addEventListener('click', () => {
       disarm();
@@ -211,6 +240,22 @@ export function createMenu(settings, cbs) {
     );
   }
 
+  function renderRegionSummary() {
+    const current = regions.find((r) => r.id === activeRegion);
+    if (!current) {
+      const seats = Number.isFinite(population.humans) && Number.isFinite(population.capacity)
+        ? ` · ${population.humans}/${population.capacity} online`
+        : '';
+      els.lobbyRegion.textContent = `${activeRegion ? activeRegion.toUpperCase() : 'THIS SERVER'}${seats}`;
+      return;
+    }
+    const ping = Number.isFinite(current.ms) ? `${current.ms}ms` : current.state === 'waking' ? 'waking…' : 'measuring…';
+    const seats = Number.isFinite(current.humans) && Number.isFinite(current.cap)
+      ? `${current.humans}/${current.cap} online`
+      : 'population pending';
+    els.lobbyRegion.textContent = `${current.label} · ${ping} · ${seats}`;
+  }
+
   // ─────────────────────────────────────────────────────────────────── modes
   function renderModes() {
     els.modes.replaceChildren(
@@ -268,6 +313,15 @@ export function createMenu(settings, cbs) {
 
   /** The mode decides which weapons exist for you, so this list is derived from it
    *  rather than from the full weapon table. */
+  function renderInventoryPreview(id) {
+    const w = id ? WEAPONS[id] : null;
+    els.inventoryGun.dataset.weapon = id ?? 'random';
+    els.inventoryName.textContent = w?.label ?? 'RANDOM LOADOUT';
+    els.inventoryMeta.textContent = w
+      ? `${w.kind} · ${w.dmg ?? 0} damage · ${w.mag == null ? 'no magazine' : `${w.mag} rounds`}`
+      : 'a new legal loadout is dealt every life';
+  }
+
   function renderWeapons() {
     const mode = MODES[settings.mode];
     // A mode that deals loadouts gives no choice to offer. Showing the picker anyway
@@ -280,6 +334,7 @@ export function createMenu(settings, cbs) {
         .map((id) => WEAPONS[id].label.toLowerCase())
         .join(', ')}`;
       els.weps.replaceChildren(note);
+      renderInventoryPreview(null);
       return;
     }
 
@@ -289,17 +344,39 @@ export function createMenu(settings, cbs) {
 
     els.weps.replaceChildren(
       ...loadout.map((id, i) => {
-        const chip = document.createElement('div');
-        chip.className = `chip${settings.wep === id ? ' on' : ''}`;
-        chip.textContent = `${i + 1} ${WEAPONS[id].label}`;
-        chip.addEventListener('click', () => {
+        const w = WEAPONS[id];
+        const item = document.createElement('div');
+        item.className = `inventory-item${settings.wep === id ? ' on' : ''}`;
+        item.innerHTML = `<span>0${i + 1}</span><b>${w.label}</b><i>${w.kind} · ${w.mag ?? '—'} rd</i>`;
+        item.addEventListener('click', () => {
           settings.set({ wep: id });
           renderWeapons();
           cbs.onWeapon?.(id);
         });
-        return chip;
+        return item;
       }),
     );
+    renderInventoryPreview(settings.wep);
+  }
+
+  function renderProfile() {
+    const career = Math.max(0, Math.floor(Number(playerStats.career) || 0));
+    const tier = rankOf(career);
+    const rank = TIERS[tier];
+    const left = toNextRank(career);
+    const next = tier < MAX_TIER ? TIERS[tier + 1] : null;
+    const floor = rank.at;
+    const span = next ? Math.max(1, next.at - floor) : 1;
+    const progress = next ? Math.max(0, Math.min(1, (career - floor) / span)) : 1;
+    els.profileName.textContent = cbs.identity?.displayName ?? 'player';
+    els.profileRankIcon.src = insigniaPng(tier).url;
+    els.profileRankIcon.alt = rank.name;
+    els.profileRankName.textContent = `${rank.name} · ${rank.abbr}`;
+    els.profileRankProgress.textContent = next ? `${left} kills to ${next.name}` : 'maximum rank achieved';
+    els.profileRankFill.style.width = `${Math.round(progress * 100)}%`;
+    els.profileCareer.textContent = String(career);
+    els.profileKills.textContent = String(Math.max(0, Math.floor(Number(playerStats.kills) || 0)));
+    els.profileDeaths.textContent = String(Math.max(0, Math.floor(Number(playerStats.deaths) || 0)));
   }
 
   // ──────────────────────────────────────────────────────────── chip toggles
@@ -513,6 +590,7 @@ export function createMenu(settings, cbs) {
   renderRegions();
   renderModes();
   renderWeapons();
+  renderProfile();
   refreshAll();
 
   return {
@@ -529,11 +607,13 @@ export function createMenu(settings, cbs) {
       regions = list;
       activeRegion = active ?? null;
       renderRegions();
+      renderRegionSummary();
     },
     /** The region confirmed by the game handshake, which outranks the saved request. */
     setActiveRegion(id) {
       activeRegion = id ?? null;
       renderRegions();
+      renderRegionSummary();
     },
     /**
      * Measured pings, merged in by id and repainted.
@@ -549,6 +629,7 @@ export function createMenu(settings, cbs) {
       // and the label came from the table, and neither knows the other's half.
       regions = regions.map((r) => ({ ...r, ...(by.get(r.id) ?? {}) }));
       renderRegions();
+      renderRegionSummary();
     },
     /** Called on WELCOME with the modes the server reported it can host. */
     setAvailable(ids) {
@@ -573,6 +654,13 @@ export function createMenu(settings, cbs) {
       if (!next || typeof next !== 'object') return;
       population = next;
       renderModes();
+      renderRegionSummary();
+    },
+    /** The career is private owner data; current kills/deaths come from this match's snapshot. */
+    setPlayerStats(next) {
+      if (!next || typeof next !== 'object') return;
+      playerStats = { ...playerStats, ...next };
+      renderProfile();
     },
     /** Reflect the mode the server actually granted, which may not be the one
      *  requested if its controller is not registered yet. */
