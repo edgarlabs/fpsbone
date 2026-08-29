@@ -25,6 +25,7 @@ import * as C from './shared/constants.js';
 const base = (process.argv[2] ?? `http://127.0.0.1:${C.NET_PORT}`).replace(/\/+$/, '');
 const wsBase = base.replace(/^http/, 'ws'); // https → wss, which an https page also requires
 const results = [];
+let statusBefore = null;
 const say = (ok, label, detail) => {
   results.push(ok);
   console.log(`${ok ? 'PASS' : 'FAIL'}  ${label}${detail ? `  — ${detail}` : ''}`);
@@ -65,6 +66,27 @@ function join(name, mode) {
       }
     });
   });
+}
+
+/** A fixed sleep is not a close handshake. Render's proxy can take longer than localhost. */
+function closeSocket(ws) {
+  return new Promise((resolve, reject) => {
+    if (ws.readyState === WebSocket.CLOSED) return resolve();
+    const timer = setTimeout(() => reject(new Error('socket close handshake timed out')), 10000);
+    ws.once('close', () => { clearTimeout(timer); resolve(); });
+    ws.close();
+  });
+}
+
+async function waitForRoomToReturn(mode, atMost, timeoutMs = 15000) {
+  const until = Date.now() + timeoutMs;
+  let state = null;
+  while (Date.now() < until) {
+    state = await (await fetch(`${base}/status`, { cache: 'no-store' })).json();
+    if ((state.population?.rooms?.[mode]?.humans ?? Infinity) <= atMost) return state;
+    await new Promise((r) => setTimeout(r, 300));
+  }
+  return state;
 }
 
 console.log(`probing ${base}\n`);
@@ -132,6 +154,7 @@ say(page.ok && html.includes('<canvas'), 'the client is served from the same ori
 
   const status = await fetch(`${base}/status`, { cache: 'no-store' });
   const state = status.ok ? await status.json() : null;
+  statusBefore = state;
   say(status.ok && state?.population?.capacity === C.REGION_HUMAN_CAP
       && state?.performance?.simulation && state?.process && state?.transport,
       '/status exposes population, performance, memory and transport totals',
@@ -165,18 +188,23 @@ for (const mode of live) {
       `${label} population wire names humans, bots, bodies and active state`,
       JSON.stringify(roomPop));
 
-  a.ws.close();
-  b.ws.close();
-  await new Promise((r) => setTimeout(r, 900)); // let the room empty before the next mode
+  await Promise.all([closeSocket(a.ws), closeSocket(b.ws)]);
+  const baseline = statusBefore?.population?.rooms?.[mode]?.humans ?? 0;
+  const settled = await waitForRoomToReturn(mode, baseline);
+  say((settled?.population?.rooms?.[mode]?.humans ?? Infinity) <= baseline,
+      `${label} both probe seats leave after their close handshakes`,
+      `${settled?.population?.rooms?.[mode]?.humans ?? '?'} human seats remain (started at ${baseline})`);
 }
 
 const finalStatus = await (await fetch(`${base}/status`, { cache: 'no-store' })).json();
-say(finalStatus.performance?.admissions?.joins >= live.length * 2
-    && finalStatus.population?.humans === 0
-    && finalStatus.population?.dormantRooms === live.length,
-    'status counted the probe joins and every emptied room returned to dormant',
-    `${finalStatus.performance?.admissions?.joins ?? '?'} joins, `
-    + `${finalStatus.population?.dormantRooms ?? '?'}/${live.length} dormant`);
+const beforeJoins = statusBefore?.performance?.admissions?.joins ?? 0;
+const roomsNow = Object.values(finalStatus.population?.rooms ?? {});
+say(finalStatus.performance?.admissions?.joins >= beforeJoins + live.length * 2
+    && roomsNow.reduce((n, room) => n + room.humans, 0) === finalStatus.population?.humans
+    && roomsNow.reduce((n, room) => n + room.bots, 0) === finalStatus.population?.bots,
+    'status counted every probe join and its regional totals still equal the room totals',
+    `${beforeJoins} → ${finalStatus.performance?.admissions?.joins ?? '?'} joins, `
+    + `${finalStatus.population?.humans ?? '?'} humans + ${finalStatus.population?.bots ?? '?'} bots now`);
 
 const pass = results.filter(Boolean).length;
 console.log(`\n${pass}/${results.length} passed across ${live.length} modes — ${live.join(', ')}`);
