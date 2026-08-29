@@ -510,6 +510,11 @@ export function createMenu(settings, cbs) {
       activeRegion = active ?? null;
       renderRegions();
     },
+    /** The region confirmed by the game handshake, which outranks the saved request. */
+    setActiveRegion(id) {
+      activeRegion = id ?? null;
+      renderRegions();
+    },
     /**
      * Measured pings, merged in by id and repainted.
      *

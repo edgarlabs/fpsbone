@@ -1303,14 +1303,17 @@ for (const id of DM.loadout) {
   const SN = WEAPONS.sniper;
   okB(shotDamage(SN, 5) === C.MAX_HP && shotDamage(SN, SN.range) === C.MAX_HP,
       'the sniper does 100 at any range it reaches', `${shotDamage(SN, SN.range)} at ${SN.range}u`);
-  // "some guns will get outgun by pistol which makes no sense." Up close it SHOULD win —
-  // it is a sidearm and that is what makes swapping to it worth the deploy time. What was
-  // wrong is that it kept winning at every distance, and this is where it stops.
+  // "some guns will get outgun by pistol which makes no sense." The sidearm now needs the
+  // same four body hits as the rifle but has the slightly slower legal cadence, so the draw
+  // speed remains its advantage without making it the best primary up close.
   const P = WEAPONS.pistol;
   const R = WEAPONS.rifle;
   const stk = (w, dd) => Math.ceil(C.MAX_HP / shotDamage(w, dd));
-  okB(shotDamage(P, 5) > shotDamage(R, 5), 'the pistol still hits harder than the rifle up close',
+  okB(shotDamage(P, 5) === shotDamage(R, 5), 'the pistol no longer hits harder than the rifle up close',
       `${shotDamage(P, 5)} vs ${shotDamage(R, 5)} at 5u`);
+  const ttk = (w, dd) => (stk(w, dd) - 1) * w.intervalMs;
+  okB(ttk(P, 5) > ttk(R, 5), 'and its four-hit body kill is a little slower than the rifle',
+      `${ttk(P, 5)}ms pistol vs ${ttk(R, 5)}ms rifle`);
   okB(stk(P, 100) > stk(R, 100), 'and needs more shots than the rifle across the arena',
       `${stk(P, 100)} vs ${stk(R, 100)} shots at 100u`);
   let cross = null;
@@ -1440,7 +1443,7 @@ for (const id of DM.loadout) {
   // How long the glass takes to close, discovered rather than declared.
   let settleMs = -1;
   for (let t = 0; t <= 2000 && settleMs < 0; t++) if (mul(1, t) === 1) settleMs = t;
-  okB(settleMs > 100 && settleMs <= 300,
+  okB(settleMs >= 80 && settleMs <= 200,
       'the scope resolves over the same window CS2 uses, not instantly and not eventually',
       `${settleMs}ms to fully settled`);
 
@@ -1564,11 +1567,8 @@ for (const id of DM.loadout) {
   // fresh glass is the full hip cone. A player who scopes and fires on the same frame is
   // paying the no-scope price, which is exactly the quick-scope this whole model closes.
   //
-  // HELD is 8 and not 12 because the window is now BOUNDED at SCOPE_SETTLE_MS: 12 held ticks
-  // would bank 183ms of a 120ms window and this check would be measuring the clamp instead of
-  // the accrual. Seven ticks of credit is 116.67ms, which is inside it by one tick — the last
-  // room there is. The ceiling gets a check of its own below.
-  const HELD = 8;
+  // Stay one tick inside the configured ceiling so this measures accrual rather than clamp.
+  const HELD = Math.max(2, Math.floor(SCOPE_SETTLE_MS / (C.TICK_DT * 1000)));
   const up = born();
   for (let i = 0; i < HELD; i++) stepPlayer(up, inp(1), C.TICK_DT, FLOOR);
   okB(up.scope === 1 && Math.abs(up.scopeMs - (HELD - 1) * C.TICK_DT * 1000) < 1e-6,
@@ -6058,7 +6058,7 @@ driveJ('the plate devices', () => {
   // and the rank it would shrink is the five-star General of the Army, the one that must not
   // come out smaller than a corporal's. One height for every badge is the promise the plate
   // makes and the reason fieldWidth has a ceiling; this is the same promise in a table cell.
-  const boxM = /#board td\.ins \.rki \{[\s\S]*?width: (\d+)px; height: (\d+)px;/.exec(idxJ0);
+  const boxM = /#board td\.rank \.rki \{[\s\S]*?width: (\d+)px; height: (\d+)px;/.exec(idxJ0);
   const boxAspect = boxM ? Number(boxM[1]) / Number(boxM[2]) : NaN;
   const widest = PLATE.W_MAX / PLATE.H;
   okJ(!!boxM && boxAspect >= widest,
@@ -6245,9 +6245,11 @@ driveJ('the rank readout', () => {
     const gut = /\n\s*const tier = (who[^\n]*);/.exec(hudJ);
     okJ(!!gut, 'the scoreboard rank gutter is still where this suite looks for it',
         gut ? gut[1].replace(/\s+/g, ' ') : 'no match — the gutter was rewritten');
-    const cellFn = liftFn(hudJ, 'insigniaCell',
+    const insigniaFn = liftFn(hudJ, 'insigniaCell',
         ['tier', 'insigniaPng', 'esc', 'TIERS', 'insHave', 'document'], 'let insSheet = null;');
-    if (gut && cellFn) {
+    const rankFn = liftFn(hudJ, 'rankCell',
+        ['tier', 'MAX_TIER', 'TIERS', 'insigniaCell', 'esc']);
+    if (gut && insigniaFn && rankFn) {
       const tierOf = new Function('who', 'p', `return ${gut[1]};`);
       // A stand-in for the drawing: the real one is run a few blocks up against a stubbed
       // canvas. What is measured here is the gutter's own decisions, and those are the same
@@ -6258,7 +6260,8 @@ driveJ('the rank readout', () => {
       };
       const doc = { createElement: () => ({ sheet: { insertRule: () => {} } }), head: { appendChild: () => {} } };
       const id = (x) => String(x);
-      const cellOf = (who, p) => cellFn(tierOf(who, p), pngFake, id, TIERS, new Set(), doc);
+      const insignia = (tier) => insigniaFn(tier, pngFake, id, TIERS, new Set(), doc);
+      const cellOf = (who, p) => rankFn(tierOf(who, p), MAX_TIER, TIERS, insignia, id);
 
       // THE MERGE, and which wire wins. Both numbers come off `rankOf` on the same career, so
       // they agree in every ordinary case — but the roster is the message that carries who
@@ -6284,17 +6287,18 @@ driveJ('the rank readout', () => {
           return `${e?.message ?? e}`;
         }
       };
-      const blank = [999, -1, 0, undefined, null].map((v) => shown(v));
+      const edge = [999, -1, 0, undefined, null].map((v) => shown(v));
       const coerced = [1.5, '16'].map((v) => shown(v));
-      okJ(!bad.length && blank.every((s2) => s2 === '')
-          && coerced.every((s2) => /^<i class="rki t\d+" title="[^"]+"><\/i>$/.test(s2))
-          && !junkish([...blank, ...coerced, shown(20)]) && shown(20).includes(TIERS[20].name),
-          'a rank the client does not have leaves the scoreboard gutter empty, not printing junk',
+      okJ(!bad.length
+          && edge.slice(1).every((s2) => s2.includes('>PVT</b>'))
+          && edge[0].includes(`>${TIERS[MAX_TIER].abbr}</b>`)
+          && coerced[0].includes(`>${TIERS[1].abbr}</b>`) && coerced[1].includes('>PVT</b>')
+          && !junkish([...edge, ...coerced, shown(20)])
+          && shown(20).includes(TIERS[20].name) && shown(20).includes(`>${TIERS[20].abbr}</b>`),
+          'every player has a visible rank abbreviation, including a brand-new Private',
           bad.length ? `THREW ON ${bad.join('; ')}`
-          : `tier 20 shows ${shown(20)}; 999, -1, 0, undefined and null all come back as an empty `
-          + `cell, and 1.5 and "16" land on a real rank (${coerced.join(' ')}) — the device is a `
-          + 'lookup, and a lookup that misses is the same nothing a Private gets rather than a '
-          + 'broken image with the word undefined in its title');
+          : `tier 20 shows ${shown(20)}; Private shows ${shown(0)} — the old empty tier-zero `
+          + 'gutter was why a real rank looked missing');
     }
 });
 
@@ -8937,15 +8941,15 @@ const okO = (cond, label, detail = '') => {
       + 'flag cleared by the first send is a flag the second client never sees, which is the '
       + 'whole reason this is a revision');
 
-  // ── the transport seam, from `ws.ping()` to a number on a row
+  // ── the transport seam, from the application-level browser round trip to a row
   const mine = alpha.of(MSG.SNAPSHOT).slice(-1)[0]?.players
     ?.find((r) => r.n === 'alpha');
   const theirs = alpha.of(MSG.SNAPSHOT).slice(-1)[0]?.players?.find((r) => r.n === 'bravo');
   okO(mine?.pg === 96 && theirs?.pg === 12,
       'the round trip a transport measured reaches every other player’s row for that body',
       `alpha reads ${mine?.pg}ms for itself and ${theirs?.pg}ms for bravo — measured by the `
-      + 'host with ws.ping()/pong rather than reported by the client, because a self-reported '
-      + 'ping is a number a player can edit and it is a number other players read');
+      + 'server around a nonce echoed through browser JavaScript rather than reported as a '
+      + 'duration by the client, because other players can read this number too');
 
   // A transport with no clock in it at all — which is exactly client/src/localserver.js, the
   // in-page host, where the only human is on the same thread as the room.
@@ -8957,139 +8961,28 @@ const okO = (cond, label, detail = '') => {
       '`rtt` is optional on the connect contract: the in-page host has no round trip to '
       + 'measure, so its human reads an en dash while the bots beside it read their seeds');
 
-  // ── THE PING COLUMN ITSELF, timed by the host off a tick the client echoes back
-  //
-  // WHY THIS IS NOT ws.ping(). A transport measures the hop it owns, and behind a reverse
-  // proxy that hop stops short of the player: on the Render deploy the pong to the app's own
-  // control frame comes back from Render's edge, and serve.js read 1ms on sockets whose real
-  // round trip — clocked from the far end of the same wire — was 184ms to Oregon and 83ms to
-  // Singapore. Every human on the board wore a ping no human has, beside bots wobbling around
-  // a believable 20-60, which is the seeded bot ping working exactly backwards.
-  //
-  // So the host times the path the GAME takes. It stamps when a snapshot left, the client
-  // echoes the newest tick it has seen on its next input, and the difference is the trip
-  // through everything in the middle. Everything below drives that on the host's own clock,
-  // which is why a latency can be asserted to the millisecond without waiting for one.
-  //
-  // The ring size is read out of the host rather than restated here: a ring that shrank would
-  // otherwise leave the last check below pumping past a boundary that had moved.
+  // ── THE PING COLUMN ITSELF. The transport value above is now an APPLICATION round trip:
+  // serve.js sends an unpredictable token, client/src/net.js answers it immediately from
+  // JavaScript, and only the matching token stops the server's monotonic timer. That avoids both
+  // previous false answers: a WebSocket control pong stopped at Render's edge, while a snapshot
+  // echo waited for the next 50ms input batch and counted scheduling as internet latency.
   const hostSrc = readFileSync('server/index.js', 'utf8');
-  const PING_RING_SNAPS = Number(/const PING_RING = (\d+);/.exec(hostSrc)?.[1]);
-  okO(Number.isFinite(PING_RING_SNAPS) && PING_RING_SNAPS >= 20,
-      'the host bounds how many snapshot stamps it remembers, and says so in one constant',
-      `PING_RING = ${PING_RING_SNAPS} snapshots, which is `
-      + `${(PING_RING_SNAPS / C.SNAPSHOT_HZ).toFixed(1)}s at ${C.SNAPSHOT_HZ}Hz — the ring only `
-      + 'has to outlive one round trip, and this check is what stops the number below from '
-      + 'being read out of a comment');
-
-  const echoer = seat('echo', 7);
-  let eseq = 0;
-  const echo = (tick) => echoer.conn.message(encode({
-    t: MSG.INPUT,
-    inputs: [{ seq: ++eseq, dt: 1 / C.TICK_HZ, mx: 0, my: 0, keys: 0, yaw: 0, pitch: 0 }],
-    st: tick,
-  }));
-  const lastSnap = () => echoer.of(MSG.SNAPSHOT).slice(-1)[0];
-  const myPg = () => lastSnap()?.players?.find((r) => r.n === 'echo')?.pg;
-  // One tick at a time until a snapshot actually goes out, which is what leaves `ns` holding
-  // exactly the stamp the host wrote. `advance()` runs a fixed-timestep accumulator against a
-  // STEP_NS that is a floored nanosecond, so a broadcast does not land on the last tick of a
-  // fixed-size pump — assuming it did put 35ms of accumulator drift inside a subtraction that
-  // is supposed to be measuring an invented latency and nothing else.
-  const pumpToSnap = () => {
-    const n = echoer.of(MSG.SNAPSHOT).length;
-    for (let i = 0; i < 4 * C.TICKS_PER_SNAPSHOT; i++) {
-      ns += STEP_NS;
-      host.advance();
-      if (echoer.of(MSG.SNAPSHOT).length > n) return;
-    }
-    throw new Error('the host stopped broadcasting');
-  };
-
-  pump(3);
-  pumpToSnap();
-  const t0 = lastSnap()?.tick;
-  const at0 = ns;
-  okO(myPg() === 7,
-      'the transport’s own reading still stands for the beat before a client’s first echo',
-      `${myPg()}ms from rtt() while nothing has been echoed yet — a host that is not behind a `
-      + 'proxy measures this correctly, and one that is spends a single snapshot wrong');
-
-  // 150ms of host time, invented here, between the snapshot leaving and the echo arriving.
-  ns = at0 + 150n * 1000000n;
-  echo(t0);
-  pump(1);
-  okO(myPg() === 150,
-      'and is replaced by the round trip the host timed itself, to the millisecond',
-      `held the echo of tick ${t0} for 150ms and the column reads ${myPg()}ms — both ends of `
-      + 'that subtraction come off the host clock, so the number is not something a client '
-      + 'can talk down: the only thing it chooses is which tick to send back');
-
-  // THE THROTTLE. Inputs arrive at frame rate; echoing the same now-stale tick again inside
-  // PING_SAMPLE_MS must not move the column, or the ping would be an average of sixty
-  // readings a second and would chase every frame hitch on the client.
-  echo(t0);
-  pump(1);
-  okO(myPg() === 150,
-      'a second echo inside the sampling window is dropped rather than averaged in',
-      `tick ${t0} echoed again about 200ms stale and the column is still ${myPg()}ms — one `
-      + 'reading every 250ms is already faster than a column anybody reads changes');
-
-  // SMOOTHING, with the coefficient the client uses on its own reading: one retransmission
-  // should move this by a few milliseconds rather than spike it for a second.
-  pumpToSnap();
-  const t2 = lastSnap()?.tick;
-  const at2 = ns;
-  ns = at2 + 350n * 1000000n;
-  echo(t2);
-  pump(1);
-  okO(myPg() === 190,
-      'and a slower sample is smoothed in rather than swapped in',
-      `150ms then 350ms reads ${myPg()}ms, which is 150 × 0.8 + 350 × 0.2 — the same 0.2 the `
-      + 'client puts on its own samples in net.js, so a scoreboard and a HUD do not disagree '
-      + 'about the same connection by more than the tick they were read on');
-
-  // ── the two things a client could try, and what each of them gets
-  const pgSettled = myPg();
-  pump(6); // OUTSIDE the sampling window, or the throttle answers this before the lookup does
-  echo(t2 + 100000);
-  pump(1);
-  okO(myPg() === pgSettled,
-      'a tick the server never sent buys nothing: it is not in the ring, so there is no sample',
-      `echoed tick ${t2 + 100000} against a room on tick ${lastSnap()?.tick} and the column is `
-      + `still ${myPg()}ms — the lookup is the whole validation, and a client cannot invent a `
-      + 'stamp for a snapshot that was never stamped');
-
-  echo(t0); // still outside the window: the check above took no sample, so none was timed
-  pump(1);
-  okO(myPg() > pgSettled,
-      'and echoing an older tick reads as a WORSE connection, which is the direction that makes it safe',
-      `a tick about a second stale moved the column from ${pgSettled}ms to ${myPg()}ms — every `
-      + 'choice a client has here is worse for itself, so the field needs no signing and no '
-      + 'trust: there is no edit that makes the gap smaller');
-
-  // THE RING. Sixty snapshots is three seconds at SNAPSHOT_HZ, and a stamp older than that is
-  // dropped rather than kept — a client that far behind gets no reading instead of a wrong one.
-  const pgBefore = myPg();
-  pump(PING_RING_SNAPS + 4);
-  echo(t0);
-  pump(1);
-  okO(myPg() === pgBefore,
-      'a stamp that has fallen out of the ring is gone, and no sample is taken from it',
-      `tick ${t0} is more than ${PING_RING_SNAPS} snapshots old and the column held at `
-      + `${myPg()}ms — the ring is bounded on purpose, and the alternative to forgetting a `
-      + 'stamp is a map that grows for as long as a match runs');
-
-  // THE FIELD NAME, on both sides of the wire. The client cannot be imported here — see the
-  // lift below — so this is the one thing worth reading out of its text: a rename on one side
-  // and not the other is a ping column that silently goes back to measuring the proxy.
   const netSrc = readFileSync('client/src/net.js', 'utf8');
-  okO(/st:\s*seenTick/.test(netSrc) && /if \(m\.tick > seenTick\) seenTick = m\.tick;/.test(netSrc)
-      && hostSrc.includes('samplePing(slot, id, m.st'),
-      'the client echoes the newest tick it has seen, under the name the host reads',
-      'net.js sends `st` monotonically — snapshots can arrive out of order, and echoing a tick '
-      + 'older than one already sent would read on the far side as a trip that got longer '
-      + 'while nothing changed');
+  const serveSrc = readFileSync('server/serve.js', 'utf8');
+  const protocolSrc = readFileSync('shared/protocol.js', 'utf8');
+  okO(/PING:\s*'ping'/.test(protocolSrc) && /PONG:\s*'pong'/.test(protocolSrc)
+      && /m\.t === MSG\.PING[\s\S]*?rawSend\(\{ t: MSG\.PONG, n: m\.n \}\)/.test(netSrc),
+      'the browser immediately echoes the application ping instead of waiting for an input batch',
+      'MSG.PING reaches handle() and MSG.PONG leaves through rawSend(), including artificial lag');
+  okO(/nonce = randomUUID\(\)/.test(serveSrc)
+      && /ws\.send\(encode\(\{ t: MSG\.PING, n: nonce \}\)\)/.test(serveSrc)
+      && /m\.n !== nonce/.test(serveSrc) && /performance\.now\(\) - sentAt/.test(serveSrc),
+      'the server owns both ends of the timer and only the unpredictable token it sent can stop it',
+      'a client returns a nonce, never a duration; a guessed, stale or mismatched pong is ignored');
+  okO(!/samplePing|PING_RING|PING_SAMPLE_MS|m\.st\b/.test(hostSrc)
+      && /p\.ping = client\.rtt\?\.\(\) \?\? 0/.test(hostSrc),
+      'the scoreboard reads that direct transport measurement with no snapshot/input fallback',
+      'the removed fallback was the 0–50ms scheduler bias that made different regions look alike');
 }
 
 // ─────────────────────────────── the row a player actually reads, lifted out of hud.js
@@ -9108,40 +9001,36 @@ const okO = (cond, label, detail = '') => {
   };
 
   const escSrc = /\r?\nconst esc = ([\s\S]*?);\r?\n/.exec(hudJ);
-  const slotAt = hudJ.indexOf('function badgeSlot(');
-  const slotSrc = slotAt < 0 ? null : hudJ.slice(slotAt, hudJ.indexOf('{', slotAt))
-    + braced(hudJ, hudJ.indexOf('{', slotAt));
   const sig = /\n {4}scoreboard\(([^)]*)\) \{/.exec(hudJ);
   const boardSrc = sig ? braced(hudJ, sig.index + sig[0].length - 1) : null;
-  const rot = /\n\s*const BADGE_ROT_MS = (\d+);/.exec(hudJ);
-  // The rank gutter's cell, and the map from a ping grade to a count of lit bars. Both are
-  // module-level in hud.js for the same reason the badge slot is: they are the parts of a row
-  // that have a rule of their own, and lifting them means the checks below run the code that
-  // ships rather than a paraphrase of it.
+  // The two rank-cell layers and the map from ping grade to lit bars are module-level. Lift
+  // them with the board so this drives the markup that ships rather than a paraphrase.
   const cellAt = hudJ.indexOf('function insigniaCell(');
   const cellSrc = cellAt < 0 ? null : hudJ.slice(cellAt, hudJ.indexOf('{', cellAt))
     + braced(hudJ, hudJ.indexOf('{', cellAt));
+  const rankAt = hudJ.indexOf('function rankCell(');
+  const rankSrc = rankAt < 0 ? null : hudJ.slice(rankAt, hudJ.indexOf('{', rankAt))
+    + braced(hudJ, hudJ.indexOf('{', rankAt));
   const barsSrc = /\nconst SIGNAL_BARS = (\{[^}]*\});/.exec(hudJ);
 
-  okO(!!escSrc && !!slotSrc && !!boardSrc && !!rot && !!cellSrc && !!barsSrc,
-      'the scoreboard, the badge slot and the rank cell can be lifted whole out of hud.js and run',
-      escSrc && slotSrc && boardSrc && rot && cellSrc && barsSrc
-        ? `badgeSlot ${slotSrc.length} chars, scoreboard ${boardSrc.length} chars, `
-          + `insigniaCell ${cellSrc.length} chars, BADGE_ROT_MS=${rot[1]}ms, braces balanced`
+  okO(!!escSrc && !!boardSrc && !!cellSrc && !!rankSrc && !!barsSrc,
+      'the scoreboard and its visible rank cell can be lifted whole out of hud.js and run',
+      escSrc && boardSrc && cellSrc && rankSrc && barsSrc
+        ? `scoreboard ${boardSrc.length} chars, insigniaCell ${cellSrc.length} chars, `
+          + `rankCell ${rankSrc.length} chars, braces balanced`
         : 'no match — one of them was renamed or reshaped, so nothing below it is measured');
 
-  if (escSrc && slotSrc && boardSrc && rot && cellSrc && barsSrc) {
-    const ROT = Number(rot[1]);
+  if (escSrc && boardSrc && cellSrc && rankSrc && barsSrc) {
     const BARS = new Function(`return ${barsSrc[1]};`)();
     // Every closure variable becomes a parameter, and `boardHtml` is declared in the wrapper
     // rather than in the body so it survives between calls — the early-out below is a claim
     // about the SECOND call with the same rows, and a body that redeclared it would pass by
     // never having remembered anything.
-    const make = new Function('els', 'TIERS', 'pingGrade', 'TRACK_KEYS', 'tierName', 'labelOf',
-      'BADGE_ROT_MS', 'TEAM_NAMES', 'insigniaPng', 'document',
-      `const esc = ${escSrc[1]};\n${slotSrc}\n`
+    const make = new Function('els', 'TIERS', 'MAX_TIER', 'pingGrade',
+      'TEAM_NAMES', 'insigniaPng', 'document',
+      `const esc = ${escSrc[1]};\n`
       + `const SIGNAL_BARS = ${barsSrc[1]};\n`
-      + `const insHave = new Set();\nlet insSheet = null;\n${cellSrc}\n`
+      + `const insHave = new Set();\nlet insSheet = null;\n${cellSrc}\n${rankSrc}\n`
       + `let boardHtml = '';\nlet boardTally = '';\n`
       + `return ({ scoreboard(${sig[1]}) ${boardSrc} }).scoreboard;`);
 
@@ -9167,8 +9056,7 @@ const okO = (cond, label, detail = '') => {
       createElement: () => ({ sheet: { insertRule: (r) => rules.push(r) } }),
       head: { appendChild: () => {} },
     };
-    const board = make(els, TIERS, pingGrade, TRACK_KEYS, tierName, labelOf, ROT,
-                       TEAM_NAMES, pngFake, docFake);
+    const board = make(els, TIERS, MAX_TIER, pingGrade, TEAM_NAMES, pngFake, docFake);
 
     // A cast with something to say in every column: a ranked leader, a shelf of three tracks
     // to rotate through, a player with nothing at all, two teams, and a name with markup in it.
@@ -9197,24 +9085,22 @@ const okO = (cond, label, detail = '') => {
         'four players in the room draw four rows, once, under the caption they were given',
         `${rows.length} rows, ${writes} write(s) to the table body, caption "${cap}"`);
 
-    // THE RANK, AS ITS OWN DEVICE. This column used to print an abbreviation, and the comment
-    // defending it said an insignia "would be a second drawing of the same thing that could
-    // disagree with the plate". The player's answer was "not text RANK but its RANK logo", and
-    // the drift that abbreviation was avoiding is gone for a better reason than text: there is
-    // ONE drawing now, in insignia.js, and render.js and hud.js are both consumers of it.
+    // THE RANK. The device remains the same drawing used over a body, but text is no longer
+    // optional: tier zero deliberately has no insignia and that made a Private's real rank look
+    // absent. An abbreviation gives every row an answer while the title keeps the full name.
     const ga = rowWith('ranked');
-    okO(new RegExp(`<td class="ins"><i class="rki t20" title="${TIERS[20].name}"></i></td>`).test(ga)
-        && rowWith('nothing').includes('<td class="ins"></td>')
-        && !first.includes('class="rk"'),
-        'a rank is worn as the insignia itself, from the same drawing as the plate, and a Private has none',
-        `${(/<td class="ins">.*?<\/td>/.exec(ga) ?? [''])[0]} — the device is a background-image `
-        + 'keyed by tier, so the row carries a class and not two kilobytes of data URL per player');
+    okO(new RegExp(`<td class="rank"><i class="rki t20" title="${TIERS[20].name}"></i>`
+        + `<b title="${TIERS[20].name}">${TIERS[20].abbr}</b></td>`).test(ga)
+        && rowWith('nothing').includes(`<td class="rank"><b title="Private">PVT</b></td>`),
+        'every row names its rank, and a Private is visible even though it has no insignia yet',
+        `${(/<td class="rank">.*?<\/td>/.exec(ga) ?? [''])[0]} against `
+        + `${(/<td class="rank">.*?<\/td>/.exec(rowWith('nothing')) ?? [''])[0]}`);
 
     // One rule per rank ever seen, inserted once. Two ranks in this cast carry a device, and a
     // board redrawn four times must not insert eight rules: the sheet is the cache.
     const tiersSeen = [...new Set([...roster.values()].map((r) => r.rk).filter(Boolean))];
     okO(rules.length === tiersSeen.length
-        && rules.every((r) => /^#board td\.ins \.rki\.t\d+\{background-image:url\("data:image\/png/.test(r)),
+        && rules.every((r) => /^#board td\.rank \.rki\.t\d+\{background-image:url\("data:image\/png/.test(r)),
         'and the device is one CSS rule per tier, written on demand and never twice',
         `${rules.length} rule(s) for ${tiersSeen.length} ranked player(s): `
         + `${rules.map((r) => (/\.rki\.(t\d+)/.exec(r) ?? [])[1]).join(', ')} — a data URL repeated `
@@ -9264,34 +9150,9 @@ const okO = (cond, label, detail = '') => {
             + '`.card u.p-x, #board td.p-x`, so the two cannot end up two shades of the same claim');
 
     const shelved = rowWith('&lt;script&gt;');
-    okO(/<td class="bgc"><span class="bg b5" title="[^"]*"[^>]*>[^<]+<i>5<\/i><\/span><\/td>/.test(shelved)
-        && rowWith('nothing').includes('<td class="bgc"></td>'),
-        'a badge shows the best thing on the shelf first, as its tier metal, and an empty shelf is empty',
-        `${(/<td class="bgc">.*?<\/td>/.exec(shelved) ?? [''])[0]} — hs at tier 5 beats rifle 2 `
-        + 'and knife 1, and best-first is what makes one rotating slot honest: a board glanced '
-        + 'at for a beat has told the truth about somebody');
-
-    // ── the rotation, which is the whole reason there is one slot rather than five
-    const chipAt = (ms) => {
-      draw(ms);
-      const r = html.split('</tr>').find((s) => s.includes('&lt;script&gt;')) ?? '';
-      return (/<span class="bg b(\d)"[^>]*>([^<]+)</.exec(r) ?? []).slice(1).join(':');
-    };
-    const spun = [0, ROT, ROT * 2, ROT * 3].map(chipAt);
-    okO(new Set(spun).size === 3 && spun[0] === spun[3],
-        'the slot takes turns through the whole shelf and comes back round to the start',
-        `${spun.join(' → ')} over ${(ROT * 3) / 1000}s — off `
-        + '`now` rather than counted, so a board reopened after ten seconds is wherever the '
-        + 'clock says it would have been had it stayed open');
-
-    // Every row turning over on the same beat, which is a decision about the COLUMN: rows
-    // changing at their own moments would make it shimmer.
-    draw(0);
-    const atZero = (html.match(/class="bg b\d"/g) ?? []).length;
-    draw(ROT / 2);
-    okO(html === first && atZero >= 2,
-        'and every row turns at the same instant, so the column reads as a rotation not a shimmer',
-        `half a rotation later the markup is byte-identical, ${atZero} chips sharing one index`);
+    okO(!first.includes('class="bgc"') && !first.includes('class="bg b'),
+        'the scoreboard carries no badge column or rotating badge chips',
+        'rank, player, kills, deaths and ping remain; badge progression stays in its kill card');
 
     // ── who is who, and what the row is allowed to say about them
     okO(rowWith('ranked').startsWith('<tr class="me tB">')

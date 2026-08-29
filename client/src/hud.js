@@ -142,10 +142,6 @@ export function createHud() {
   const BADGE_MS = 1600;
   const BADGE_UP_MS = 2600;
   const BADGE_QUEUE_MAX = 3;
-  /** How long one badge holds the scoreboard's single slot before the next takes it.
-   *  Long enough to read a twelve-character label without hurrying, short enough that a
-   *  board held open for the length of a respawn shows a whole shelf. */
-  const BADGE_ROT_MS = 2400;
   /** The markup the scoreboard last wrote, so a frame that would write the same thing
    *  writes nothing. See `scoreboard`. */
   let boardHtml = '';
@@ -715,13 +711,12 @@ export function createHud() {
     },
 
     /**
-     * The scoreboard: who is here, how they are doing, what they wear and what their
-     * connection is like.
+     * The scoreboard: who is here, how they are doing, their rank and connection.
      *
      * TWO SOURCES, and that is the shape of the whole thing. `players` is the snapshot, which
      * lands twenty times a second and carries what moves — score, team, ping. `roster` is
      * MSG.ROSTER, which lands on a join, a drop or a promotion and carries who somebody is —
-     * name, rank, badge shelf. Merged by id, and the snapshot's own `n` and `rk` are the
+     * name and rank. Merged by id, and the snapshot's own `n` and `rk` are the
      * fallback for the beat before the first roster arrives, so a board opened on the very
      * first frame of a match is complete rather than nameless.
      *
@@ -734,14 +729,6 @@ export function createHud() {
       els.board.classList.toggle('show', show);
       if (!show) return;
       if (caption) els.boardCap.textContent = caption;
-      // ONE BADGE SLOT PER ROW, rotating, and the index is shared by every row on purpose:
-      // rows changing at their own moments would make the column shimmer, and the whole
-      // column turning over at once reads as a deliberate rotation instead.
-      //
-      // Off `now` rather than counted, so it does not drift and does not need to be reset
-      // when the board is closed — a board reopened after ten seconds is wherever the clock
-      // says, which is where it would have been had it stayed open.
-      const spin = Math.floor(now / BADGE_ROT_MS);
       const sorted = [...players].sort(
         (a, b) => b.k - a.k || a.d - b.d || String(a.n).localeCompare(String(b.n)),
       );
@@ -764,7 +751,10 @@ export function createHud() {
           const cls = [p.id === selfId ? 'me' : '', p.tm === 1 ? 'tA' : p.tm === 2 ? 'tB' : '']
             .filter(Boolean)
             .join(' ');
-          const tier = who?.rk ?? p.rk;
+          // Rank zero is still a rank. It used to resolve to an empty insignia cell by design,
+          // which made every new player conclude their rank was missing. `rankCell` always
+          // prints the abbreviation and adds the device once the career has earned one.
+          const tier = who?.rk ?? p.rk ?? 0;
           // THE CONNECTION, as a number and as four bars. The grade behind both comes off
           // `pingGrade`, which is the same function the region cards in the menu grade
           // themselves with, so a player who picked ASIA because it was green does not find
@@ -772,9 +762,8 @@ export function createHud() {
           const grade = pingGrade(p.pg ?? NaN);
           return `<tr class="${cls}">`
             + `<td class="pl">${i + 1}</td>`
-            + `<td class="ins">${insigniaCell(tier)}</td>`
+            + `<td class="rank">${rankCell(tier)}</td>`
             + `<td class="who">${esc(who?.n ?? p.n)}</td>`
-            + `<td class="bgc">${badgeSlot(who?.bg, spin)}</td>`
             + `<td class="num k">${p.k}</td><td class="num">${p.d}</td>`
             // A ping of 0 is not a ping of 0. It means nobody has measured one: a bot in the
             // in-page host, or a socket in the first second of its life before the first
@@ -973,38 +962,18 @@ function insigniaCell(tier) {
     // Height is fixed by the stylesheet and `contain` fits the width inside it, so a general's
     // five stars and a corporal's two chevrons come out the same height. That is deliberate
     // and it is the same rule the world plate follows.
-    insSheet?.insertRule(`#board td.ins .rki.t${t}{background-image:url("${png.url}")}`);
+    insSheet?.insertRule(`#board td.rank .rki.t${t}{background-image:url("${png.url}")}`);
   }
   return `<i class="rki t${t}" title="${esc(TIERS[t]?.name ?? '')}"></i>`;
 }
 
-/**
- * One badge from a player's shelf, as the chip a scoreboard row shows — or nothing at all
- * for somebody who has not earned one.
- *
- * A SINGLE SLOT AND NOT A ROW OF EMBLEMS, which is a decision about the column and not about
- * the badges: five weapon tracks side by side in a table cell is a wall of metal nobody reads,
- * and the one thing a player actually wants off somebody else's sleeve is "what are they good
- * at". So the shelf takes turns in one slot, best first.
- *
- * BEST FIRST is what makes the rotation honest rather than random: sorted by tier and then by
- * the badge table's own key order, so the first thing shown of anybody is the highest thing
- * they have, and a board glanced at for one beat has told the truth about them.
- *
- * The metal is the tier and the text is the track — the same division the badge card makes,
- * and the same five `b1`..`b5` classes, so a colour means the same thing in both places. The
- * tier NAME rides in the title rather than in the cell, because "Distinguished ELIMINATIONS"
- * is twenty-six characters and this is a table.
- */
-function badgeSlot(shelf, spin) {
-  if (!shelf) return '';
-  const keys = Object.keys(shelf).filter((k) => shelf[k] > 0);
-  if (!keys.length) return '';
-  keys.sort((a, b) => shelf[b] - shelf[a] || TRACK_KEYS.indexOf(a) - TRACK_KEYS.indexOf(b));
-  const key = keys[spin % keys.length];
-  const tier = shelf[key];
-  return `<span class="bg b${tier}" title="${esc(tierName(tier))} - ${esc(labelOf(key))}">`
-    + `${esc(labelOf(key))}<i>${tier}</i></span>`;
+/** A scoreboard rank that is never blank: insignia where one exists, abbreviation for every
+ * tier including Private. The full name remains in the title so the compact column is useful
+ * without making General of the Army wider than the player's name. */
+function rankCell(tier) {
+  const t = Math.max(0, Math.min(MAX_TIER, Number.isFinite(tier) ? tier | 0 : 0));
+  const rank = TIERS[t] ?? TIERS[0];
+  return `${insigniaCell(t)}<b title="${esc(rank.name)}">${esc(rank.abbr)}</b>`;
 }
 
 const esc = (s) =>

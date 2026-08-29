@@ -43,16 +43,6 @@ export function createNet({
   const sentAt = new Map(); // seq -> local send time
   let rtt = 0;
   /**
-   * Newest snapshot tick seen, echoed back on every input as `st`.
-   *
-   * This is not for us. The server subtracts it from its own clock to get the round trip it
-   * shows in the scoreboard's ping column, because it cannot measure that itself behind a
-   * proxy that answers WebSocket control frames on its behalf — see samplePing in
-   * server/index.js. Nothing here is trusted with a duration: we hand back a tick number the
-   * server issued, and it does the arithmetic.
-   */
-  let seenTick = 0;
-  /**
    * The newest snapshot's sim time and the local instant it arrived — the pair that lets
    * `viewMs` name a moment on the SERVER's clock without ever synchronising to it.
    *
@@ -74,6 +64,13 @@ export function createNet({
   }
 
   function handle(m) {
+    // This reaches browser JavaScript before returning, so it measures the player's route
+    // through the proxy rather than Render edge↔server or snapshot↔next-input scheduling.
+    // `rawSend` also keeps the artificial-latency path honest in both directions.
+    if (m.t === MSG.PING && typeof m.n === 'string') {
+      rawSend({ t: MSG.PONG, n: m.n });
+      return;
+    }
     if (m.t === MSG.WELCOME) return emit('welcome', m);
     // Occupancy. The initial figures ride on WELCOME instead, so a client greys out a full
     // lobby from its first frame rather than after the first join anywhere on the server;
@@ -103,10 +100,6 @@ export function createNet({
     // test instead of quietly costing every player a tick of lag compensation.
     srvMs = ((m.tick - 1) * 1000) / C.TICK_HZ;
     srvAt = performance.now();
-    // Monotone on purpose: snapshots can arrive out of order, and echoing an older tick than
-    // one already acknowledged would read on the far side as a round trip that got longer.
-    if (m.tick > seenTick) seenTick = m.tick;
-
     snapCount++;
     const now = performance.now();
     if (now - windowStart >= 1000) {
@@ -199,9 +192,7 @@ export function createNet({
       if (!inputs.length) return;
       sentAt.set(inputs[inputs.length - 1].seq, performance.now());
       if (sentAt.size > 240) sentAt.delete(sentAt.keys().next().value);
-      // `st` omitted before the first snapshot, like every other zero on this wire: there is
-      // no tick to echo yet, and a 0 would be a tick number the server can look up.
-      rawSend(seenTick ? { t: MSG.INPUT, inputs, st: seenTick } : { t: MSG.INPUT, inputs });
+      rawSend({ t: MSG.INPUT, inputs });
     },
   };
 }

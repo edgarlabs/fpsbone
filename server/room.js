@@ -309,27 +309,16 @@ export class Room {
       /**
        * Round-trip milliseconds to this player, or 0 for a bot until `addBot` seeds it.
        *
-       * WRITTEN FROM OUTSIDE, by server/index.js, off whatever the transport can measure —
-       * `ws.ping()` and a `pong` on Node, nothing at all in the browser host. It lives here
-       * rather than there because `snapshotBase` is what puts it on the wire and this is the
-       * object that function reads; a parallel map keyed by id in the host would be the same
-       * data with one more thing able to fall out of step with `players`.
+       * WRITTEN FROM OUTSIDE, by server/index.js, off the Node transport's application-level
+       * browser round trip; the in-page host has no wire and leaves it at zero. It lives here
+       * because `snapshotBase` is what puts it on the wire; a parallel map keyed by id in the
+       * host would be the same data with one more thing able to fall out of step.
        *
        * NOT SIMULATION STATE. Nothing in `stepPlayer` reads it, it is not in
        * `createPlayerState`, and no replay depends on it — it is a number about the wire,
        * riding on the object the wire is described from.
        */
       ping: 0,
-      /**
-       * When `ping` was last sampled, in wall-clock ms, and 0 for never.
-       *
-       * Two jobs, which is why it is a timestamp and not a counter: it throttles sampling to
-       * one reading every PING_SAMPLE_MS, and being non-zero is what tells the broadcast that
-       * a real round trip has been measured and the transport's own guess is no longer wanted.
-       * Bots keep it at 0 forever — nothing echoes a tick for them, and their seeded value is
-       * the one `wobble` is applied to below.
-       */
-      pingAt: 0,
       ...createPlayerState(spawn),
       hp: C.MAX_HP,
       alive: true,

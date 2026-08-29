@@ -6,6 +6,17 @@ export const MSG = {
   HELLO: 'hello', // C→S  identity handshake
   WELCOME: 'welcome', // S→C  assigned id + tick offset
   INPUT: 'input', // C→S  a batch of recent inputs
+  /**
+   * Application-level round trip used by the scoreboard.
+   *
+   * These deliberately travel through browser JavaScript. A WebSocket control-frame pong can
+   * be answered by Render's edge before the packet reaches the player, while the old snapshot
+   * echo waited for the next 50ms input batch and counted scheduler delay as internet latency.
+   * The server sends an unpredictable nonce and only accepts that exact nonce back, so the
+   * client never supplies a duration.
+   */
+  PING: 'ping', // S→C  `{ n }`
+  PONG: 'pong', // C→S  `{ n }`
   SNAPSHOT: 'snap', // S→C  authoritative world state
   EVENT: 'event', // S→C  discrete things: shots, hits, kills
   /**
@@ -118,10 +129,8 @@ export function decode(raw) {
  * dropped packet doesn't cost the client a tick of movement — the next packet
  * still carries it. The server ignores any seq it has already consumed.
  *
- * MSG.INPUT also carries `st`: the newest snapshot tick the client has seen, echoed so the
- * server can time the round trip it puts in the scoreboard's ping column. It is a tick
- * number and never a duration — the server owns both ends of that subtraction, so the field
- * is unforgeable in the only direction that matters. Omitted before the first snapshot.
- * See samplePing in server/index.js.
+ * Ping is intentionally not carried here. Inputs leave in 50ms batches, so using their arrival
+ * to stop a ping timer makes a good connection look randomly 0–50ms worse. MSG.PING/PONG above
+ * takes the immediate path instead.
  */
 export const INPUT_REDUNDANCY = 4;

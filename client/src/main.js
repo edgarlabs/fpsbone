@@ -336,18 +336,27 @@ const menu = createMenu(settings, {
  * picker. Which is exactly the single-server case the menu already handles, so the `catch`
  * needs no message: there is nothing for a player to do about it and nothing to tell them.
  */
+let activeGameRegion;
 loadRegions()
   .then((list) => {
+    // Refresh a moved hostname for the NEXT connection without putting an HTTP lookup in
+    // front of this one. A returning player still joins immediately; if the address ever
+    // changes, the newly advertised origin repairs storage in the background.
+    if (!explicitServer && settings.region !== HERE) {
+      const selected = list.find((r) => r.id === settings.region && r.host);
+      if (selected && selected.host !== settings.regionHost) settings.set({ regionHost: selected.host });
+    }
     // Which card is the one we are ON, which is not simply `settings.region`. The default
     // `here` means "whoever served this page", and the table may already name that server as
     // a region — leaving five cards unmarked while connected to one of them is the picker
     // getting its own subject wrong. A `?server=` override outranks the setting entirely, and
     // then the honest answer is that none of these is the one.
-    const active = explicitServer
+    const requested = explicitServer
       ? null
       : settings.region === HERE
         ? (list.find((r) => r.mine)?.id ?? HERE)
         : settings.region;
+    const active = activeGameRegion === undefined ? requested : activeGameRegion;
     menu.setRegions(list, active);
     return probeAll(list, (results) => menu.setPings(results));
   })
@@ -392,6 +401,10 @@ net.on('lobby', (rooms) => menu.setLobby(rooms));
 
 net.on('welcome', (m) => {
   selfId = m.id;
+  // The server that accepted the game socket gets the final word. This is what prevents a
+  // stale ASIA request from staying highlighted while the match is actually in AMERICA.
+  activeGameRegion = typeof m.r === 'string' && m.r ? m.r : (useLocalHost ? HERE : null);
+  menu.setActiveRegion(activeGameRegion);
   menu.setAvailable(m.avail ?? []);
   menu.setLobby(m.lob ?? {});
   applyMode(m.mode ?? requestedMode);

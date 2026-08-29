@@ -19,20 +19,21 @@
 // the TCP handshake, and a TLS negotiation — two more round trips before a byte of payload —
 // and on a free host it may also carry a cold start of a minute. Reporting it would tell a
 // player their neighbour's server is in another galaxy. So: one throwaway, then samples on the
-// warm connection, and the minimum of those is the answer. Minimum rather than mean because
-// the floor is the distance and everything above it is congestion that comes and goes.
+// warm connection, and the median is the answer. The minimum advertised the luckiest packet
+// rather than the connection a whole match has to live with; the median rejects one scheduling
+// hitch without pretending ordinary queueing never happens.
 
 import { HERE, REGIONS, fastest, pingGrade, wsOrigin } from '../../shared/regions.js';
 
 /** Discarded — the connection-setup sample. */
 const WARMUP = 1;
-/** Kept. Two is enough to throw out a single unlucky packet and cheap enough to run on every
- *  region at once; a third buys precision nobody makes a decision with. */
-const SAMPLES = 2;
-/** A cold free-tier instance takes about a minute to wake, and a menu that gave up at five
- *  seconds would report every sleeping region as dead. Long, and harmless: this runs in the
- *  background and the card fills in whenever the answer arrives. */
-const TIMEOUT_MS = 70000;
+/** Kept. Three is the smallest set where a median rejects one lucky or unlucky packet. */
+const SAMPLES = 3;
+/** A cold free-tier instance gets one long wake-up request. Once awake, an individual sample
+ * should never take more than five seconds; four separate 70s limits made a dead card wait up
+ * to 280 seconds before it admitted the server was unreachable. */
+const WARM_TIMEOUT_MS = 70000;
+const SAMPLE_TIMEOUT_MS = 5000;
 /** Past this, the first sample was a wake-up rather than a handshake, and the player is owed
  *  that fact — their first match on this region starts after a stall nobody warned them of. */
 const WOKE_MS = 2500;
@@ -97,13 +98,20 @@ export async function probeRegion(region, onProgress) {
   try {
     for (let i = 0; i < WARMUP + SAMPLES; i++) {
       const ctl = new AbortController();
-      const bail = setTimeout(() => ctl.abort(), TIMEOUT_MS);
+      const bail = setTimeout(
+        () => ctl.abort(),
+        i < WARMUP ? WARM_TIMEOUT_MS : SAMPLE_TIMEOUT_MS,
+      );
       const t0 = performance.now();
       // `no-store` is not a nicety: a cached 200 returns in under a millisecond and would
       // report every region on earth as being in the next room.
-      const res = await fetch(url, { cache: 'no-store', signal: ctl.signal });
+      let res;
+      try {
+        res = await fetch(url, { cache: 'no-store', signal: ctl.signal });
+      } finally {
+        clearTimeout(bail);
+      }
       const dt = performance.now() - t0;
-      clearTimeout(bail);
       if (!res.ok) throw new Error(`${res.status}`);
       body = await res.json();
       if (i < WARMUP) {
@@ -118,7 +126,8 @@ export async function probeRegion(region, onProgress) {
   }
   clearTimeout(slow);
 
-  const ms = Math.round(Math.min(...times));
+  const ordered = [...times].sort((a, b) => a - b);
+  const ms = Math.round(ordered[Math.floor(ordered.length / 2)]);
   return {
     ...region,
     ms,

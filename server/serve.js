@@ -30,11 +30,13 @@
 // top of client/src/main.js for the three ways that decision can be made.
 
 import { createServer } from 'node:http';
+import { randomUUID } from 'node:crypto';
 import { readFile } from 'node:fs/promises';
 import { extname, join, normalize, resolve, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { WebSocketServer } from 'ws';
 import * as C from '../shared/constants.js';
+import { MSG, decode, encode } from '../shared/protocol.js';
 import { REGIONS, regionsFromEnv } from '../shared/regions.js';
 import { createHost } from './index.js';
 // The only filesystem-touching module under server/, and imported here and nowhere
@@ -104,6 +106,7 @@ const MIME = {
 const host = createHost({
   nowNs: process.hrtime.bigint,
   ranks,
+  region: REGION,
   log: (line) => console.log(line),
 });
 
@@ -217,63 +220,31 @@ const server = createServer((req, res) => {
 // requests carrying the upgrade header and leaves the rest to the handler above.
 const wss = new WebSocketServer({ server });
 
-/**
- * How often a socket is pinged for the scoreboard's ping column, in ms.
- *
- * A second, which is slower than the column changes and far slower than it needs to be
- * read. A ping frame is two bytes each way and the number it measures moves over seconds,
- * so measuring it at snapshot rate would be twenty round trips a second per player to
- * watch the same figure breathe.
- *
- * It doubles as a liveness probe at no extra cost: a socket whose peer has vanished without
- * a close frame — a laptop lid, a dropped mobile connection — stops answering, and the
- * `pong` that never arrives leaves its last measurement standing rather than growing without
- * bound, which is why the reading below is a stored sample and not `now - sentAt`.
- *
- * WHAT THIS NUMBER IS NOT ANY MORE: the ping on the scoreboard. Behind Render's proxy the
- * pong to an app's ping comes back from the edge and not from the browser — measured 1ms on
- * sockets whose real round trip was 184ms to Oregon and 83ms to Singapore, clocked from the
- * far end of the same wire. The column is measured by the host off an echoed snapshot tick
- * instead; see samplePing in server/index.js. This stays because it is still the cheapest
- * liveness probe there is, and because it is the reading a client sees before its first
- * input arrives — one snapshot's worth, on a host that is not behind a proxy.
- */
+/** One tiny application-level request per second is enough for a readable scoreboard. */
 const PING_MS = 1000;
+/** A lost request may not stop measurement for the rest of the match. */
+const PING_STALE_MS = 5000;
 
 wss.on('connection', (ws) => {
-  // ROUND TRIP TO WHATEVER ANSWERS CONTROL FRAMES — the browser on a direct connection, the
-  // proxy in front of us on a hosted one. A WebSocket ping is answered by a socket stack and
-  // never by a page, so the number cannot be shaded by a client that would rather show a 5;
-  // it can, and on Render does, describe a hop that stops well short of the player. The note
-  // on PING_MS above says what that cost and what measures the column now.
-  //
-  // Smoothed the same way client/src/net.js smooths its own, and with the same coefficient:
-  // one retransmission on a mobile connection should move a scoreboard column by a few
-  // milliseconds rather than spike it to 400 for a second.
+  // An unpredictable token can only be echoed after this player's JavaScript receives it.
+  // That keeps both ends of the duration on this process without trusting a client-supplied
+  // number, and unlike ws.ping() the round trip cannot stop at Render's proxy edge.
   let rtt = 0;
   let sentAt = 0;
+  let nonce = '';
   const beat = setInterval(() => {
     if (ws.readyState !== ws.OPEN) return;
-    // A ping still outstanding means the last one was never answered; do not stack another
-    // on top of it, or a stalled peer accumulates a queue that all resolves at once and
-    // reads as one absurdly good sample.
-    if (sentAt) return;
-    sentAt = Date.now();
-    // `ws.ping` throws on a socket that closed between the check above and here, which is a
-    // race a once-a-second timer will eventually lose.
+    const now = performance.now();
+    if (sentAt && now - sentAt < PING_STALE_MS) return;
+    nonce = randomUUID();
+    sentAt = now;
     try {
-      ws.ping();
+      ws.send(encode({ t: MSG.PING, n: nonce }));
     } catch {
       sentAt = 0;
+      nonce = '';
     }
   }, PING_MS);
-
-  ws.on('pong', () => {
-    if (!sentAt) return;
-    const sample = Date.now() - sentAt;
-    sentAt = 0;
-    rtt = rtt ? rtt * 0.8 + sample * 0.2 : sample;
-  });
 
   // The three calls the host needs from a transport. `readyState` is compared against the
   // socket's own OPEN rather than the class constant, which is what ws documents.
@@ -288,7 +259,18 @@ wss.on('connection', (ws) => {
     conn.drop();
   };
 
-  ws.on('message', (raw) => conn.message(raw));
+  ws.on('message', (raw) => {
+    const m = decode(raw);
+    if (m?.t === MSG.PONG) {
+      if (!sentAt || m.n !== nonce) return;
+      const sample = performance.now() - sentAt;
+      sentAt = 0;
+      nonce = '';
+      rtt = rtt ? rtt * 0.8 + sample * 0.2 : sample;
+      return;
+    }
+    conn.message(raw);
+  });
   ws.on('close', gone);
   ws.on('error', gone);
 });

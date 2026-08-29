@@ -139,20 +139,21 @@ const HIP_SPREAD = 40;
  * happens in the first half of the window. A linear ramp is the harsher one — it holds
  * the cone near hip width for far longer — and this weapon needed the forgiving curve.
  *
- * 120ms, DOWN FROM 200, and the number came off a measurement rather than a feel. At 200
+ * 100ms, DOWN FROM 120 after play showed that every other sniper penalty already made the
+ * opening unusually unforgiving. At 200
  * the freshly-scoped cone is 80cm across at 25m and a player is 80cm wide, so the first
  * shot of every scope was a coin toss against a standing target; a PISTOL stands at 10cm
- * at the same range and fires every 110ms against this weapon's 1200ms. That is the whole
+ * at the same range and fires every 135ms against this weapon's 1200ms. That is the whole
  * of "you get outgunned by a pistol": not the damage, not the cadence, but a scope that
  * was less accurate than a sidearm for the first eighth of a second it was open, backed by
- * a 1.2s penalty for the miss it caused. 120ms puts a still shooter inside 2cm and leaves
- * the flick unrewarded, which is the CS2 trade and the one worth keeping.
+ * a 1.2s penalty for the miss it caused. 100ms keeps a real settle but gives a planted quick
+ * scope its answer one frame earlier on many displays.
  *
  * Exported because `scopeStep` in shared/movement.js clamps the timer to it: the settle
  * now runs DOWN while the player is asking to move, and a decay needs a ceiling to decay
  * from or standing still for a minute would buy a minute of accurate running.
  */
-export const SCOPE_SETTLE_MS = 120;
+export const SCOPE_SETTLE_MS = 100;
 
 /**
  * What the SECOND zoom costs on top of the first.
@@ -340,20 +341,17 @@ export const WEAPONS = {
     // tightest cone. "no matter how good you are some guns will get outgun by pistol
     // which makes no sense."
     //
-    // 30 is a four-shot kill, 330ms. Still the quickest thing in the game up close —
-    // which a sidearm should be, and is what makes swapping to it worth the deploy time
-    // — but no longer strictly better than the primary you swapped away from. The other
-    // three reasons it dominated are not damage and are fixed elsewhere: it had a
-    // rifle's accuracy at any range (now `falloff`), the same accuracy at a full sprint
-    // (now `spreadMul`), and no way to lose a duel to better aim (now HIT_ZONE_MUL).
-    dmg: 30,
+    // 25 is a four-shot kill in 405ms at the fastest legal click rate, just behind the
+    // rifle's 390ms. The sidearm is a strong finish and a fast draw, not the best primary
+    // in the room. A close headshot still earns a one-tap through the shared 4x zone rule.
+    dmg: 25,
     // The ceiling on the trigger, NOT the cadence — "the pistol is so slow! the pistol
     // firing speed should follow the speed how fast you click". At 260 it was the other
     // way round: 260ms is 231 RPM, slower than any CS2 sidearm, so the interval was the
-    // thing setting the rate and clicking faster did nothing at all. 110ms is 545 RPM,
-    // which is quicker than a human sustains, so the CLICK is now the limit and the
+    // thing setting the rate and clicking faster did nothing at all. 135ms is 444 RPM,
+    // around the edge of what a human sustains, so the CLICK is normally the limit and the
     // number here only exists to stop an autoclicker or an edited client running away
-    // with it.
+    // with it. 135ms keeps a fast human cadence while leaving the rifle a narrow advantage.
     //
     // This deliberately crosses below RECOIL_HOLD_MS (170), and that is the trade rather
     // than an oversight: spam the trigger and the shots land inside the hold window, so
@@ -361,13 +359,13 @@ export const WEAPONS = {
     // than 170ms and recovery runs between rounds and every shot is placed from a
     // settled aim. Fast is available, free is not — which is exactly how a CS2 pistol
     // rewards tapping over spraying.
-    intervalMs: 110,
+    intervalMs: 135,
     range: 120,
     // Hard and early, and the single biggest correction in this table. A pistol is a
     // close-range weapon that had a 120u reach at full power; past 12u it now bleeds to
-    // 45%, so the shot that used to trade evenly with a rifle across the map does 13.
+    // 45%, so the shot that used to trade evenly with a rifle across the map does 11.
     falloff: { start: 12, min: 0.45 },
-    spread: 0.004,
+    spread: 0.005,
     mag: 12,
     reloadMs: 1200,
     slot: 2,
@@ -421,8 +419,8 @@ export const WEAPONS = {
     range: 250,
     // The cone THROUGH SETTLED GLASS, which is what this number always was and never
     // said: `spreadMul` now multiplies it by 40 from the hip and eases that down over
-    // the 200ms after the scope opens (see HIP_SPREAD). So the pinpoint is still here,
-    // it just has to be earned by scoping and then waiting a fifth of a second — the
+    // the 100ms after the scope opens (see HIP_SPREAD). So the pinpoint is still here,
+    // it just has to be earned by scoping and settling for a beat — the
     // CS2 bargain, and the reason the weapon has a scope at all.
     spread: 0.0008,
     mag: 5,
@@ -507,8 +505,10 @@ export const WEAPONS = {
   lmg: {
     label: 'MACHINE GUN',
     kind: 'hitscan',
-    dmg: 28,
-    intervalMs: 105,
+    // Capacity and sustained pressure are the advantage. At 22 damage it needs five body
+    // hits, so the hundred-round belt no longer also wins the opening duel against a rifle.
+    dmg: 22,
+    intervalMs: 110,
     range: 220,
     // Nearly the rifle's curve. Suppression is the point of the weapon and suppression
     // that stops working at range is not suppression.
@@ -531,11 +531,14 @@ export const WEAPONS = {
   semi: {
     label: 'SEMI',
     kind: 'hitscan',
-    dmg: 58,
-    intervalMs: 250,
+    // Three body hits, or one precise headshot. The old 58 made two body clicks kill in
+    // 250ms, faster than every general-purpose automatic with none of their exposure.
+    dmg: 45,
+    intervalMs: 270,
     range: 240,
     // The flattest curve in the table, because reaching is what a semi is for: 80% at
-    // 240u, so two body shots still kill at any range you can see a target at.
+    // 240u. It stays the most accurate primary, but the new 45 damage always asks for
+    // three body hits rather than letting two clicks beat every automatic.
     falloff: { start: 60, min: 0.80 },
     spread: 0.002,
     mag: 10,
@@ -545,8 +548,8 @@ export const WEAPONS = {
     pellets: 1,
     alt: null,
     // A hard shove per round that has mostly recovered by the time the next click is
-    // allowed. Two body shots is a kill, so the whole weapon is about whether you can
-    // put the second one on target while the first is still pushing you up.
+    // allowed. Three body shots are a kill, so the whole weapon is about whether you can
+    // put the follow-ups on target while the first is still pushing you up.
     recoil: { up: 0.052, side: 0.013, ramp: 2, max: 0.14 },
     // As reliable as the pistol: 125 rounds.
     jam: 0.008,
