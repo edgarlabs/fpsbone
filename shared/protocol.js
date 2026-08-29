@@ -60,10 +60,9 @@ export const MSG = {
    * the private `cv` and `bd`. What you have shot over a career is yours; the metal on
    * your sleeve is what the room can see.
    *
-   * NO BOT FLAG, for the reason room.js gives at BOT_NAMES: the moment one goes on the
-   * wire, somebody writes a client that outlines the humans. Bots appear here exactly as
-   * people do, prefixed name and all, and they carry a seeded ping in the snapshot for
-   * the same reason — an absent `pg` would have been that flag by omission. */
+   * Bots use their readable `BOT ` name prefix. Their snapshot deliberately has no `pg`:
+   * the brain runs inside the server process, so inventing an internet route for it would
+   * make the scoreboard number false. */
   ROSTER: 'roster',
 };
 

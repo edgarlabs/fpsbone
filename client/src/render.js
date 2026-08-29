@@ -201,11 +201,9 @@ function plateTexOf(tier) {
 /**
  * Point this avatar's plate at the rank in `tier`, or at nothing.
  *
- * Tier 0 draws NOTHING, on purpose. Everybody starts a Private, so a single mark over every
- * head in a fresh match is noise that carries no information — and `snapshotBase` in
- * server/room.js omits `rk` entirely at tier 0 for the same reason, so the two are one decision
- * made in two places rather than a client quirk. `deviceOf` in insignia.js agrees with
- * both: a private's device is zero chevrons.
+ * Tier 0 now draws the recruit shield from insignia.js. The server still omits `rk` at zero
+ * because the client already defaults an absent tier to Private; omission saves the common
+ * wire field without making the common rank visually blank.
  *
  * The geometry is rebuilt on a change of rank rather than sized once at build time, because the
  * badge's WIDTH follows the device — a patch is square where a row of pins is up to twice as
@@ -221,7 +219,7 @@ function plateTexOf(tier) {
 function setAvatarPlate(a, tier) {
   if (a.rank === tier) return;
   a.rank = tier;
-  a.plateOn = tier > 0;
+  a.plateOn = tier >= 0;
   if (!a.plateOn) return;
   const { tex, w, h } = plateTexOf(tier);
   a.plateMat.map = tex;
@@ -859,8 +857,8 @@ function makeAvatar(id) {
     // rather than faded down. Disposed explicitly in syncAvatars' cull.
     plateMat,
     plate,
-    /** The tier currently DRAWN, and whether that tier draws anything at all. -1 rather than
-     *  0 so the first sync applies even to a Private, whose answer is "nothing". */
+    /** The tier currently drawn. -1 rather than 0 so the first sync installs Private's recruit
+     *  shield instead of treating the initial tier as already applied. */
     rank: -1,
     plateOn: false,
     team: -1,

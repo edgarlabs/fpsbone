@@ -80,10 +80,9 @@ const SILVER = '#9fabbb';
  *
  * The enlisted mapping is the real US Army one wherever the invented ladder leaves room:
  *
- *   `chevron` 1-5 are PVT to CPL and draw pips MINUS ONE chevrons. That puts one chevron on a
- *   PV2 and none on a private — so tier 0 drawing nothing falls out of the mapping instead of
- *   being a special case, and it agrees with `snapshotBase` in server/room.js omitting `rk`
- *   there at all.
+ *   `chevron` 1-5 are PVT to CPL. PV2 through CPL draw one to four chevrons. A real E-1 Private
+ *   has no device, but an empty game cell reads as missing artwork, so PVT gets an invented gold
+ *   recruit shield. Its silhouette shares no shape with PV2 and keeps tier zero visibly ranked.
  *
  *   `rocker` 1-5 are SGT to SGM and draw three chevrons with rockers under them: one, two,
  *   three, then three plus a star, then three plus a star in a wreath. Which is exactly a
@@ -122,6 +121,7 @@ function deviceOf(band, pips) {
     return { stack: false, glyph: 'oak', n: 1, metal: p === 1 ? GOLD : SILVER };
   }
   if (band === 'star') return { stack: false, glyph: 'star', n: p, metal: SILVER };
+  if (p === 1) return { stack: false, glyph: 'recruit', n: 1, metal: GOLD };
   return { stack: true, chev: p - 1, rock: 0, star: 0 };
 }
 
@@ -348,6 +348,21 @@ function stackTex(dev) {
  *  pitch, not from padding inside the glyph, so a general's stars and a captain's bars are
  *  spaced by the same rule. */
 const PINS = {
+  /**
+   * The game's invented Private device: a compact shield, broad enough to survive at seven
+   * pixels and unlike the chevron earned at PV2. E-1 has no real-world pin, but a blank patch
+   * looked like failed loading; this explicitly marks the beginning of this game's ladder.
+   */
+  recruit(c) {
+    c.beginPath();
+    c.moveTo(0.5, 0.05);
+    c.lineTo(0.82, 0.2);
+    c.lineTo(0.75, 0.68);
+    c.quadraticCurveTo(0.66, 0.86, 0.5, 0.95);
+    c.quadraticCurveTo(0.34, 0.86, 0.25, 0.68);
+    c.lineTo(0.18, 0.2);
+    c.closePath();
+  },
   /** A bar. Upright, and two of them abreast is a captain — which is the reason the row family
    *  exists at all rather than everything being stacked. */
   bar(c) {
@@ -477,13 +492,15 @@ const pngCache = new Map();
  * few hundred microseconds on a 128px canvas, and the browser then decodes each URL once no
  * matter how many rows carry it.
  *
- * Tier 0 returns null rather than a blank patch. A private's device is genuinely no marks --
- * see `deviceOf` -- and the server omits `rk` entirely there, so the one thing the scoreboard
- * must not do is draw an empty field for the rank most of the room is wearing.
+ * Tier 0 is a real PNG too. `deviceOf` gives Private the game's recruit shield, so a missing
+ * mark can never be confused with the beginning of the ladder.
  */
 export function insigniaPng(tier) {
-  const t = tier | 0;
-  if (!(t > 0) || t >= TIERS.length) return null;
+  if ((typeof tier !== 'number' && typeof tier !== 'string') || tier === '') return null;
+  const n = Number(tier);
+  if (!Number.isFinite(n)) return null;
+  const t = n | 0;
+  if (t < 0 || t >= TIERS.length) return null;
   const hit = pngCache.get(t);
   if (hit) return hit;
   const { cv } = insigniaCanvas(t);

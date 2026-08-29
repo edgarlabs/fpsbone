@@ -70,7 +70,7 @@ const els = {
 const board = make(els, TIERS, MAX_TIER, pingGrade, TEAM_NAMES, insigniaPng, document);
 
 const team = new URL(location.href).searchParams.has('teams');
-// A room worth looking at: the top of the ladder, the bottom of it, a Private whose PVT rank
+// A room worth looking at: the top and bottom of the ladder, a Private whose recruit shield
 // must remain visible, bots, a long name that has to ellipsis, and one of every ping grade.
 const snap = [
   { id: 1, n: 'Vandal', k: 24, d: 9, rk: 20, pg: 31, tm: 1 },

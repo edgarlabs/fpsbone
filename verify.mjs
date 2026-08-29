@@ -5959,7 +5959,7 @@ driveJ('the plate devices', () => {
       + `FIELD_W_STEP = ${constJ('FIELD_W_STEP')}, FIELD_W_MAX = ${PLATE.W_MAX};`);
     if (!dev || !fw) return;
 
-    const RANKED = TIERS.map((t, i) => ({ ...t, i })).filter((t) => t.i > 0);
+    const RANKED = TIERS.map((t, i) => ({ ...t, i }));
     const devs = RANKED.map((t) => ({ ...t, d: dev(t.band, t.pips) }));
 
     // 1. Every device resolves to something drawable, with nothing falling through. A stack
@@ -5973,8 +5973,8 @@ driveJ('the plate devices', () => {
         'every rank on the ladder resolves to a device that can actually be drawn',
         undrawable.length
           ? `NOTHING TO DRAW FOR ${undrawable.map((t) => t.abbr).join(', ')}`
-          : `pins: ${[...pins].join(', ')} — and ten enlisted tiers as stacked cloth, so no `
-            + 'rank falls back to a default shape and gets drawn as a different rank');
+          : `pins: ${[...pins].join(', ')} — Private has its recruit shield and the remaining `
+            + 'enlisted tiers use stacked cloth, so no rank falls back to a default shape');
 
     // 2. No two ranks draw the same badge. This is the property the whole insignia exists for
     //    and the one the old design broke twice — CPT drew three bars where a captain wears
@@ -6079,8 +6079,8 @@ driveJ('the plate devices', () => {
   //
   // insignia.js cannot be imported without a `document`, so one is provided: a 2D context that
   // answers every call the drawing makes and counts them. What is being measured is not the
-  // pixels — nothing here can see pixels — but the three promises the scoreboard leans on: a
-  // Private has no device, every other rank produces one, and asking twice costs nothing.
+  // pixels — nothing here can see pixels — but the three promises the scoreboard leans on:
+  // every valid rank produces a device, junk does not, and asking twice costs nothing.
   const calls = [];
   const ctx2d = new Proxy({}, {
     get: (_t, k) => (k === 'fillStyle' || k === 'strokeStyle' || k === 'lineWidth'
@@ -6114,29 +6114,28 @@ driveJ('the plate devices', () => {
   const all = TIERS.map((_, t) => png(t));
   const nothing = [999, -1, undefined, null, NaN].map(png);
   const coerced = [1.5, '16'].map(png);
-  okJ(!threw.length && all[0] === null
-      && all.slice(1).every((e) => e && /^data:image\/png/.test(e.url) && e.h > 0)
+  okJ(!threw.length
+      && all.every((e) => e && /^data:image\/png/.test(e.url) && e.h > 0)
       && nothing.every((e) => e === null)
       && coerced[0] === all[1] && coerced[1] === all[16],
-      'every rank above Private encodes to a PNG, a Private encodes to nothing, and junk is nothing',
+      'every rank including Private encodes to a PNG, while junk encodes to nothing',
       threw.length ? `THREW ON ${threw.join('; ')}`
-        : `${all.length - 1} devices drawn over ${calls.length} canvas calls; 999, -1, undefined, `
-          + 'null and NaN all come back null, so a rank the client does not have leaves the gutter '
-          + 'empty rather than drawing an empty field for it, and 1.5 and "16" land on tier 1 and '
-          + 'tier 16 rather than anywhere new');
+        : `${all.length} devices drawn over ${calls.length} canvas calls, including the recruit `
+          + 'shield at tier zero; 999, -1, undefined, null and NaN all come back null, and 1.5 '
+          + 'and "16" land on tier 1 and tier 16 rather than anywhere new');
 
   const drawnCount = made.length;
   const again = TIERS.map((_, t) => png(t));
   okJ(made.length === drawnCount && again.every((e, t) => e === all[t]),
       'and the same rank asked for twice is the same object, drawn once',
-      `${drawnCount} canvases for ${TIERS.length - 1} ranks, and a second pass over the whole `
+      `${drawnCount} canvases for ${TIERS.length} ranks, and a second pass over the whole `
       + 'ladder made none — the board rebuilds while TAB is held, and rasterising a chevron per '
       + 'frame per row is the cost that cache exists to refuse');
 
-  const urls = new Set(all.slice(1).map((e) => e.url));
-  okJ(urls.size === TIERS.length - 1,
+  const urls = new Set(all.map((e) => e.url));
+  okJ(urls.size === TIERS.length,
       'and no two ranks share a cache entry, so no player wears somebody else\u2019s insignia',
-      `${urls.size} distinct entries for ${TIERS.length - 1} ranks — the cache is keyed by tier, `
+      `${urls.size} distinct entries for ${TIERS.length} ranks — the cache is keyed by tier, `
       + 'which is the only thing the drawing depends on');
 
   delete globalThis.document;
@@ -6145,10 +6144,10 @@ driveJ('the plate devices', () => {
 // ─────────────────────────────── tier zero, the dead, and who owns `visible`
 {
   const setFn = /\nfunction setAvatarPlate\(a, tier\) \{\n([\s\S]*?)\n\}\n/.exec(rdJ)?.[1] ?? '';
-  okJ(/a\.plateOn = tier > 0;/.test(setFn),
-      'a private draws nothing, which is the client half of the server omitting rk at tier 0',
-      'everybody starts a Private, so a chevron over every head in a fresh match is noise '
-      + 'that carries no information — and it is the case a 20Hz broadcast pays for most');
+  okJ(/a\.plateOn = tier >= 0;/.test(setFn),
+      'a Private wears the invented recruit shield even though the wire omits rk at tier 0',
+      'the absent wire field still defaults to zero, while the client gives that real tier a '
+      + 'device rather than confusing it with failed artwork');
 
   // THE latch bug, pinned by absence. setAvatarPlate early-outs on an unchanged rank, so if
   // it also owned `visible` then dying, respawning at the same rank and walking back into
@@ -6256,7 +6255,7 @@ driveJ('the rank readout', () => {
       // whether the device is 40 bytes or 4 kilobytes.
       const pngFake = (v) => {
         const t = v | 0;
-        return !(t > 0) || t >= TIERS.length ? null : { url: `data:image/png;base64,R${t}` };
+        return t < 0 || t >= TIERS.length ? null : { url: `data:image/png;base64,R${t}` };
       };
       const doc = { createElement: () => ({ sheet: { insertRule: () => {} } }), head: { appendChild: () => {} } };
       const id = (x) => String(x);
@@ -7531,7 +7530,7 @@ ${grabM(/    tick\(now\) \{[\s\S]*?\n    \},/, 'hud.tick')}
   hud.tick(2000 + SPREE_MS - 400);
   const nearly = hud.read();
   okL(half.fill === '50%' && !half.low && oneSec.low && nearly.low && half.span === SPREE_MS,
-      'the bar drains to a fraction of its own window and goes red in the last second',
+      'the bar drains to a fraction of its own window and enters urgency state in the last second',
       `${half.fill} at halfway, low from ${SPREE_MS - 1000}ms — the span is kmUntil-kmFrom and `
       + 'not SPREE_MS, so the day a window is boosted the bar still drains over all of it '
       + 'instead of emptying early and lying about a chain that is still alive');
@@ -7607,6 +7606,20 @@ ${grabM(/    tick\(now\) \{[\s\S]*?\n    \},/, 'hud.tick')}
       && /<use id="km-glyph" href="#g-/.test(km),
       `the star is drawn with ${SPREE_LEGS} legs, numbered l1 up to l${SPREE_LEGS}`,
       legCls.length ? `l${legCls.join(', l')} — one polygon per rung, in order` : 'no legs found');
+
+  const size = /#km-star \{[\s\S]*?width: (\d+)px; height: (\d+)px;/.exec(page);
+  const palette = /#killmark \{[\s\S]*?--km-col: ([^;]+);[\s\S]*?\n      \}/.exec(page)?.[1]?.trim();
+  okL(size && Number(size[1]) >= 145 && Number(size[2]) >= 80
+      && palette === '#2caecb'
+      && /#km-bar\.low #km-fill \{ background: var\(--km-edge\)/.test(page),
+      'the redesigned crest is larger, cyan instead of damage-red, and its warning stays pale',
+      size ? `${size[1]}x${size[2]}px, normal ${palette}, final second uses --km-edge`
+        : 'no #km-star dimensions found');
+
+  okL(/id="km-ring"/.test(km) && /id="km-hub"/.test(km)
+      && /#km-hub \{ fill: var\(--km-core\); stroke: var\(--km-col\)/.test(page),
+      'the weapon sits in a dark double-edged medallion instead of floating inside thin legs',
+      'outer pale ring + dark hub + coloured inner edge keep the glyph readable on light and dark cover');
 
   // The cascade is a triangle, and asserted as one: a `k4` has to light legs 1 through 4 and
   // has to leave 5 and 6 dark. Checking only that each `kN` reaches its OWN leg would pass a
@@ -8608,7 +8621,7 @@ console.log('\n=== Part O ' + '—' + ' the scoreboard: rank, badge and ping, on
 //
 //   the per-career wire   carries who somebody is, and TIERS ONLY — never a count, because a
 //                         count is private to the player who earned it
-//   the per-tick wire     carries a ping, and still says nothing about which players are bots
+//   the per-tick wire     carries measured human ping and omits it for server-local bots
 //   the row itself        merges them, and is lifted out of hud.js and run, since three.js and
 //                         `document` mean that file cannot be imported (see Part J)
 const pO = [];
@@ -8852,43 +8865,14 @@ const okO = (cond, label, detail = '') => {
       '84.6 → 85 — no r3() here: a float invites somebody to average it, and the width of the '
       + 'column is three digits either way');
 
-  // ── the bots, and the column that would have handed them away for free
+  // ── bots have no internet route: the brain is already inside this Room
   const botIds = [...room.bots];
-  const seeded = botIds.map((id) => room.players.get(id).ping);
-  okO(seeded.every((ms) => ms >= 5 && ms < 200) && new Set(seeded).size > 1,
-      'every bot carries a plausible seeded ping, and not the same one as the bot beside it',
-      `${seeded.join(', ')}ms — a blank ping column next to nine named players IS the bot flag `
-      + 'that BOT_NAMES refuses to put on the wire, handed over by omission instead');
-
-  // Over four hundred ticks, which is about twenty seconds of a board held open. Two sines at
-  // unrelated periods, so what is checked is that the number moves, stays in a believable
-  // band, and never reaches the 0 that would say "this player is in your own process".
-  const seen = new Map(botIds.map((id) => [id, new Set()]));
-  let floor = Infinity;
-  for (let t = 0; t < 400; t++) {
-    const by = rowsAt(t);
-    for (const id of botIds) {
-      const pg = by.get(id)?.pg ?? 0;
-      seen.get(id).add(pg);
-      floor = Math.min(floor, pg);
-    }
-  }
-  const moved = botIds.filter((id) => seen.get(id).size >= 8);
-  okO(moved.length === botIds.length && floor >= 5,
-      'and it drifts as the room ticks, so the column does not read as a row of constants',
-      `${moved.length}/${botIds.length} bots took at least eight distinct values over 400 ticks, `
-      + `lowest anywhere ${floor}ms — floored at 5, because a bot showing 0 is a bot showing `
-      + 'that it is in this process');
-
-  const band = botIds.map((id) => {
-    const vals = [...seen.get(id)];
-    return Math.max(...vals) - Math.min(...vals);
-  });
-  okO(Math.max(...band) <= 24,
-      'while staying near the ping it was seeded with, rather than sweeping the whole column',
-      `widest swing ${Math.max(...band)}ms — a bot whose ping ranged over a hundred `
-      + 'milliseconds would be the only player on the board doing it, which is the same tell '
-      + 'by a different route');
+  const botRows = rowsAt(400);
+  const botPings = botIds.map((id) => ({ state: room.players.get(id).ping, wire: botRows.get(id)?.pg }));
+  okO(botPings.every((p) => p.state === 0 && p.wire === undefined),
+      'bots carry no ping in simulation state or on the wire',
+      `${botPings.length} bots all read {state:0, wire:absent} — a server-local AI has no `
+      + 'internet route, so a plausible number would be fiction and 0ms would still be a claim');
 }
 
 // ─────────────────────────────── the push, through the real host and a stopped clock
@@ -9050,7 +9034,7 @@ const okO = (cond, label, detail = '') => {
     // the real one against a stubbed 2D context. What matters HERE is what the row does with
     // it: one rule per rank ever seen, written once, and a cell that names the rank it drew.
     const rules = [];
-    const pngFake = (tier) => (tier > 0 && tier < TIERS.length
+    const pngFake = (tier) => (tier >= 0 && tier < TIERS.length
       ? { url: `data:image/png;base64,RANK${tier}`, w: 128, h: 33 } : null);
     const docFake = {
       createElement: () => ({ sheet: { insertRule: (r) => rules.push(r) } }),
@@ -9085,20 +9069,19 @@ const okO = (cond, label, detail = '') => {
         'four players in the room draw four rows, once, under the caption they were given',
         `${rows.length} rows, ${writes} write(s) to the table body, caption "${cap}"`);
 
-    // THE RANK. The device remains the same drawing used over a body, but text is no longer
-    // optional: tier zero deliberately has no insignia and that made a Private's real rank look
-    // absent. An abbreviation gives every row an answer while the title keeps the full name.
+    // THE RANK. Every tier now has the same two layers: the device used over a body and the
+    // compact abbreviation. Private's invented recruit shield prevents tier zero looking broken.
     const ga = rowWith('ranked');
     okO(new RegExp(`<td class="rank"><i class="rki t20" title="${TIERS[20].name}"></i>`
         + `<b title="${TIERS[20].name}">${TIERS[20].abbr}</b></td>`).test(ga)
-        && rowWith('nothing').includes(`<td class="rank"><b title="Private">PVT</b></td>`),
-        'every row names its rank, and a Private is visible even though it has no insignia yet',
+        && rowWith('nothing').includes(`<td class="rank"><i class="rki t0" title="Private"></i><b title="Private">PVT</b></td>`),
+        'every row names its rank, and Private has a real device instead of text-only fallback',
         `${(/<td class="rank">.*?<\/td>/.exec(ga) ?? [''])[0]} against `
         + `${(/<td class="rank">.*?<\/td>/.exec(rowWith('nothing')) ?? [''])[0]}`);
 
-    // One rule per rank ever seen, inserted once. Two ranks in this cast carry a device, and a
+    // One rule per rank ever seen, inserted once. Every tier carries a device now, and a
     // board redrawn four times must not insert eight rules: the sheet is the cache.
-    const tiersSeen = [...new Set([...roster.values()].map((r) => r.rk).filter(Boolean))];
+    const tiersSeen = [...new Set([...roster.values()].map((r) => r.rk ?? 0))];
     okO(rules.length === tiersSeen.length
         && rules.every((r) => /^#board td\.rank \.rki\.t\d+\{background-image:url\("data:image\/png/.test(r)),
         'and the device is one CSS rule per tier, written on demand and never twice',

@@ -587,13 +587,13 @@
         to   { transform: translateX(-50%) scale(1); }
       }
 
-      /* ---- the killmark: bottom-centre, a star that grows a leg per chained kill ----
+      /* ---- the killmark: bottom-centre, a segmented crest that grows per chained kill ----
 
          BOTTOM CENTRE because that is where CrossFire puts it, and the reason it works
          there is worth stating: the badge card at 18% and the killmark at the bottom are
          answering two different questions at the same instant, and a player has to be able
          to take one without losing the other. Stacked in the same band they would compete;
-         at opposite ends of the centre line, the eye picks up the star peripherally — it is
+         at opposite ends of the centre line, the eye picks up the crest peripherally — it is
          a SHAPE, filling clockwise, which is exactly the kind of thing peripheral vision is
          good at — while the card gets the look.
 
@@ -605,13 +605,14 @@
         position: absolute; left: 50%; bottom: 13%; transform: translateX(-50%);
         text-align: center; opacity: 0;
         transition: opacity 160ms linear;
-        /* The mark carries the accent while a chain is alive, and goes gold on the kill
-           that fills the sixth leg. One property, so the star, the wings, the glyph and the
-           name change together — a mark whose parts recolour in sequence looks broken. */
-        --km-col: var(--accent);
+        /* Cyan is achievement/connection rather than damage. Red belongs to getting hurt in
+           this HUD, so using it for a successful kill made the reward read as a warning. */
+        --km-col: #2caecb;
+        --km-edge: #f4f7fb;
+        --km-core: #1b2432;
       }
       #killmark.on { opacity: 1; }
-      /* THE FULL STAR IS GOLD, and it is the same gold as the headshot marker and the
+      /* THE FULL CREST IS GOLD, and it is the same gold as the headshot marker and the
          Master badge. Six legs is the top of this ladder the way Distinguished is the top
          of the other one, and using a third colour for it would say they were unrelated. */
       #killmark.full { --km-col: var(--head-col); }
@@ -621,15 +622,21 @@
          note on #bd-emblem: `color` plus `fill: currentColor` is the one thing that
          crosses that boundary in every engine. */
       #km-star {
-        display: block; width: 118px; height: 66px; margin: 0 auto;
+        display: block; width: 154px; height: 86px; margin: 0 auto;
         color: var(--km-col); fill: currentColor;
+        filter: drop-shadow(0 2px 1px rgba(27, 36, 50, 0.42))
+                drop-shadow(0 0 5px color-mix(in srgb, var(--km-col) 42%, transparent));
       }
-      /* Legs are off until the chain reaches them, and they arrive CLOCKWISE FROM THE TOP —
-         l1 at twelve o'clock, then round. Filling in a fixed order is what lets the star be
+      /* Blades are off until the chain reaches them, and they arrive CLOCKWISE FROM THE TOP —
+         l1 at twelve o'clock, then round. Filling in a fixed order is what lets the crest be
          read as a number without counting: three legs is always the same three legs, so the
          silhouette itself is the count. Scaled from the centre rather than faded in, so a
          leg landing mid-fight registers as movement in peripheral vision. */
-      .km-leg { opacity: 0; transform-box: view-box; transform-origin: 100px 46px; }
+      .km-leg {
+        opacity: 0; transform-box: fill-box; transform-origin: center;
+        stroke: var(--km-core); stroke-width: 1.8px; stroke-linejoin: round;
+        paint-order: stroke fill;
+      }
       #killmark.k1 .l1, #killmark.k2 .l1, #killmark.k3 .l1,
       #killmark.k4 .l1, #killmark.k5 .l1, #killmark.k6 .l1,
       #killmark.k2 .l2, #killmark.k3 .l2, #killmark.k4 .l2,
@@ -660,13 +667,20 @@
       #killmark.w3 .f3, #killmark.w4 .f3,
       #killmark.w4 .f4 { opacity: 0.85; }
 
+      /* The dark medallion keeps the weapon glyph readable over both the pale arena and its
+         darkest cover. A cyan inner edge ties it back to the six blades without flooding the
+         icon itself with colour. */
+      #km-ring { fill: none; stroke: var(--km-edge); stroke-width: 2.2px; opacity: 0.92; }
+      #km-hub { fill: var(--km-core); stroke: var(--km-col); stroke-width: 2.6px; }
+      #km-glyph { color: var(--km-edge); fill: currentColor; }
+
       /* DOUBLE KILL, and the rest. Empty at one kill — the most common event in the game
          gets a lit leg and no words, or there is nothing left to escalate to at six. */
       #km-name {
-        font-size: 13px; font-weight: 700; letter-spacing: 2px;
-        color: var(--km-col); min-height: 16px; margin-top: 1px;
+        font-size: 15px; font-weight: 800; letter-spacing: 2.4px;
+        color: var(--km-col); min-height: 18px; margin-top: 1px;
       }
-      #killmark.full #km-name { font-size: 15px; letter-spacing: 2.6px; }
+      #killmark.full #km-name { font-size: 17px; letter-spacing: 2.9px; }
 
       /* THE WINDOW, DRAWN. CrossFire's original is an invisible timer and its own modern
          TDM HUD gave up on that and started showing it, for the reason you would expect:
@@ -676,14 +690,13 @@
          growing one does not. Width is written every frame by hud.tick, so there is no
          transition on it: a 120ms ease would lag the number beside it. */
       #km-bar {
-        width: 96px; height: 3px; margin: 3px auto 0;
+        width: 124px; height: 4px; margin: 4px auto 0;
         background: rgba(27, 36, 50, 0.18);
       }
       #km-fill { height: 100%; width: 100%; background: var(--km-col); }
-      /* The last second in the accent even on a full gold star: this is the only part of
-         the mark that is about urgency rather than achievement. */
-      #km-bar.low #km-fill { background: var(--accent); }
-      #km-secs { font-size: 10px; letter-spacing: 1px; color: var(--dim); margin-top: 2px; }
+      /* The last second turns pale and glows. Red is reserved for damage and death. */
+      #km-bar.low #km-fill { background: var(--km-edge); box-shadow: 0 0 7px var(--km-edge); }
+      #km-secs { font-size: 11px; letter-spacing: 1.2px; color: var(--dim); margin-top: 2px; }
 
       /* ---- start / settings menu ---- */
       #start { overflow-y: auto; }
@@ -1024,8 +1037,8 @@
            player: place, visible rank, name, kills, deaths, connection.
 
            #board-cap and #board-tally are written as text; every row comes from `scoreboard`
-           in hud.js. The abbreviation is always printed, including PVT; earned ranks also get
-           the generated device used over the player's head. See client/src/insignia.js. -->
+           in hud.js. Every tier gets its abbreviation and generated device, including PVT's
+           invented recruit shield. See client/src/insignia.js. -->
       <div id="board">
         <div id="board-head">
           <div id="board-cap">scores</div>
@@ -1120,7 +1133,7 @@
         <div id="bd-count"></div>
       </div>
 
-      <!-- THE KILLMARK. Six legs, one per chained kill, filling clockwise from twelve
+      <!-- THE KILLMARK. Six crest blades, one per chained kill, filling clockwise from twelve
            o'clock; the weapon that scored it in the middle; wings from the career badge; and
            the window drawn underneath as a bar that runs out.
 
@@ -1129,9 +1142,9 @@
            say so. It is also the last thing the mark ever gets to show, since dying is what
            ends the chain.
 
-           One drawing, shown and hidden by class, exactly like the badge emblem: six legs
+           One drawing, shown and hidden by class, exactly like the badge emblem: six blades
            times four wing states times twelve glyphs is not a set of pictures anybody wants
-           to maintain, and every part of it is a triangle. -->
+           to maintain, so one SVG is recoloured and revealed by class. -->
       <div id="killmark">
         <svg id="km-star" viewBox="0 0 200 112" aria-hidden="true">
           <!-- Wings first, so the star and the glyph sit on top of them. -->
@@ -1152,21 +1165,21 @@
               <polygon class="f4" points="120,52.6 134.8,65.2 131.8,68.6 120,57.2" />
             </g>
           </g>
-          <!-- The six legs, generated on a circle of radius 41 about (100,46) at 60°
-               intervals starting straight up, each a triangle back to a 16.5 radius. -->
-          <polygon class="km-leg l1" points="100,5 107.49,31.3 92.51,31.3" />
-          <polygon class="km-leg l2" points="135.51,25.5 116.48,45.14 108.99,32.16" />
-          <polygon class="km-leg l3" points="135.51,66.5 108.99,59.84 116.48,46.86" />
-          <polygon class="km-leg l4" points="100,87 92.51,60.7 107.49,60.7" />
-          <polygon class="km-leg l5" points="64.49,66.5 83.52,46.86 91.01,59.84" />
-          <polygon class="km-leg l6" points="64.49,25.5 91.01,32.16 83.52,45.14" />
-          <!-- The hub. Outlined rather than filled so the glyph inside it reads against the
-               game behind, which at the bottom of the screen is usually a floor. -->
-          <circle cx="100" cy="46" r="16.5" fill="none" stroke="currentColor" stroke-width="2.4" />
+          <!-- One authored blade, rotated as a group so all six keep the same silhouette.
+               Broad shoulders make it a crest rather than the old six skinny triangles. -->
+          <g transform="rotate(0 100 46)"><polygon class="km-leg l1" points="100,3 89.7,17.8 96.7,27.3 103.3,27.3 110.3,17.8" /></g>
+          <g transform="rotate(60 100 46)"><polygon class="km-leg l2" points="100,3 89.7,17.8 96.7,27.3 103.3,27.3 110.3,17.8" /></g>
+          <g transform="rotate(120 100 46)"><polygon class="km-leg l3" points="100,3 89.7,17.8 96.7,27.3 103.3,27.3 110.3,17.8" /></g>
+          <g transform="rotate(180 100 46)"><polygon class="km-leg l4" points="100,3 89.7,17.8 96.7,27.3 103.3,27.3 110.3,17.8" /></g>
+          <g transform="rotate(240 100 46)"><polygon class="km-leg l5" points="100,3 89.7,17.8 96.7,27.3 103.3,27.3 110.3,17.8" /></g>
+          <g transform="rotate(300 100 46)"><polygon class="km-leg l6" points="100,3 89.7,17.8 96.7,27.3 103.3,27.3 110.3,17.8" /></g>
+          <!-- A double-edged dark medallion keeps every weapon glyph readable. -->
+          <circle id="km-ring" cx="100" cy="46" r="21" />
+          <circle id="km-hub" cx="100" cy="46" r="17.5" />
           <!-- Which kill it was: the weapon, or the head for a headshot. Same sprite the
                badge emblem draws from — the glyphs are authored at roughly ±34 about their
-               own origin, so 0.42 puts one inside a 16.5 hub with room to breathe. -->
-          <use id="km-glyph" href="#g-kills" transform="translate(100 46) scale(0.42)" />
+               own origin, so 0.45 puts one inside the 17.5 hub with room to breathe. -->
+          <use id="km-glyph" href="#g-kills" transform="translate(100 46) scale(0.45)" />
         </svg>
         <div id="km-name"></div>
         <div id="km-bar"><div id="km-fill"></div></div>

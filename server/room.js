@@ -144,21 +144,6 @@ const botBadges = (id) => {
 };
 
 /**
- * A bot's seeded ping, moved a little, so the column does not read as twelve constants.
- *
- * DERIVED FROM THE TICK AND NOT ACCUMULATED, which is why there is no per-tick loop behind
- * it: this is cosmetic, it is read once per snapshot per bot, and a stored value nudged
- * every tick would be simulation-shaped state that nothing simulates. Two sines at
- * unrelated periods, so the wobble does not look like a wobble.
- *
- * Floored at 5, because a bot showing 0ms is a bot showing that it is in this process.
- */
-const wobble = (base, id, tick) =>
-  Math.max(5, base
-    + Math.sin(tick / 47 + id) * 4
-    + Math.sin(tick / 211 + id * 2.7) * 7);
-
-/**
  * Names for AI players.
  *
  * Every one is prefixed, and that prefix is the entire mechanism for telling bots
@@ -307,7 +292,7 @@ export class Room {
        */
       badges: {},
       /**
-       * Round-trip milliseconds to this player, or 0 for a bot until `addBot` seeds it.
+       * Round-trip milliseconds to this player, or 0 when no real network route exists.
        *
        * WRITTEN FROM OUTSIDE, by server/index.js, off the Node transport's application-level
        * browser round trip; the in-page host has no wire and leaves it at zero. It lives here
@@ -485,14 +470,9 @@ export class Room {
     p.career = botCareer(id);
     // And a shelf, on the same seed. See `botBadges`.
     p.badges = botBadges(id);
-    // AND A PING, which is not decoration. Every other field a client could tell a bot from
-    // a human by has been kept off the wire on purpose — see the note at BOT_NAMES — and a
-    // ping column where the bots are all blank would have handed that back by omission. A
-    // bot's real round trip is zero because it is in this process; what it shows is a seeded
-    // plausible one, drawn from the id like everything else about it.
-    //
-    // The room's own ticking is what makes it wobble; see `wobble`.
-    p.ping = 18 + ((botCareer(id) * 7 + id * 29) % 64);
+    // No ping is invented for AI. Its brain is already in this process, so neither a plausible
+    // internet number nor "0ms" describes a route a packet actually travelled. The BOT name
+    // prefix identifies it honestly and the scoreboard renders the absent measurement as a dash.
     return id;
   }
 
@@ -1302,9 +1282,9 @@ export class Room {
       // Whole milliseconds, no r3(): tenths of a millisecond of round trip is not a number
       // anybody reads, and a float here only invites somebody to average it later.
       //
-      // Public, and every player has one — including bots, whose seeded value wobbles here.
-      // The absence of this field would be the bot flag that BOT_NAMES exists to avoid.
-      const pg = Math.round(p.bot ? wobble(p.ping, p.id, this.tick) : p.ping);
+      // Bots have no network route to measure: their brain runs in this Room. Leave `pg` off
+      // rather than inventing an internet number for them or claiming a misleading 0ms.
+      const pg = Math.round(p.bot ? 0 : p.ping);
       if (pg > 0) player.pg = pg;
       players.push(player);
     }

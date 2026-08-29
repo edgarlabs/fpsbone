@@ -751,9 +751,8 @@ export function createHud() {
           const cls = [p.id === selfId ? 'me' : '', p.tm === 1 ? 'tA' : p.tm === 2 ? 'tB' : '']
             .filter(Boolean)
             .join(' ');
-          // Rank zero is still a rank. It used to resolve to an empty insignia cell by design,
-          // which made every new player conclude their rank was missing. `rankCell` always
-          // prints the abbreviation and adds the device once the career has earned one.
+          // Rank zero is still a rank. The recruit shield in insignia.js makes Private a real
+          // device rather than an abbreviation standing in for missing artwork.
           const tier = who?.rk ?? p.rk ?? 0;
           // THE CONNECTION, as a number and as four bars. The grade behind both comes off
           // `pingGrade`, which is the same function the region cards in the menu grade
@@ -942,8 +941,8 @@ const SIGNAL_BARS = { good: 4, fair: 3, poor: 2, bad: 1, none: 0 };
  * player has ever seen and then costs nothing. `#board .rki.tN` is generated, so the tier
  * number IS the cache key and `insHave` is only there to avoid inserting the same rule twice.
  *
- * A Private gets nothing: `insigniaPng` returns null for tier 0, the cell stays empty, and
- * that is the same promise the plate makes — a private has no device to wear.
+ * Private is cached exactly like every other tier; its invented recruit shield is intentional
+ * game artwork, not a text fallback for a missing real-world E-1 device.
  */
 const insHave = new Set();
 let insSheet = null;
@@ -967,9 +966,9 @@ function insigniaCell(tier) {
   return `<i class="rki t${t}" title="${esc(TIERS[t]?.name ?? '')}"></i>`;
 }
 
-/** A scoreboard rank that is never blank: insignia where one exists, abbreviation for every
- * tier including Private. The full name remains in the title so the compact column is useful
- * without making General of the Army wider than the player's name. */
+/** A scoreboard rank that is never blank: every tier has an insignia and an abbreviation.
+ * The full name remains in the title so the compact column is useful without making General
+ * of the Army wider than the player's name. */
 function rankCell(tier) {
   const t = Math.max(0, Math.min(MAX_TIER, Number.isFinite(tier) ? tier | 0 : 0));
   const rank = TIERS[t] ?? TIERS[0];
