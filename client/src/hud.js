@@ -669,11 +669,12 @@ export function createHud() {
 
     /** @param zone HIT_ZONE of the finishing shot, 1 for a head -- compared as a number
      *         for the reason hitmarker does: this file has never imported the enum. */
-    feed(killerName, victimName, isSelfKiller, isSelfVictim, wep, zone = 0) {
+    feed(killerName, victimName, isSelfKiller, isSelfVictim, wep, zone = 0, streak = 0) {
       const row = document.createElement('div');
       const weaponId = wep == null ? 'kills' : idAt(wep);
       const weaponLabel = wep == null ? 'elimination' : WEAPONS[weaponId].label.toLowerCase();
       const head = zone === 1;
+      const streakLabel = spreeName(streak);
       // CS-style reading order: killer, weapon silhouette, optional headshot silhouette,
       // victim. The weapon and headshot are pictures rather than trailing words, so the
       // feed can be understood in peripheral vision instead of read like a sentence.
@@ -686,7 +687,8 @@ export function createHud() {
           ? '<svg class="kf-head" viewBox="-24 -24 48 48" aria-hidden="true"><use href="#g-hs"></use></svg>'
           : '')
         + '</span>'
-        + `<span class="kf-name${isSelfVictim ? ' self victim' : ''}">${esc(victimName)}</span>`;
+        + `<span class="kf-name${isSelfVictim ? ' self victim' : ''}">${esc(victimName)}</span>`
+        + (streakLabel ? `<strong class="kf-streak">${esc(streakLabel)}</strong>` : '');
       els.feed.prepend(row);
       while (els.feed.children.length > 5) els.feed.lastChild.remove();
       setTimeout(() => row.remove(), 5200);
@@ -760,7 +762,7 @@ export function createHud() {
             .filter(Boolean)
             .join(' ');
           // Rank zero is still a rank. The recruit shield in insignia.js makes Private a real
-          // device rather than an abbreviation standing in for missing artwork.
+          // device, so no text abbreviation has to stand in for missing artwork.
           const tier = who?.rk ?? p.rk ?? 0;
           // THE CONNECTION, as a number and as four bars. The grade behind both comes off
           // `pingGrade`, which is the same function the region cards in the menu grade
@@ -974,13 +976,10 @@ function insigniaCell(tier) {
   return `<i class="rki t${t}" title="${esc(TIERS[t]?.name ?? '')}"></i>`;
 }
 
-/** A scoreboard rank that is never blank: every tier has an insignia and an abbreviation.
- * The full name remains in the title so the compact column is useful without making General
- * of the Army wider than the player's name. */
+/** A scoreboard rank is its insignia alone; the full name remains available as a tooltip. */
 function rankCell(tier) {
   const t = Math.max(0, Math.min(MAX_TIER, Number.isFinite(tier) ? tier | 0 : 0));
-  const rank = TIERS[t] ?? TIERS[0];
-  return `${insigniaCell(t)}<b title="${esc(rank.name)}">${esc(rank.abbr)}</b>`;
+  return insigniaCell(t);
 }
 
 const esc = (s) =>

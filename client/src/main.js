@@ -20,7 +20,7 @@ import { SPAWNS } from '../../shared/map.js';
 import { MODES, TEAM_NAMES, modeOf, CORPSE_MS } from '../../shared/modes.js';
 import { WEAPON_IDS, WEAPONS, idAt, indexOf, spreadMul, weaponAt } from '../../shared/weapons.js';
 import { TRACK_KEYS, badgeOf, levelOf, stepOf, tierOf } from '../../shared/badges.js';
-import { wingsOf } from '../../shared/spree.js';
+import { SPREE_MS, wingsOf } from '../../shared/spree.js';
 import { getIdentity } from './identity.js';
 import { getSettings } from './settings.js';
 import { HERE, loadRegions, probeAll, socketFor } from './regions.js';
@@ -203,20 +203,20 @@ let badgeCards = [];
 const cardRank = (key) => (key === 'hs' ? 0 : key === 'kills' ? 2 : 1);
 
 /**
- * Kills earned during the current life. The rays are a life streak, not a timer streak.
+ * The visible kill chains for every killer, so the killfeed and our own rays agree.
  *
  * CLIENT-SIDE, AND NOTHING ABOUT THAT IS A SHORTCUT. Every other counter in this game is
  * server-authoritative because it persists or because two players have to agree on it; a
- * streak does neither. It exists on one screen, and nobody else can see it -- so putting it
+ * chain does neither. It exists on one screen, and nobody else can see it -- so putting it
  * on the wire would buy a round trip's worth of latency on the one
  * HUD element whose whole job is to be instant, and a `spree` field in the snapshot that
  * every client ignores except its owner.
  *
- * The counter is kept HERE and not in hud.js because resetting it on death is a game rule,
- * while the HUD's four-second timer only decides how long the latest mark stays visible.
- * Weapon and headshot type never touch this number; they only choose the centre glyph.
+ * The map is kept HERE and not in hud.js because extending or resetting a chain is a rule,
+ * not a drawing. Every EV.KILL reaches every client in the same order, so the top-right feed
+ * can label anyone's chain without adding redundant state to the server snapshot.
  */
-let lifeKills = 0;
+const killChains = new Map();
 
 /**
  * Which sprite goes in the middle of the mark: the head for a headshot, else the weapon.
@@ -713,17 +713,30 @@ function handleEvent(ev, now, players) {
       break;
 
     case EV.KILL:
+      // Count first so the killfeed and our own crest consume one answer. A headshot and a
+      // weapon swap are intentionally absent: only the killer, victim and deadline decide
+      // the chain. A suicide or world death earns no chain.
+      let chain = 0;
+      if (ev.by && ev.by !== ev.on) {
+        const prev = killChains.get(ev.by);
+        chain = prev && now < prev.until ? prev.n + 1 : 1;
+        killChains.set(ev.by, { n: chain, until: now + SPREE_MS });
+      }
       hud.feed(
-        nameOf(ev.by), nameOf(ev.on), ev.by === selfId, ev.on === selfId, ev.w, ev.z ?? 0,
+        nameOf(ev.by), nameOf(ev.on), ev.by === selfId, ev.on === selfId,
+        ev.w, ev.z ?? 0, chain,
       );
+      // The victim's own chain is over. Usually the respawn delay already outlasts the
+      // window, but clearing it here keeps the rule true in modes with instant respawns.
+      if (ev.on) killChains.delete(ev.on);
       if (ev.by === selfId) {
         audio.kill();
         // "so each kill it shows your badge". The cards were built from the counts folded
         // out of this same message a few lines above, which is why this needs no argument:
         // the server has already decided what the kill was worth.
         showBadges(now);
-        // THE LIFE STREAK, DECIDED HERE AND NOWHERE ELSE. A weapon change, body kill or
-        // headshot changes only the medallion passed below; none can restart the rays.
+        // THE CHAIN, DECIDED ABOVE AND NOWHERE ELSE. A weapon change, body kill or headshot
+        // changes only the medallion passed below; none can restart the rays.
         //
         // `ev.on !== selfId` IS THE GRENADE EXEMPTION, and it has to be here because this
         // is the one counter in the game the server does not keep. room.js broadcasts the
@@ -732,24 +745,22 @@ function handleEvent(ev, now, players) {
         // counted in the browser has no such protection unless it restates the rule. A
         // world death arrives as `by: 0`, which is nobody's id and so already excluded.
         if (ev.on !== selfId) {
-          lifeKills += 1;
           // Wings come off the ELIMINATIONS badge: the one track every kill moves, so the
           // mark is never wearing a tier that some other weapon earned. `?? 0` because the
           // counts are null until the first `self` blob lands, and a first kill on a fresh
           // account arrives before it.
           hud.killmark(now, {
-            n: lifeKills,
+            n: chain,
             glyph: killGlyph(ev.w, ev.z ?? 0),
             wings: wingsOf(tierOf(badgeCounts?.kills ?? 0, 'kills')),
           });
-          audio.spree(lifeKills);
+          audio.spree(chain);
         }
       }
       if (ev.on === selfId) {
         audio.died();
-        // Dying ends the life streak on the instant. The four-second HUD timer only hides
-        // a mark between kills; it is never allowed to rewrite the number of rays earned.
-        lifeKills = 0;
+        // Dying ends the chain on the instant; a respawn never inherits the old rays.
+        killChains.delete(selfId);
         hud.killmarkClear();
         // The playtest note asked for this instead of a spectator camera in the
         // respawn modes: the fight is over in 5 seconds, so show what killed you.

@@ -263,6 +263,11 @@
       /* A separate gold head silhouette after the weapon is CS2's compact distinction:
          the gun still answers HOW, and the head answers WHERE, with neither printed as text. */
       #feed .kf-head { width: 18px; height: 18px; color: var(--head-col); }
+      #feed .kf-streak {
+        margin-left: 3px; padding-left: 8px; border-left: 1px solid rgba(244, 247, 251, 0.22);
+        color: #63d8f2; font-size: 10px; line-height: 16px; letter-spacing: 0.8px;
+        white-space: nowrap;
+      }
       @keyframes slide { from { opacity: 0; transform: translateX(12px); } }
 
       /* ---- damage vignette ---- */
@@ -361,7 +366,7 @@
       #board th.pl, #board td.pl {
         width: 34px; color: var(--dim); font-size: 11px; font-variant-numeric: tabular-nums;
       }
-      #board th.rank, #board td.rank { width: 92px; }
+      #board th.rank, #board td.rank { width: 58px; }
       #board th.num, #board td.num {
         width: 46px; text-align: right; font-variant-numeric: tabular-nums;
       }
@@ -381,12 +386,8 @@
            rank that must not come out smaller. FIELD_W_MAX / FIELD_H is 1.92, so 16px of height
            needs 30.8px of width before nothing clamps. Verify holds these two numbers against
            the drawing's own bounds. */
-        display: inline-block; width: 32px; height: 16px; margin-right: 7px; vertical-align: -3px;
+        display: inline-block; width: 32px; height: 16px; vertical-align: -3px;
         background: center / contain no-repeat;
-      }
-      #board td.rank b {
-        display: inline-block; min-width: 24px; color: var(--ink); font-size: 9px;
-        font-weight: 700; letter-spacing: 0.7px; vertical-align: 1px;
       }
       #board tbody tr { box-shadow: inset 3px 0 0 transparent; }
       /* Zebra, at an alpha low enough to be felt rather than seen. It exists to carry the eye
@@ -1051,8 +1052,8 @@
            player: place, visible rank, name, kills, deaths, connection.
 
            #board-cap and #board-tally are written as text; every row comes from `scoreboard`
-           in hud.js. Every tier gets its abbreviation and generated device, including PVT's
-           invented recruit shield. See client/src/insignia.js. -->
+           in hud.js. Every tier gets its generated device, including Private's invented
+           recruit shield; the abbreviation is deliberately not repeated. See insignia.js. -->
       <div id="board">
         <div id="board-head">
           <div id="board-cap">scores</div>
@@ -1191,7 +1192,7 @@
           <circle id="km-ring" cx="100" cy="46" r="21" />
           <circle id="km-hub" cx="100" cy="46" r="17.5" />
           <!-- Which weapon scored the latest kill, or the head for a headshot. This changes
-               independently of the rays, which count every kill in the current life. Same
+               independently of the rays, which count kills inside the active timer. Same
                sprite the badge emblem draws from — the glyphs are authored at roughly ±34 about their
                own origin, so 0.45 puts one inside the 17.5 hub with room to breathe. -->
           <use id="km-glyph" href="#g-kills" transform="translate(100 46) scale(0.45)" />

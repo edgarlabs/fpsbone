@@ -6289,15 +6289,15 @@ driveJ('the rank readout', () => {
       const edge = [999, -1, 0, undefined, null].map((v) => shown(v));
       const coerced = [1.5, '16'].map((v) => shown(v));
       okJ(!bad.length
-          && edge.slice(1).every((s2) => s2.includes('>PVT</b>'))
-          && edge[0].includes(`>${TIERS[MAX_TIER].abbr}</b>`)
-          && coerced[0].includes(`>${TIERS[1].abbr}</b>`) && coerced[1].includes('>PVT</b>')
+          && edge.slice(1).every((s2) => /class="rki t0"/.test(s2))
+          && edge[0].includes(`class="rki t${MAX_TIER}"`)
+          && coerced[0].includes('class="rki t1"') && coerced[1].includes('class="rki t0"')
           && !junkish([...edge, ...coerced, shown(20)])
-          && shown(20).includes(TIERS[20].name) && shown(20).includes(`>${TIERS[20].abbr}</b>`),
-          'every player has a visible rank abbreviation, including a brand-new Private',
+          && shown(20).includes(TIERS[20].name) && !shown(20).includes('<b'),
+          'every player has one visible rank insignia and no redundant abbreviation',
           bad.length ? `THREW ON ${bad.join('; ')}`
-          : `tier 20 shows ${shown(20)}; Private shows ${shown(0)} — the old empty tier-zero `
-          + 'gutter was why a real rank looked missing');
+          : `tier 20 shows ${shown(20)}; Private shows ${shown(0)} — the full name remains `
+          + 'in the icon tooltip');
     }
 });
 
@@ -7177,7 +7177,7 @@ ${grabH(/    tick\(now\) \{[\s\S]*?\n    \},/, 'hud.tick')}
 
 console.log([...pK, ...fK].join('\n'));
 
-// ────────────────────── Part L: the life-streak killmark and its display timer
+// ────────────────────── Part L: the timed kill chain and the mark that displays it
 //
 // "if you kill one up to six during the game ... once it full the six kills it just
 // continuiously in multikill theres a seconds when it will be in multikill the concept
@@ -7186,7 +7186,7 @@ console.log([...pK, ...fK].join('\n'));
 // This is the one counter in the game with NO server behind it, which inverts where the
 // risk lives. Part K can lean on shared/badges.js throwing at import and on a real Room
 // deciding what a kill was worth; here the ladder is four constants and the state machine
-// is two local variables in main.js, so every rule that matters is in lifted client text.
+// is one client-side map in main.js, so every rule that matters is in lifted client text.
 //
 // Three things can break independently.
 //
@@ -7195,9 +7195,9 @@ console.log([...pK, ...fK].join('\n'));
 //   import; what it cannot check is that the cap actually caps and that junk reads as no
 //   chain rather than as NaN in a class name.
 //
-//   main.js owns WHEN the life streak grows, and the two ways it goes wrong are both invisible
-//   in play. Letting the display timer reset the count loses rays between kills; forgetting
-//   the server's grenade exemption hands a leg to a suicide.
+//   main.js owns WHEN the timed chain grows, and the two ways it goes wrong are both invisible
+//   in play. Letting weapon/zone reset the count loses rays on a headshot; forgetting the
+//   deadline lets the next fight inherit the last one. The grenade exemption matters too.
 //   room.js broadcasts that suicide as a KILL with `by` set to the victim, so the client has
 //   to restate a rule the ledger already enforces — and the only place that is written down
 //   is the `if` this part lifts.
@@ -7226,9 +7226,10 @@ const driveL = (what, fn) => {
 
 // ─────────────────────────────── the ladder
 {
-  okL(SPREE_LEGS === 6 && SPREE_NAMES.length === SPREE_LEGS
-      && new Set(SPREE_NAMES.slice(1)).size === SPREE_LEGS - 1,
-      'six legs, six rungs, and no two rungs sharing a name',
+  okL(SPREE_LEGS === 6 && SPREE_NAMES.join('|')
+      === '|DOUBLE KILL|TRIPLE KILL|QUAD KILL|MULTI KILL|MULTI KILL'
+      && spreeName(99) === 'MULTI KILL',
+      'double, triple and quad are distinct; the fifth kill onward stays MULTI KILL',
       `${SPREE_NAMES.slice(1).join(' → ')} — CrossFire's own cap: "Even when a player `
       + 'achieves a 7 Kill Streak or higher, it still only shows the 6-legged star"');
 
@@ -7277,7 +7278,7 @@ const driveL = (what, fn) => {
 // transcription of them into this file would only ever prove that the transcription works.
 // The case is pulled as text between its label and its `break`, then closed over stubs for
 // everything main.js has that this file does not.
-driveL('the life streak', () => {
+driveL('the timed kill chain', () => {
   const mainL = readFileSync(new URL('./client/src/main.js', import.meta.url), 'utf8');
   const grabL = (re, what) => {
     const m = re.exec(mainL);
@@ -7285,7 +7286,7 @@ driveL('the life streak', () => {
         m ? `lifted ${m[0].trim().split('\n').length} lines` : 'no match — renamed or reshaped');
     return m ? m[0] : '';
   };
-  const state = grabL(/let lifeKills = 0;\n/, 'the life-streak state');
+  const state = grabL(/const killChains = new Map\(\);\n/, 'the per-killer chain state');
   const glyph = grabL(/function killGlyph\(wIdx, zone\) \{[\s\S]*?\n\}\n/, 'killGlyph');
   const body = grabL(/(?<=case EV\.KILL:\n)[\s\S]*?\n      break;/, 'the EV.KILL case body');
 
@@ -7306,7 +7307,7 @@ ${glyph}
       kill: (now, ev) => { switch (ev.e) { case EV.KILL:
 ${body}
       } },
-      read: () => ({ lifeKills, killer }),
+      read: () => ({ chain: killChains.get(7), killer }),
       setCareer: (n) => { badgeCounts = { kills: n }; },
     };
   `)(EV, TRACK_KEYS, SPREE_MS, wingsOf, tierOf, idAt, () => log);
@@ -7314,20 +7315,19 @@ ${body}
   const K = (now, over) => sim.kill(now, { e: EV.KILL, by: 7, on: 9, w: indexOf('rifle'), ...over });
   const marks = () => log.filter((m) => typeof m === 'object');
 
-  // ── the HUD may disappear after four seconds, but the rays belong to the whole life.
-  //    Widely separated kills must therefore keep climbing exactly like adjacent ones.
+  // ── inside the window it climbs; a kill at or beyond the exact deadline starts at one.
   const t1 = 1000 + SPREE_MS - 1;
   const t2 = t1 + SPREE_MS - 1;
   K(1000);
   K(t1);
-  const inside = sim.read().lifeKills;
+  const inside = sim.read().chain?.n;
   K(t2);
-  const atEdge = sim.read().lifeKills;
+  const atEdge = sim.read().chain?.n;
   K(t2 + SPREE_MS);
-  okL(inside === 2 && atEdge === 3 && sim.read().lifeKills === 4,
-      'rays keep counting across the four-second display boundary',
-      `1 → ${inside} → ${atEdge} → ${sim.read().lifeKills} — the timer hides the mark but `
-      + 'never rewrites the current-life kill count');
+  okL(inside === 2 && atEdge === 3 && sim.read().chain?.n === 1,
+      'kills inside the display window add rays, and a late kill starts again at one',
+      `1 → ${inside} → ${atEdge}, then ${sim.read().chain?.n} at the exact deadline — weapon `
+      + 'and hit zone are absent from the reset condition');
 
   // ── the cap: the count keeps going, the drawing does not
   sim.kill(t2 + SPREE_MS + 1, { e: EV.KILL, by: 9, on: 7, w: indexOf('rifle') });
@@ -7335,7 +7335,7 @@ ${body}
   let t = 50_000;
   for (let i = 0; i < 9; i += 1) { K(t); t += 100; }
   const drawn = marks().map((m) => legsOf(m.n));
-  okL(sim.read().lifeKills === 9 && drawn.join() === '1,2,3,4,5,6,6,6,6'
+  okL(sim.read().chain?.n === 9 && drawn.join() === '1,2,3,4,5,6,6,6,6'
       && marks().map((m) => m.n).join() === '1,2,3,4,5,6,7,8,9',
       'a ninth kill in one life still counts nine and still draws six legs',
       `legs drawn: ${drawn.join(',')} — main.js keeps the TRUE count while legsOf is the `
@@ -7348,9 +7348,9 @@ ${body}
   K(60_100);
   sim.kill(60_200, { e: EV.KILL, by: 9, on: 7, w: indexOf('rifle') });
   const afterDeath = sim.read();
-  okL(afterDeath.lifeKills === 0 && log.includes('clear')
+  okL(afterDeath.chain === undefined && log.includes('clear')
       && afterDeath.killer?.name === 'p9',
-      'dying resets the life streak on the instant',
+      'dying resets the timed chain on the instant',
       'the next life starts from one ray even if the previous life filled the crest');
 
   // ── the two kills that are not kills, each laid on top of a LIVE chain so a missing
@@ -7363,8 +7363,8 @@ ${body}
   K(75_000);
   log = [];
   sim.kill(75_100, { e: EV.KILL, by: 0, on: 7, w: indexOf('rifle') });
-  okL(suicideLog.join() === 'clear' && suicide.lifeKills === 0
-      && log.join() === 'clear' && sim.read().lifeKills === 0,
+  okL(suicideLog.join() === 'clear' && suicide.chain === undefined
+      && log.join() === 'clear' && sim.read().chain === undefined,
       'your own grenade and a fall out of the world earn no leg and no sound',
       `the grenade logged [${suicideLog.join(' ')}] and the world death [${log.join(' ')}] — the `
       + 'same two exemptions server/room.js:738 puts on the career ledger, restated here '
@@ -7656,14 +7656,16 @@ ${grabM(/    tick\(now\) \{[\s\S]*?\n    \},/, 'hud.tick')}
 
   okL(/class="kf-weapon"[\s\S]*?<use href="#g-\$\{weaponId\}"/.test(hudSrc)
       && /class="kf-head"[\s\S]*?<use href="#g-hs"/.test(hudSrc)
+      && /class="kf-streak"[\s\S]*?\$\{esc\(streakLabel\)\}/.test(hudSrc)
       && !/&rsaquo;|>HS<|\$\{esc\(WEAPONS\[idAt\(wep\)\]\.label\)\}/.test(hudSrc),
-      'the killfeed is killer, weapon icon, optional headshot icon, victim — never text arrows',
-      'the weapon silhouette remains visible on a headshot, so the feed reports both how and where');
+      'the feed is killer, weapon, optional headshot, victim and chain label — never text arrows',
+      'the weapon remains visible on a headshot, while the same timed count names the multi-kill');
 
   okL(/#feed > div \{[\s\S]*?display: flex/.test(page)
       && /#feed \.kf-weapon \{ width: 43px; height: 22px; \}/.test(page)
-      && /#feed \.kf-head \{ width: 18px; height: 18px; color: var\(--head-col\); \}/.test(page),
-      'the CS-style feed has a compact dark row and readable weapon/headshot silhouettes',
+      && /#feed \.kf-head \{ width: 18px; height: 18px; color: var\(--head-col\); \}/.test(page)
+      && /#feed \.kf-streak \{/.test(page),
+      'the CS-style feed has a compact dark row, readable icons and a chain tag',
       'icons replace the old trailing “SNIPER HS” text without losing either fact');
 }
 
@@ -9079,13 +9081,13 @@ const okO = (cond, label, detail = '') => {
         'four players in the room draw four rows, once, under the caption they were given',
         `${rows.length} rows, ${writes} write(s) to the table body, caption "${cap}"`);
 
-    // THE RANK. Every tier now has the same two layers: the device used over a body and the
-    // compact abbreviation. Private's invented recruit shield prevents tier zero looking broken.
+    // THE RANK. The device used over a body is the whole cell; its title keeps the full name.
+    // Private's invented recruit shield prevents tier zero looking broken.
     const ga = rowWith('ranked');
-    okO(new RegExp(`<td class="rank"><i class="rki t20" title="${TIERS[20].name}"></i>`
-        + `<b title="${TIERS[20].name}">${TIERS[20].abbr}</b></td>`).test(ga)
-        && rowWith('nothing').includes(`<td class="rank"><i class="rki t0" title="Private"></i><b title="Private">PVT</b></td>`),
-        'every row names its rank, and Private has a real device instead of text-only fallback',
+    okO(new RegExp(`<td class="rank"><i class="rki t20" title="${TIERS[20].name}"></i></td>`).test(ga)
+        && rowWith('nothing').includes('<td class="rank"><i class="rki t0" title="Private"></i></td>')
+        && !rows.some((r) => (/<td class="rank">.*?<\/td>/.exec(r)?.[0] ?? '').includes('<b')),
+        'every row shows only its rank insignia, including Private',
         `${(/<td class="rank">.*?<\/td>/.exec(ga) ?? [''])[0]} against `
         + `${(/<td class="rank">.*?<\/td>/.exec(rowWith('nothing')) ?? [''])[0]}`);
 

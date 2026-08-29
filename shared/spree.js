@@ -1,8 +1,8 @@
-// The killmark: a six-legged star that grows a leg per kill during the current life.
+// The killmark: a six-legged star that grows while kills keep landing inside its timer.
 //
 // This is CrossFire's killstreak, which is a different animal from shared/badges.js and has
 // to stay one. A badge counts every kill you have ever scored and takes months; a killmark
-// counts the current life. One is who you are, the other is what is happening right
+// counts the current burst of kills. One is who you are, the other is what is happening right
 // now — and the reason both exist is that neither answers the other's question. Six kills
 // in a row is a story about this fight. Fifteen thousand kills is a story about the year.
 //
@@ -11,8 +11,8 @@
 // test. verify.mjs imports this the same way it imports badges.js. If a future mode ever
 // wants to pay out for a six-chain, the ladder is already here rather than in the HUD.
 //
-// The visibility window is presentation only: it takes the mark off-screen between fights,
-// but it never erases rays. Only death starts the life count over.
+// The window is the mechanic: if the mark disappears before the next kill, its next ray is
+// ray one. Weapon and hit zone never take part in that decision.
 
 /**
  * Legs on the star, and so the longest chain the mark can show.
@@ -26,10 +26,10 @@
 export const SPREE_LEGS = 6;
 
 /**
- * How long the latest killmark stays visible, in milliseconds.
+ * How long the current chain survives without another kill, in milliseconds.
  *
- * Four seconds is long enough to read the result without leaving it permanently over the
- * weapon HUD. Expiry hides the drawing; main.js keeps the life count until death.
+ * Four seconds is long enough to read the result and find the next opponent. The HUD hides
+ * on this deadline and main.js uses the same deadline to decide whether the next ray is one.
  */
 export const SPREE_MS = 4000;
 
@@ -40,7 +40,7 @@ export const SPREE_MS = 4000;
  * that shouts DOUBLE KILL at one kill has nothing left to say at six. One leg lights, no
  * words. The names start where the chain does.
  */
-export const SPREE_NAMES = ['', 'DOUBLE KILL', 'TRIPLE KILL', 'MULTI KILL', 'ULTRA KILL', 'UNBELIEVABLE'];
+export const SPREE_NAMES = ['', 'DOUBLE KILL', 'TRIPLE KILL', 'QUAD KILL', 'MULTI KILL', 'MULTI KILL'];
 
 /**
  * Where a chain of `n` kills sits on the star: 0 for no chain, capped at SPREE_LEGS.
