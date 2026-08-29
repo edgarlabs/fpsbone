@@ -12,6 +12,8 @@ export function createNet({
   mode,
   lag = 0,
   jitter = 0,
+  scheduleRetry = (fn, ms) => setTimeout(fn, ms),
+  cancelRetry = (timer) => clearTimeout(timer),
   // How to obtain a socket. Defaults to a real one; the static build passes the in-page
   // host from localserver.js instead. Injected rather than branched on here because this
   // module has no business knowing there is more than one kind of host — everything below
@@ -26,7 +28,7 @@ export function createNet({
    *  arrive on a join, a drop or a promotion, so they are not in the twenty-a-second
    *  snapshot. The scoreboard reads both — this for who somebody is, the snapshot for how
    *  they are doing and what their ping is right now. */
-  const handlers = { welcome: [], snapshot: [], status: [], lobby: [], roster: [] };
+  const handlers = { welcome: [], reject: [], snapshot: [], status: [], lobby: [], roster: [] };
   const emit = (k, v) => handlers[k].forEach((f) => f(v));
 
   // `lag` is a round-trip figure, so half of it is applied in each direction.
@@ -39,6 +41,11 @@ export function createNet({
 
   let ws = null;
   let open = false;
+  let resumeToken = null;
+  let retryTimer = null;
+  let retryCount = 0;
+  let rejected = false;
+  let connectionSerial = 0;
 
   const sentAt = new Map(); // seq -> local send time
   let rtt = 0;
@@ -59,7 +66,7 @@ export function createNet({
     if (!open) return;
     const payload = encode(obj);
     delay(() => {
-      if (ws?.readyState === WebSocket.OPEN) ws.send(payload);
+      if (ws?.readyState === (ws?.OPEN ?? WebSocket.OPEN)) ws.send(payload);
     });
   }
 
@@ -71,7 +78,18 @@ export function createNet({
       rawSend({ t: MSG.PONG, n: m.n });
       return;
     }
-    if (m.t === MSG.WELCOME) return emit('welcome', m);
+    if (m.t === MSG.WELCOME) {
+      if (typeof m.resume === 'string' && m.resume) resumeToken = m.resume;
+      retryCount = 0;
+      return emit('welcome', m);
+    }
+    if (m.t === MSG.REJECT) {
+      rejected = true;
+      if (m.lob && typeof m.lob === 'object') emit('lobby', m.lob);
+      emit('reject', m);
+      ws?.close?.(4003, m.reason ?? 'rejected');
+      return;
+    }
     // Occupancy. The initial figures ride on WELCOME instead, so a client greys out a full
     // lobby from its first frame rather than after the first join anywhere on the server;
     // both carry the same shape, and main.js points both at one handler.
@@ -111,13 +129,12 @@ export function createNet({
     emit('snapshot', m);
   }
 
-  return {
-    on(kind, fn) {
-      handlers[kind].push(fn);
-    },
-    connect() {
-      ws = openSocket(url);
-      ws.onopen = () => {
+  function dial() {
+    const serial = ++connectionSerial;
+    const socket = openSocket(url);
+    ws = socket;
+    socket.onopen = () => {
+        if (serial !== connectionSerial) return;
         open = true;
         emit('status', 'connected');
         // The requested mode decides which room the server puts us in, so it has to
@@ -140,20 +157,43 @@ export function createNet({
           // with a signature. Kills are counted server-side either way.
           id: identity.id,
           mode,
+          ...(resumeToken ? { resume: resumeToken } : {}),
         });
       };
-      ws.onclose = () => {
+      socket.onclose = () => {
+        if (serial !== connectionSerial) return;
         open = false;
-        emit('status', 'disconnected');
+        if (rejected) {
+          emit('status', 'rejected');
+          return;
+        }
+        emit('status', 'reconnecting');
+        const wait = Math.min(5000, 750 * (2 ** Math.min(retryCount++, 3)));
+        cancelRetry(retryTimer);
+        retryTimer = scheduleRetry(dial, wait);
       };
-      ws.onerror = () => emit('status', 'error');
-      ws.onmessage = (e) => {
+      socket.onerror = () => {
+        if (serial === connectionSerial) emit('status', 'error');
+      };
+      socket.onmessage = (e) => {
+        if (serial !== connectionSerial) return;
         const raw = e.data;
         delay(() => {
+          if (serial !== connectionSerial) return;
           const m = decode(raw);
           if (m) handle(m);
         });
       };
+  }
+
+  return {
+    on(kind, fn) {
+      handlers[kind].push(fn);
+    },
+    connect() {
+      rejected = false;
+      cancelRetry(retryTimer);
+      dial();
     },
     get connected() {
       return open;

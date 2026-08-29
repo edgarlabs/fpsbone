@@ -129,10 +129,10 @@ export const MODES = {
  * For a team mode it must equal `teamSize * 2` — five a side is ten bodies — and
  * verify.mjs asserts exactly that, so the two numbers cannot drift apart in an edit.
  *
- * It is a BACKFILL TARGET and not a hard gate. Nothing refuses an eleventh player: the
- * menu greys the lobby out beforehand, which is the honest place to say no, and a client
- * that gets in anyway past that race simply plays in an eleven-body room with no bots
- * rather than being bounced at the handshake with nowhere else to go.
+ * It is both the BACKFILL TARGET and the authoritative human gate. The menu greys a full
+ * lobby out for the ordinary path, and the server refuses a raced or hand-written eleventh
+ * handshake. One player plus nine bots and ten players plus zero bots are both ten stable
+ * bodies; an arriving human replaces its bot before the simulation advances or broadcasts.
  */
 export const MODE_IDS = Object.keys(MODES);
 export const DEFAULT_MODE = 'dm';

@@ -14,7 +14,7 @@
 
 import * as THREE from 'three';
 import * as C from '../../shared/constants.js';
-import { INPUT_REDUNDANCY, EV } from '../../shared/protocol.js';
+import { INPUT_REDUNDANCY, EV, REJECT } from '../../shared/protocol.js';
 import { eyeY } from '../../shared/movement.js';
 import { SPAWNS } from '../../shared/map.js';
 import { MODES, TEAM_NAMES, modeOf, CORPSE_MS } from '../../shared/modes.js';
@@ -92,7 +92,7 @@ const url =
  *  would be advice for a situation they are not in. */
 const DOWN_MSG = useLocalHost
   ? 'match ended — reload to start a new one'
-  : 'disconnected — restart the server and reload';
+  : 'connection lost — reconnecting…';
 const UNREACHABLE_MSG = useLocalHost
   ? 'the in-page host failed to start — check the console'
   : 'cannot reach server — is `npm run dev` running?';
@@ -389,8 +389,25 @@ input.onLockChange((locked) => {
 
 net.on('status', (s) => {
   if (s === 'connected') hud.setStatus(`connected as ${identity.displayName}`);
-  else if (s === 'disconnected') hud.showStart(DOWN_MSG);
+  else if (s === 'disconnected' || s === 'reconnecting') hud.showStart(DOWN_MSG);
+  else if (s === 'rejected') return;
   else hud.setStatus(UNREACHABLE_MSG);
+});
+
+// A full card normally cannot be clicked, but only the handshake can close the race for
+// the final seat. Keep the player in the menu and say which limit stopped them instead of
+// leaving a connected-looking page that will never receive a snapshot.
+net.on('reject', (m) => {
+  const label = MODES[m.mode]?.label ?? MODES[requestedMode]?.label ?? 'MODE';
+  const text = m.reason === REJECT.SERVER_FULL
+    ? 'SERVER FULL — PLEASE TRY AGAIN LATER'
+    : m.reason === REJECT.MODE_FULL
+      ? `${label} FULL — SELECT ANOTHER MODE`
+      : m.reason === REJECT.RATE_LIMITED
+        ? 'TOO MANY CONNECTION ATTEMPTS — WAIT A MOMENT'
+        : 'JOIN REFUSED — PLEASE TRY AGAIN';
+  hud.setStatus(text);
+  hud.showStart(text);
 });
 
 // How full every lobby is. Arrives twice over: once on WELCOME as `lob` so the menu is

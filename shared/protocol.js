@@ -5,6 +5,13 @@
 export const MSG = {
   HELLO: 'hello', // C→S  identity handshake
   WELCOME: 'welcome', // S→C  assigned id + tick offset
+  /**
+   * S→C  the handshake was refused: `{ reason, mode?, lob, cap }`.
+   *
+   * Capacity is enforced here rather than trusted to the menu. The menu prevents the usual
+   * click, while this message closes the race where two browsers both saw the final seat.
+   */
+  REJECT: 'reject',
   INPUT: 'input', // C→S  a batch of recent inputs
   /**
    * Application-level round trip used by the scoreboard.
@@ -65,6 +72,13 @@ export const MSG = {
    * make the scoreboard number false. */
   ROSTER: 'roster',
 };
+
+/** Stable refusal codes. Wording belongs to the client; the wire carries the reason. */
+export const REJECT = Object.freeze({
+  SERVER_FULL: 'server_full',
+  MODE_FULL: 'mode_full',
+  RATE_LIMITED: 'rate_limited',
+});
 
 export const EV = {
   SHOT: 'shot',

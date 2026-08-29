@@ -73,6 +73,7 @@ import {
   publicOrigin,
 } from './shared/regions.js';
 import { socketFor } from './client/src/regions.js';
+import { createNet } from './client/src/net.js';
 import { TIERS, MAX_TIER, rankOf, toNextRank } from './shared/ranks.js';
 import {
   BADGES, TRACK_KEYS, SPECIAL_KEYS, TIER_NAMES, MAX_BADGE_TIER, MAX_LEVEL, MAX_STEP,
@@ -103,7 +104,7 @@ import { Room, r3 } from './server/room.js';
 // The host, not just a Room: the backfill rule and the lobby pushes live in there, and a
 // Room on its own knows nothing about how many humans are connected to it.
 import { createHost } from './server/index.js';
-import { MSG, encode, decode } from './shared/protocol.js';
+import { MSG, REJECT, encode, decode } from './shared/protocol.js';
 import { EV } from './shared/protocol.js';
 
 const pass = [];
@@ -7684,11 +7685,22 @@ const okM = (cond, label, detail = '') => {
 /** A client the host can talk to that records what it was told. Nothing in this part
  *  reads a byte off a real socket — only what the rooms hold afterwards, and the two
  *  messages that carry occupancy. */
-function fakeClient(host, mode, name) {
+function fakeClient(host, mode, name, hello = {}) {
   const inbox = [];
-  const conn = host.connect({ send: (p) => inbox.push(decode(p)), isOpen: () => true });
-  conn.message(encode({ t: MSG.HELLO, name, cosmetics: {}, id: null, mode }));
-  return { conn, inbox, welcome: inbox.find((m) => m.t === MSG.WELCOME) };
+  const closed = [];
+  const conn = host.connect({
+    send: (p) => inbox.push(decode(p)),
+    isOpen: () => true,
+    close: (code, reason) => closed.push({ code, reason }),
+  });
+  conn.message(encode({ t: MSG.HELLO, name, cosmetics: {}, id: null, mode, ...hello }));
+  return {
+    conn,
+    inbox,
+    closed,
+    welcome: inbox.find((m) => m.t === MSG.WELCOME),
+    reject: inbox.find((m) => m.t === MSG.REJECT),
+  };
 }
 
 {
@@ -7771,14 +7783,18 @@ function fakeClient(host, mode, name) {
   const upTrace = [];
   const downTrace = [];
   const badUp = [];
-  const badOver = [];
+  const badGate = [];
   const badDown = [];
   const badEmpty = [];
 
   for (const mode of live) {
     const SLOTS = MODES[mode].slots;
     const seats = [];
-    const join = () => seats.push(fakeClient(host, mode, `${mode}${seats.length}`));
+    const join = () => {
+      const seat = fakeClient(host, mode, `${mode}${seats.length}`);
+      seats.push(seat);
+      return seat;
+    };
 
     const up = [];
     for (let humans = 1; humans <= SLOTS; humans++) {
@@ -7789,13 +7805,14 @@ function fakeClient(host, mode, name) {
     }
     upTrace.push(`${mode} ${up.join(' ')}`);
 
-    // Nothing refuses the eleventh, deliberately — the menu greys a full lobby out instead,
-    // which is the honest place to say no. So an over-capacity room has to be harmless
-    // rather than merely unreachable, in every mode that can fill up.
-    join();
+    // The menu prevents the ordinary click; the host closes the race and rejects a direct
+    // eleventh handshake. Refusal must not disturb the ten people already playing.
+    const refused = fakeClient(host, mode, `${mode}-overflow`);
     const over = roomOf(mode);
-    if (over.bots.size !== 0 || over.players.size !== SLOTS + 1) {
-      badOver.push(`${mode}: ${over.players.size} bodies, ${over.bots.size} bots`);
+    if (refused.welcome || refused.reject?.reason !== REJECT.MODE_FULL
+        || refused.closed[0]?.code !== 4003
+        || over.bots.size !== 0 || over.players.size !== SLOTS) {
+      badGate.push(`${mode}: reject=${refused.reject?.reason}, ${over.players.size} bodies, ${over.bots.size} bots`);
     }
 
     // ── and back down again
@@ -7815,10 +7832,10 @@ function fakeClient(host, mode, name) {
 
   okM(badUp.length === 0, "each human who joins takes a bot's place, and the lobby stays exactly full",
       badUp.length ? `wrong at ${badUp.join(', ')}` : upTrace.join('  |  '));
-  okM(badOver.length === 0,
-      'a player past capacity is seated rather than refused, with no bots left to take',
-      badOver.length ? badOver.join(' | ')
-                     : `${live.length} modes, each seated one past its slot count`);
+  okM(badGate.length === 0,
+      'an eleventh handshake is refused by the host without disturbing the full room',
+      badGate.length ? badGate.join(' | ')
+                     : `${live.length} modes held at their declared slot count`);
   okM(badDown.length === 0,
       'and a leaver hands their slot straight back to a bot, so the match never thins out',
       badDown.length ? `wrong at ${badDown.join(', ')}` : downTrace.join('  |  '));
@@ -7857,6 +7874,171 @@ function fakeClient(host, mode, name) {
   const freed = a.inbox.find((m) => m.t === MSG.LOBBY);
   okM(freed?.rooms?.tdm === 0, "a leaver frees the slot on everybody else's menu too",
       `rooms=${JSON.stringify(freed?.rooms)}`);
+}
+
+{
+  // ── regional admission: two full ten-seat modes consume the free-tier target of twenty
+  const host = createHost({ nowNs: () => 0n });
+  const live = host.available.slice(0, 3);
+  const seats = [];
+  for (const mode of live.slice(0, 2)) {
+    for (let i = 0; i < MODES[mode].slots; i++) {
+      seats.push(fakeClient(host, mode, `${mode}-regional-${i}`));
+    }
+  }
+  const refused = fakeClient(host, live[2], 'regional-overflow');
+  okM(host.humans === C.REGION_HUMAN_CAP,
+      'the process exposes exactly twenty occupied human seats at the regional limit',
+      `${host.humans}/${C.REGION_HUMAN_CAP}`);
+  okM(seats.every((s) => s.welcome?.cap === C.REGION_HUMAN_CAP),
+      'WELCOME advertises the same regional capacity the host enforces',
+      `cap=${seats[0]?.welcome?.cap}`);
+  okM(!refused.welcome && refused.reject?.reason === REJECT.SERVER_FULL,
+      'player twenty-one is refused as SERVER FULL even when their chosen mode has room',
+      `reason=${refused.reject?.reason}, ${live[2]}=${host.occupancy()[live[2]]}`);
+  okM(refused.reject?.lob && refused.reject.cap === C.REGION_HUMAN_CAP,
+      'the refusal carries current occupancy and capacity so the menu can recover honestly',
+      `cap=${refused.reject?.cap}, lob=${JSON.stringify(refused.reject?.lob)}`);
+  for (const seat of seats) seat.conn.drop();
+}
+
+{
+  // ── reconnect reservation: an abnormal drop owns the same seat for ten seconds
+  const timers = [];
+  const cancelled = new Set();
+  let token = 0;
+  const host = createHost({
+    nowNs: () => 0n,
+    makeToken: () => `resume-${++token}`,
+    setTimer: (fn) => { timers.push(fn); return fn; },
+    clearTimer: (fn) => cancelled.add(fn),
+  });
+  const mode = DEFAULT_MODE;
+  const first = fakeClient(host, mode, 'wanderer');
+  const firstId = first.welcome?.id;
+  const firstToken = first.welcome?.resume;
+  first.conn.drop({ reserve: true });
+  const heldRoom = host.rooms.get(mode);
+
+  okM(host.occupancy()[mode] === 1 && heldRoom.reserved.size === 1
+      && heldRoom.room.players.size === MODES[mode].slots,
+      'an abnormal drop reserves one human seat without adding a replacement bot',
+      `${host.occupancy()[mode]} seat, ${heldRoom.reserved.size} reserved, `
+      + `${heldRoom.room.bots.size} bots`);
+
+  const resumed = fakeClient(host, mode, 'ignored-on-resume', { resume: firstToken });
+  okM(resumed.welcome?.id === firstId && resumed.welcome?.resume !== firstToken
+      && heldRoom.reserved.size === 0 && heldRoom.clients.size === 1,
+      'the opaque token resumes the same body and is rotated after use',
+      `#${firstId} -> #${resumed.welcome?.id}, ${firstToken} -> ${resumed.welcome?.resume}`);
+  okM(cancelled.has(timers[0]),
+      'a successful resume cancels expiration rather than racing it later');
+
+  // A fake cancelled timer may still be invoked; the identity guard must make it harmless.
+  timers[0]?.();
+  okM(host.occupancy()[mode] === 1 && host.rooms.get(mode).room.players.has(firstId),
+      'a stale expiration callback cannot delete a seat that already resumed');
+
+  resumed.conn.drop();
+  okM(host.occupancy()[mode] === 0 && host.rooms.get(mode).room.players.size === 0,
+      'a normal close frees the resumed seat immediately and returns the room to empty');
+
+  const expiring = fakeClient(host, mode, 'gone');
+  expiring.conn.drop({ reserve: true });
+  timers.at(-1)?.();
+  okM(host.occupancy()[mode] === 0 && host.rooms.get(mode).room.players.size === 0,
+      'an unclaimed reservation expires into a clean dormant room');
+}
+
+{
+  // ── browser reconnect path: retain the opaque token and stop after a real refusal
+  const sockets = [];
+  const retries = [];
+  const statuses = [];
+  const refusals = [];
+  const openSocket = () => {
+    const sent = [];
+    const sock = {
+      OPEN: 1,
+      readyState: 0,
+      sent,
+      send: (payload) => sent.push(decode(payload)),
+      close() {
+        if (sock.readyState === 3) return;
+        sock.readyState = 3;
+        sock.onclose?.({});
+      },
+    };
+    sockets.push(sock);
+    return sock;
+  };
+  const net = createNet({
+    url: 'ws://phase-one.test',
+    identity: { id: 'local-phase-one', displayName: 'tester', cosmetics: {} },
+    mode: DEFAULT_MODE,
+    openSocket,
+    scheduleRetry: (fn, ms) => { retries.push({ fn, ms }); return fn; },
+    cancelRetry: () => {},
+  });
+  net.on('status', (s) => statuses.push(s));
+  net.on('reject', (m) => refusals.push(m));
+  net.connect();
+  sockets[0].readyState = sockets[0].OPEN;
+  sockets[0].onopen?.({});
+  const firstHello = sockets[0].sent.find((m) => m.t === MSG.HELLO);
+  sockets[0].onmessage?.({ data: encode({
+    t: MSG.WELCOME, id: 7, mode: DEFAULT_MODE, resume: 'seat-token', lob: {},
+  }) });
+  sockets[0].readyState = 3;
+  sockets[0].onclose?.({});
+
+  okM(firstHello && firstHello.resume === undefined && retries.length === 1
+      && statuses.includes('reconnecting'),
+      'an unexpected browser disconnect schedules a reconnect without inventing a token',
+      `statuses=${statuses.join(',')}, retry=${retries[0]?.ms}ms`);
+
+  retries[0].fn();
+  sockets[1].readyState = sockets[1].OPEN;
+  sockets[1].onopen?.({});
+  const resumedHello = sockets[1].sent.find((m) => m.t === MSG.HELLO);
+  okM(resumedHello?.resume === 'seat-token',
+      'the next browser handshake returns the server-issued resume token',
+      `resume=${resumedHello?.resume}`);
+
+  sockets[1].onmessage?.({ data: encode({
+    t: MSG.REJECT, reason: REJECT.SERVER_FULL, cap: C.REGION_HUMAN_CAP, lob: {},
+  }) });
+  okM(refusals[0]?.reason === REJECT.SERVER_FULL && retries.length === 1
+      && statuses.at(-1) === 'rejected',
+      'a capacity refusal reaches the UI and stops the reconnect loop',
+      `reason=${refusals[0]?.reason}, statuses=${statuses.join(',')}`);
+}
+
+{
+  // ── dormancy: inactive rooms do not spend 60 Hz ticks, and the last leave resets state
+  let now = 0n;
+  const host = createHost({ nowNs: () => now });
+  const activeMode = DEFAULT_MODE;
+  const sleepingMode = host.available.find((id) => id !== activeMode);
+  const sleeperBefore = host.rooms.get(sleepingMode).room;
+  const activeBefore = host.rooms.get(activeMode).room;
+  const idleWait = host.advance();
+  okM(idleWait >= 50,
+      'a host with no audience backs its scheduler off instead of waking every 4ms',
+      `${idleWait}ms idle wait`);
+  const seat = fakeClient(host, activeMode, 'clock');
+  now = 100000000n;
+  host.advance();
+  okM(activeBefore.tick > 0 && sleeperBefore.tick === 0,
+      'only rooms with a connected audience advance their simulation clock',
+      `${activeMode} tick ${activeBefore.tick}, ${sleepingMode} tick ${sleeperBefore.tick}`);
+  seat.conn.drop();
+  const activeAfter = host.rooms.get(activeMode).room;
+  okM(activeAfter !== activeBefore && activeAfter.tick === 0
+      && activeAfter.players.size === 0 && activeAfter.projectiles.length === 0
+      && activeAfter.clouds.length === 0,
+      'the last normal leave replaces the match with a clean dormant room',
+      `new room=${activeAfter !== activeBefore}, tick=${activeAfter.tick}`);
 }
 
 {

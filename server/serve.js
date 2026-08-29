@@ -36,7 +36,7 @@ import { extname, join, normalize, resolve, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { WebSocketServer } from 'ws';
 import * as C from '../shared/constants.js';
-import { MSG, decode, encode } from '../shared/protocol.js';
+import { MSG, REJECT, decode, encode } from '../shared/protocol.js';
 import { REGIONS, regionsFromEnv } from '../shared/regions.js';
 import { createHost } from './index.js';
 // The only filesystem-touching module under server/, and imported here and nowhere
@@ -161,7 +161,13 @@ async function serveStatic(req, res) {
       'content-type': 'application/json; charset=utf-8',
       'cache-control': 'no-store',
     });
-    res.end(JSON.stringify({ r: REGION, lob, humans, t: Date.now() }));
+    res.end(JSON.stringify({
+      r: REGION,
+      lob,
+      humans,
+      cap: C.REGION_HUMAN_CAP,
+      t: Date.now(),
+    }));
     return;
   }
 
@@ -218,14 +224,60 @@ const server = createServer((req, res) => {
 
 // Attached to the http server rather than given a port of its own: `ws` then only claims
 // requests carrying the upgrade header and leaves the rest to the handler above.
-const wss = new WebSocketServer({ server });
+const wss = new WebSocketServer({
+  server,
+  // Inputs are tiny JSON batches. A large frame is never legitimate and need not be held
+  // in the free instance's memory while JSON.parse discovers that fact.
+  maxPayload: 64 * 1024,
+  perMessageDeflate: false,
+});
 
 /** One tiny application-level request per second is enough for a readable scoreboard. */
 const PING_MS = 1000;
 /** A lost request may not stop measurement for the rest of the match. */
 const PING_STALE_MS = 5000;
+/** A socket that never says HELLO is not a player and may not occupy memory indefinitely. */
+const HANDSHAKE_MS = 5000;
+/** Coarse abuse brake. Sixty attempts still permits the whole planned alpha to reconnect
+ *  through one NAT, while a tight connection loop is stopped before it becomes the load. */
+const RATE_WINDOW_MS = 10000;
+const RATE_ATTEMPTS = 60;
+const attemptsByIp = new Map();
 
-wss.on('connection', (ws) => {
+function remoteIp(req) {
+  const forwarded = req.headers['x-forwarded-for'];
+  const first = Array.isArray(forwarded) ? forwarded[0] : forwarded?.split(',')[0];
+  return String(first || req.socket.remoteAddress || 'unknown').trim();
+}
+
+function allowAttempt(ip, now = Date.now()) {
+  const rec = attemptsByIp.get(ip);
+  if (!rec || now - rec.since >= RATE_WINDOW_MS) {
+    // Unique addresses must not make this tiny brake a permanent address ledger.
+    if (attemptsByIp.size >= 1024) {
+      for (const [key, value] of attemptsByIp) {
+        if (now - value.since >= RATE_WINDOW_MS) attemptsByIp.delete(key);
+      }
+    }
+    attemptsByIp.set(ip, { since: now, count: 1 });
+    return true;
+  }
+  rec.count++;
+  return rec.count <= RATE_ATTEMPTS;
+}
+
+wss.on('connection', (ws, req) => {
+  if (!allowAttempt(remoteIp(req))) {
+    ws.send(encode({
+      t: MSG.REJECT,
+      reason: REJECT.RATE_LIMITED,
+      lob: host.occupancy(),
+      cap: C.REGION_HUMAN_CAP,
+    }));
+    ws.close(1013, REJECT.RATE_LIMITED);
+    return;
+  }
+
   // An unpredictable token can only be echoed after this player's JavaScript receives it.
   // That keeps both ends of the duration on this process without trusting a client-supplied
   // number, and unlike ws.ping() the round trip cannot stop at Render's proxy edge.
@@ -252,11 +304,21 @@ wss.on('connection', (ws) => {
     send: (payload) => ws.send(payload),
     isOpen: () => ws.readyState === ws.OPEN,
     rtt: () => rtt,
+    close: (code, reason) => ws.close(code, reason),
   });
 
-  const gone = () => {
+  const handshake = setTimeout(() => {
+    if (!conn.seated && ws.readyState === ws.OPEN) ws.close(4001, 'handshake_timeout');
+  }, HANDSHAKE_MS);
+
+  let faulted = false;
+  let goneAlready = false;
+  const gone = (reserve) => {
+    if (goneAlready) return;
+    goneAlready = true;
     clearInterval(beat);
-    conn.drop();
+    clearTimeout(handshake);
+    conn.drop({ reserve });
   };
 
   ws.on('message', (raw) => {
@@ -270,9 +332,12 @@ wss.on('connection', (ws) => {
       return;
     }
     conn.message(raw);
+    if (conn.seated) clearTimeout(handshake);
   });
-  ws.on('close', gone);
-  ws.on('error', gone);
+  ws.on('close', (code) => gone(faulted || code === 1006));
+  // `ws` follows an error with close. Remember it so the close path can reserve the seat,
+  // but tear down only once and with the close code available.
+  ws.on('error', () => { faulted = true; });
 });
 
 server.listen(PORT, () => {

@@ -7,6 +7,16 @@ export const TICK_DT = 1 / TICK_HZ;
 export const SNAPSHOT_HZ = 20;
 export const TICKS_PER_SNAPSHOT = Math.round(TICK_HZ / SNAPSHOT_HZ); // 3
 
+// Admission is about PEOPLE, never the bots that backfill a room. A regional process may
+// host several ten-seat modes, but on the free deployment we deliberately stop at twenty
+// simultaneous human seats so the 60 Hz simulation retains headroom.
+export const REGION_HUMAN_CAP = 20;
+
+// An abnormal socket loss keeps its seat briefly. Long enough for a mobile-network handoff
+// or a proxy hiccup, short enough that a genuinely departed player does not block a full
+// room. A normal close (leaving or reloading) frees the seat immediately.
+export const RECONNECT_GRACE_MS = 10000;
+
 /** How far in the past remote players are rendered. Two snapshots of slack, so
  *  a single dropped packet doesn't produce a visible hitch. */
 export const INTERP_DELAY_MS = 100;

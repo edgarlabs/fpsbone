@@ -150,8 +150,9 @@ export function createMenu(settings, cbs) {
         // A region that did not answer. Greyed rather than hidden: "unreachable" is a fact the
         // player is owed, and on a free tier it usually means asleep rather than gone.
         const down = r.state === 'down';
+        const full = Number.isFinite(r.humans) && Number.isFinite(r.cap) && r.humans >= r.cap;
         const card = document.createElement('div');
-        card.className = `card${on ? ' on' : ''}${down ? ' dis' : ''}`;
+        card.className = `card${on ? ' on' : ''}${down ? ' dis' : ''}${full ? ' full' : ''}`;
 
         // The number, or what is happening instead of one. `waking…` is its own word because
         // a spun-down free instance takes about a minute to answer, and a card that sat blank
@@ -173,14 +174,19 @@ export function createMenu(settings, cbs) {
         // Occupancy is every human on that server across all of its lobbies, because the
         // choice being made here is the server — which mode to join is the row below. An
         // empty region with a beautiful ping is not the better room, so the count sits here.
+        const population = Number.isFinite(r.cap)
+          ? `${r.humans}/${r.cap} playing`
+          : `${r.humans} playing`;
         const where = down
           ? 'no answer — asleep, or not deployed'
+          : full
+            ? `${r.where} · server full`
           : Number.isFinite(r.humans)
-            ? `${r.where} · ${r.humans} playing`
+            ? `${r.where} · ${population}`
             : r.where;
         card.innerHTML = `<b><span>${r.label}${tags}</span>${ping}</b><i>${where}</i>`;
 
-        if (!on && !down) {
+        if (!on && !down && !full) {
           card.addEventListener('click', () => {
             // The socket is opened once, at load, against one address — so changing which
             // server that is needs a new page. The ADDRESS is stored alongside the id because
@@ -211,10 +217,8 @@ export function createMenu(settings, cbs) {
         const on = settings.mode === id;
         const live = available.has(id);
         const here = lobby[id];
-        // FULL MEANS THE CARD IS NOT A BUTTON. The server does not refuse an eleventh
-        // player — nothing anywhere throws — so this is the whole of the enforcement, and
-        // it is on purpose: a lobby that fills while you are reading the keybinds should
-        // grey out in front of you, not reject you after a reload into a black screen.
+        // The menu prevents the ordinary over-capacity click; the server repeats this gate
+        // authoritatively during HELLO to close the race where two clients saw one seat.
         //
         // Your OWN lobby is exempt. It reads 10/10 precisely because you are one of the
         // ten, and greying out the room you are standing in would be nonsense.

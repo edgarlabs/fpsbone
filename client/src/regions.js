@@ -82,7 +82,7 @@ export async function loadRegions() {
 }
 
 /**
- * Time one region. Resolves to `{ id, ms, humans, lob, state, woke }` and never rejects — a
+ * Time one region. Resolves to `{ id, ms, humans, cap, lob, state, woke }` and never rejects — a
  * region that cannot be reached is a result, not an error, and the menu has a word for it.
  *
  * `onProgress` fires once, when the throwaway sample is still outstanding after WOKE_MS, so a
@@ -122,7 +122,7 @@ export async function probeRegion(region, onProgress) {
     }
   } catch {
     clearTimeout(slow);
-    return { ...region, ms: NaN, humans: null, lob: null, state: 'down', woke };
+    return { ...region, ms: NaN, humans: null, cap: null, lob: null, state: 'down', woke };
   }
   clearTimeout(slow);
 
@@ -132,6 +132,7 @@ export async function probeRegion(region, onProgress) {
     ...region,
     ms,
     humans: Number.isFinite(body?.humans) ? body.humans : null,
+    cap: Number.isFinite(body?.cap) ? body.cap : null,
     lob: body?.lob ?? null,
     state: 'ok',
     woke,

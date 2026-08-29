@@ -23,11 +23,11 @@
 // shows up as inconsistent movement speed. The arithmetic is BigInt nanoseconds on both
 // platforms, so neither gets a different rounding story than the other.
 //
-// Every mode with a working controller gets its own Room, and all of them tick in the one
-// loop below. Switching mode is a client reload, not a host restart.
+// Every mode with a working controller gets its own Room. Active rooms tick in the one loop
+// below; empty ones remain dormant. Switching mode is a client reload, not a host restart.
 
 import * as C from '../shared/constants.js';
-import { MSG, encode, decode } from '../shared/protocol.js';
+import { MSG, REJECT, encode, decode } from '../shared/protocol.js';
 import { MODES, MODE_IDS, DEFAULT_MODE } from '../shared/modes.js';
 import { hasController } from './modes/index.js';
 import { Room } from './room.js';
@@ -55,11 +55,24 @@ const r3 = (v) => Math.round(v * 1000) / 1000;
 
 const STEP_NS = BigInt(Math.round(1e9 / C.TICK_HZ));
 const MAX_CATCHUP = 8;
+const IDLE_WAIT_MS = 50;
 
 /** A career store that keeps nothing, for a host built without one. Same three functions
  *  the real stores expose, so nothing below needs a branch: a host with no store is one
  *  where every account reads back empty and every write goes nowhere. */
 const NO_RANKS = { careerOf: () => 0, badgesOf: () => ({}), setCareer: () => {} };
+
+/** Browser- and Node-safe resume token. The Math.random fallback is reached only by an old
+ *  browser running its private in-page host, where the token never crosses a network. */
+function defaultToken() {
+  if (globalThis.crypto?.randomUUID) return globalThis.crypto.randomUUID();
+  if (globalThis.crypto?.getRandomValues) {
+    const words = new Uint32Array(4);
+    globalThis.crypto.getRandomValues(words);
+    return [...words].map((n) => n.toString(16).padStart(8, '0')).join('');
+  }
+  return `${Date.now().toString(36)}-${Math.random().toString(36).slice(2)}`;
+}
 
 /**
  * Build a host. Nothing starts on its own — the caller owns the loop and calls `advance()`.
@@ -69,16 +82,29 @@ const NO_RANKS = { careerOf: () => 0, badgesOf: () => ({}), setCareer: () => {} 
  * @param {object}   [opts.ranks] career store; omitted means careers are not kept
  * @param {function} [opts.log]   where the join/leave lines go
  * @param {string}   [opts.region] deployed region id; omitted by the in-page host
+ * @param {function} [opts.makeToken] reconnect-token source; injected by deterministic tests
+ * @param {function} [opts.setTimer] timer source; injected by deterministic tests
+ * @param {function} [opts.clearTimer] timer cancellation; injected by deterministic tests
  */
-export function createHost({ nowNs, ranks = NO_RANKS, log = () => {}, region = null }) {
-  // modeId -> { room, clients: Map<playerId, client> }
+export function createHost({
+  nowNs,
+  ranks = NO_RANKS,
+  log = () => {},
+  region = null,
+  makeToken = defaultToken,
+  setTimer = (fn, ms) => globalThis.setTimeout(fn, ms),
+  clearTimer = (timer) => globalThis.clearTimeout(timer),
+} = {}) {
+  // modeId -> { room, clients: Map<playerId, client>, reserved: Map<playerId, reservation> }
   //
   // Sockets are tracked per room rather than in one global map because each Room
   // allocates player ids from 1, so ids are only unique within a room.
   //
-  // `clients.size` is the HUMAN population of the room, and the backfill below is built
-  // on it: everything in `room.players` that is not one of these is a bot.
+  // A seat is either connected or briefly reserved after an abnormal drop. Both count
+  // toward admission and bot backfill, otherwise a reconnect could turn a ten-body room
+  // into eleven while reclaiming the slot it was promised.
   const rooms = new Map();
+  const reservations = new Map(); // opaque resume token -> reservation
 
   for (const id of MODE_IDS) {
     if (!hasController(MODES[id].ctl)) continue;
@@ -90,7 +116,7 @@ export function createHost({ nowNs, ranks = NO_RANKS, log = () => {}, region = n
     // not 0 so an empty room's first push is still a push: a Room starts at rev 0, and a
     // sentinel that matched it would mean the first client to join a fresh room learned the
     // roster only when the second one did.
-    rooms.set(id, { room, clients: new Map(), rosterSent: -1 });
+    rooms.set(id, { room, clients: new Map(), reserved: new Map(), rosterSent: -1 });
   }
 
   const AVAILABLE = [...rooms.keys()];
@@ -99,6 +125,23 @@ export function createHost({ nowNs, ranks = NO_RANKS, log = () => {}, region = n
   /** An unknown or not-yet-implemented mode gets the default rather than a refused
    *  connection — the client learns which it actually joined from WELCOME. */
   const pickRoom = (want) => (rooms.has(want) ? want : DEFAULT_MODE);
+
+  const seatsOf = (slot) => slot.clients.size + slot.reserved.size;
+  const humansTotal = () => {
+    let n = 0;
+    for (const slot of rooms.values()) n += seatsOf(slot);
+    return n;
+  };
+
+  /** Throw away every transient thing in an empty match, including controller timers and
+   *  scores. Replacing the Room is both more complete and less fragile than teaching the
+   *  host the private state of every mode controller. */
+  function resetRoom(slot) {
+    const fresh = new Room(slot.room.modeId);
+    fresh.onCareer = ranks.setCareer;
+    slot.room = fresh;
+    slot.rosterSent = -1;
+  }
 
   /**
    * BACKFILL: bots fill exactly the slots the humans have not.
@@ -113,16 +156,14 @@ export function createHost({ nowNs, ranks = NO_RANKS, log = () => {}, region = n
    * `slots - 0` would leave every mode on the server permanently simulating ten bots in
    * an arena nobody is looking at. No humans, no bodies.
    *
-   * Nothing here refuses an eleventh player. `Math.max(0, ...)` means an over-capacity
-   * room simply runs with no bots — the menu greys a full lobby out beforehand, which is
-   * the honest place to say no, and bouncing somebody at the handshake would leave them
-   * with nowhere to go at all.
+   * Admission below refuses an eleventh player. The clamp remains defensive arithmetic,
+   * but a correctly seated room always has exactly `slots` bodies while it is occupied.
    *
    * Called on every join and every leave, and idempotent: the usual outcome is that the
    * count already matches and `setBots` does nothing.
    */
   function syncBots(slot) {
-    const humans = slot.clients.size;
+    const humans = seatsOf(slot);
     const want = humans ? Math.max(0, slot.room.mode.slots - humans) : 0;
     const before = slot.room.bots.size;
     const after = slot.room.setBots(want);
@@ -137,7 +178,7 @@ export function createHost({ nowNs, ranks = NO_RANKS, log = () => {}, region = n
   }
 
   /**
-   * How full every lobby is, as `{ modeId: humans }`.
+   * How full every lobby is, as `{ modeId: occupied human seats }`.
    *
    * HUMANS ONLY, and that is the whole point of the number: a room holding one player and
    * nine bots has nine seats free, and a count of BODIES would report it as full and grey
@@ -145,7 +186,7 @@ export function createHost({ nowNs, ranks = NO_RANKS, log = () => {}, region = n
    */
   const lobbyState = () => {
     const out = {};
-    for (const [modeId, slot] of rooms) out[modeId] = slot.clients.size;
+    for (const [modeId, slot] of rooms) out[modeId] = seatsOf(slot);
     return out;
   };
 
@@ -322,15 +363,89 @@ export function createHost({ nowNs, ranks = NO_RANKS, log = () => {}, region = n
   function connect(client) {
     let id = null;
     let slot = null;
+    let resumeToken = null;
+    let greeted = false;
+
+    const sendWelcome = (modeId) => {
+      resumeToken = makeToken();
+      client.send(
+        encode({
+          t: MSG.WELCOME,
+          id,
+          tick: slot.room.tick,
+          tickHz: C.TICK_HZ,
+          snapshotHz: C.SNAPSHOT_HZ,
+          mode: modeId,
+          // Opaque and memory-only. It proves that a reconnect is the socket that held
+          // this seat, without treating today's unverified account id as authentication.
+          resume: resumeToken,
+          // The process that accepted the socket, not the region the browser requested.
+          // A stale saved address must not let the menu claim the match is elsewhere.
+          r: region,
+          avail: AVAILABLE,
+          cap: C.REGION_HUMAN_CAP,
+          // How full every lobby is, right now. It rides on WELCOME rather than
+          // arriving as the first MSG.LOBBY push so that the mode picker is never
+          // briefly showing every room as empty; pushes carry every later change.
+          lob: lobbyState(),
+        }),
+      );
+    };
+
+    const reject = (reason, modeId) => {
+      client.send(encode({
+        t: MSG.REJECT,
+        reason,
+        mode: modeId,
+        lob: lobbyState(),
+        cap: C.REGION_HUMAN_CAP,
+      }));
+      client.close?.(4003, reason);
+    };
 
     function message(raw) {
       const m = decode(raw);
       if (!m) return;
 
       if (m.t === MSG.HELLO) {
-        if (id !== null) return; // one handshake per socket
+        if (greeted) return; // one handshake attempt per socket, accepted or refused
+        greeted = true;
+
+        // A valid token outranks the requested mode: it names one exact seat in one exact
+        // match. The token exists only while that seat is detached and is consumed here,
+        // so it cannot clone a player or resume over a live connection.
+        const held = typeof m.resume === 'string' ? reservations.get(m.resume) : null;
+        if (held) {
+          reservations.delete(held.token);
+          held.slot.reserved.delete(held.id);
+          clearTimer(held.timer);
+          slot = held.slot;
+          id = held.id;
+          slot.clients.set(id, client);
+          slot.rosterSent = -1; // the returning socket has not seen the current roster
+          sendWelcome(slot.room.modeId);
+          log(`~ ${slot.room.players.get(id)?.name ?? '?'} (#${id}) resumed ${slot.room.modeId}`);
+          return;
+        }
+
         const modeId = pickRoom(m.mode);
         slot = rooms.get(modeId);
+
+        // The regional gate is checked before the room gate so a process at 20/20 tells
+        // the truth even when the requested room also happens to be full. Node dispatches
+        // handshakes serially, so checking and inserting in this same callback makes the
+        // final seat atomic: two callers cannot both observe 19 and become player twenty.
+        if (humansTotal() >= C.REGION_HUMAN_CAP) {
+          reject(REJECT.SERVER_FULL, modeId);
+          slot = null;
+          return;
+        }
+        if (seatsOf(slot) >= slot.room.mode.slots) {
+          reject(REJECT.MODE_FULL, modeId);
+          slot = null;
+          return;
+        }
+
         const account = sanitizeAccount(m.id);
         id = slot.room.add(sanitizeName(m.name), m.cosmetics ?? {}, account);
         // Load the career onto the player right after `add`, which starts everyone at 0 —
@@ -341,27 +456,9 @@ export function createHost({ nowNs, ranks = NO_RANKS, log = () => {}, region = n
         // and the store must only ever change through setCareer's monotonic guard.
         slot.room.players.get(id).badges = ranks.badgesOf(account);
         slot.clients.set(id, client);
-        client.send(
-          encode({
-            t: MSG.WELCOME,
-            id,
-            tick: slot.room.tick,
-            tickHz: C.TICK_HZ,
-            snapshotHz: C.SNAPSHOT_HZ,
-            mode: modeId,
-            // The process that accepted the socket, not the region the browser requested.
-            // A stale saved address must not let the menu claim the match is elsewhere.
-            r: region,
-            avail: AVAILABLE,
-            // How full every lobby is, right now. It rides on WELCOME rather than
-            // arriving as the first MSG.LOBBY push so that the mode picker is never
-            // briefly showing every room as empty; the pushes carry every change after
-            // this one, in the same shape, so the client reads both with one handler.
-            lob: lobbyState(),
-          }),
-        );
+        sendWelcome(modeId);
         log(
-          `+ ${slot.room.players.get(id).name} (#${id}) -> ${modeId} — ${slot.room.players.size} in room`,
+          `+ ${slot.room.players.get(id).name} (#${id}) -> ${modeId} — ${seatsOf(slot)} human seat(s)`,
         );
         // Backfill immediately, so this player's first snapshot already has the room
         // filled rather than showing an empty arena for a beat. Placed after `add`, so
@@ -382,27 +479,76 @@ export function createHost({ nowNs, ranks = NO_RANKS, log = () => {}, region = n
       // arithmetic and not a preference, so there is nothing for a client to ask for.
     }
 
-    const drop = () => {
+    const drop = ({ reserve = false } = {}) => {
       if (id === null) return;
       const name = slot.room.players.get(id)?.name ?? '?';
+
+      if (reserve && resumeToken && C.RECONNECT_GRACE_MS > 0) {
+        const heldSlot = slot;
+        const heldId = id;
+        const heldToken = resumeToken;
+        heldSlot.clients.delete(heldId);
+
+        // Stop repeating the last movement while the player has no socket. Gravity and
+        // the match continue if somebody else is present, but the detached body does not
+        // walk itself into a wall for ten seconds.
+        const p = heldSlot.room.players.get(heldId);
+        if (p) {
+          p.inputs.length = 0;
+          p.lastInput = null;
+          p.fireHeld = false;
+          p.vx = 0;
+          p.vz = 0;
+        }
+
+        const held = { token: heldToken, slot: heldSlot, id: heldId, timer: null };
+        heldSlot.reserved.set(heldId, held);
+        reservations.set(heldToken, held);
+        held.timer = setTimer(() => {
+          // A successful resume consumed this record and cancelled the timer. The identity
+          // check also protects injected/fake timers whose cancellation is intentionally a
+          // no-op in tests.
+          if (reservations.get(heldToken) !== held) return;
+          reservations.delete(heldToken);
+          heldSlot.reserved.delete(heldId);
+          heldSlot.room.remove(heldId);
+          log(`- ${name} reconnect expired — ${seatsOf(heldSlot)} human seat(s) in room`);
+          syncBots(heldSlot);
+          if (seatsOf(heldSlot) === 0) resetRoom(heldSlot);
+          pushLobby();
+        }, C.RECONNECT_GRACE_MS);
+        log(`~ ${name} reserved for ${C.RECONNECT_GRACE_MS / 1000}s`);
+        id = null;
+        slot = null;
+        resumeToken = null;
+        return;
+      }
+
       slot.room.remove(id);
       slot.clients.delete(id);
-      log(`- ${name} — ${slot.room.players.size} in room`);
+      log(`- ${name} — ${seatsOf(slot)} human seat(s) in room`);
       // A bot takes the freed slot, so the match does not thin out around whoever is
       // left — and once the LAST human leaves, `syncBots` empties the room outright
       // rather than leaving ten bots fighting over an arena with no audience.
       syncBots(slot);
+      if (seatsOf(slot) === 0) resetRoom(slot);
       pushLobby();
       id = null;
       slot = null;
+      resumeToken = null;
     };
 
-    return { message, drop };
+    return {
+      message,
+      drop,
+      get seated() { return id !== null; },
+    };
   }
 
-  /** Every room steps in this one loop, so they share a tick count — reading it off
-   *  any single room gives the same number as any other. */
-  const clock = rooms.get(DEFAULT_MODE) ?? [...rooms.values()][0];
+  /** Snapshot cadence belongs to the host, not to any one room. Empty rooms do not tick,
+   *  so using deathmatch as the clock would stop snapshots in sniper whenever deathmatch
+   *  slept. Each active Room keeps its own simulation tick; this counter only schedules. */
+  let hostTick = 0;
   let acc = 0n;
   let last = nowNs();
 
@@ -418,13 +564,29 @@ export function createHost({ nowNs, ranks = NO_RANKS, log = () => {}, region = n
     acc += now - last;
     last = now;
 
+    // The socket server wakes independently of this timer, so an idle host needs no 4ms
+    // scheduler churn. Reset the accumulator: time during which no room had an audience is
+    // not simulation debt for the first player who later arrives.
+    let hasAudience = false;
+    for (const slot of rooms.values()) {
+      if (slot.clients.size) { hasAudience = true; break; }
+    }
+    if (!hasAudience) {
+      acc = 0n;
+      return IDLE_WAIT_MS;
+    }
+
     let steps = 0;
     let snapDue = false;
     while (acc >= STEP_NS && steps < MAX_CATCHUP) {
-      for (const slot of rooms.values()) slot.room.step();
+      // No open audience means no work. A wholly empty room has already been reset; a room
+      // containing only a ten-second reconnect reservation is frozen until it resumes or
+      // expires, preserving the exact match state without burning bot AI on nobody.
+      for (const slot of rooms.values()) if (slot.clients.size) slot.room.step();
+      hostTick++;
       acc -= STEP_NS;
       steps++;
-      if (clock.room.tick % C.TICKS_PER_SNAPSHOT === 0) snapDue = true;
+      if (hostTick % C.TICKS_PER_SNAPSHOT === 0) snapDue = true;
     }
     // Fell far enough behind that catching up tick-by-tick would spiral. Drop the
     // backlog instead and accept a discontinuity.
@@ -436,5 +598,13 @@ export function createHost({ nowNs, ranks = NO_RANKS, log = () => {}, region = n
     return Math.max(0, Math.min(waitMs, 4));
   }
 
-  return { available: AVAILABLE, pending, connect, advance, rooms, occupancy: lobbyState };
+  return {
+    available: AVAILABLE,
+    pending,
+    connect,
+    advance,
+    rooms,
+    occupancy: lobbyState,
+    get humans() { return humansTotal(); },
+  };
 }
