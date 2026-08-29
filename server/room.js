@@ -320,6 +320,16 @@ export class Room {
        * riding on the object the wire is described from.
        */
       ping: 0,
+      /**
+       * When `ping` was last sampled, in wall-clock ms, and 0 for never.
+       *
+       * Two jobs, which is why it is a timestamp and not a counter: it throttles sampling to
+       * one reading every PING_SAMPLE_MS, and being non-zero is what tells the broadcast that
+       * a real round trip has been measured and the transport's own guess is no longer wanted.
+       * Bots keep it at 0 forever — nothing echoes a tick for them, and their seeded value is
+       * the one `wobble` is applied to below.
+       */
+      pingAt: 0,
       ...createPlayerState(spawn),
       hp: C.MAX_HP,
       alive: true,

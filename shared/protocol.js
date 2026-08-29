@@ -117,5 +117,11 @@ export function decode(raw) {
  * Inputs are sent as a small trailing window rather than one at a time, so a
  * dropped packet doesn't cost the client a tick of movement — the next packet
  * still carries it. The server ignores any seq it has already consumed.
+ *
+ * MSG.INPUT also carries `st`: the newest snapshot tick the client has seen, echoed so the
+ * server can time the round trip it puts in the scoreboard's ping column. It is a tick
+ * number and never a duration — the server owns both ends of that subtraction, so the field
+ * is unforgeable in the only direction that matters. Omitted before the first snapshot.
+ * See samplePing in server/index.js.
  */
 export const INPUT_REDUNDANCY = 4;

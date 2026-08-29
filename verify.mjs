@@ -8779,6 +8779,140 @@ const okO = (cond, label, detail = '') => {
       'and a transport that measures nothing leaves the field off rather than inventing a zero',
       '`rtt` is optional on the connect contract: the in-page host has no round trip to '
       + 'measure, so its human reads an en dash while the bots beside it read their seeds');
+
+  // ── THE PING COLUMN ITSELF, timed by the host off a tick the client echoes back
+  //
+  // WHY THIS IS NOT ws.ping(). A transport measures the hop it owns, and behind a reverse
+  // proxy that hop stops short of the player: on the Render deploy the pong to the app's own
+  // control frame comes back from Render's edge, and serve.js read 1ms on sockets whose real
+  // round trip — clocked from the far end of the same wire — was 184ms to Oregon and 83ms to
+  // Singapore. Every human on the board wore a ping no human has, beside bots wobbling around
+  // a believable 20-60, which is the seeded bot ping working exactly backwards.
+  //
+  // So the host times the path the GAME takes. It stamps when a snapshot left, the client
+  // echoes the newest tick it has seen on its next input, and the difference is the trip
+  // through everything in the middle. Everything below drives that on the host's own clock,
+  // which is why a latency can be asserted to the millisecond without waiting for one.
+  //
+  // The ring size is read out of the host rather than restated here: a ring that shrank would
+  // otherwise leave the last check below pumping past a boundary that had moved.
+  const hostSrc = readFileSync('server/index.js', 'utf8');
+  const PING_RING_SNAPS = Number(/const PING_RING = (\d+);/.exec(hostSrc)?.[1]);
+  okO(Number.isFinite(PING_RING_SNAPS) && PING_RING_SNAPS >= 20,
+      'the host bounds how many snapshot stamps it remembers, and says so in one constant',
+      `PING_RING = ${PING_RING_SNAPS} snapshots, which is `
+      + `${(PING_RING_SNAPS / C.SNAPSHOT_HZ).toFixed(1)}s at ${C.SNAPSHOT_HZ}Hz — the ring only `
+      + 'has to outlive one round trip, and this check is what stops the number below from '
+      + 'being read out of a comment');
+
+  const echoer = seat('echo', 7);
+  let eseq = 0;
+  const echo = (tick) => echoer.conn.message(encode({
+    t: MSG.INPUT,
+    inputs: [{ seq: ++eseq, dt: 1 / C.TICK_HZ, mx: 0, my: 0, keys: 0, yaw: 0, pitch: 0 }],
+    st: tick,
+  }));
+  const lastSnap = () => echoer.of(MSG.SNAPSHOT).slice(-1)[0];
+  const myPg = () => lastSnap()?.players?.find((r) => r.n === 'echo')?.pg;
+  // One tick at a time until a snapshot actually goes out, which is what leaves `ns` holding
+  // exactly the stamp the host wrote. `advance()` runs a fixed-timestep accumulator against a
+  // STEP_NS that is a floored nanosecond, so a broadcast does not land on the last tick of a
+  // fixed-size pump — assuming it did put 35ms of accumulator drift inside a subtraction that
+  // is supposed to be measuring an invented latency and nothing else.
+  const pumpToSnap = () => {
+    const n = echoer.of(MSG.SNAPSHOT).length;
+    for (let i = 0; i < 4 * C.TICKS_PER_SNAPSHOT; i++) {
+      ns += STEP_NS;
+      host.advance();
+      if (echoer.of(MSG.SNAPSHOT).length > n) return;
+    }
+    throw new Error('the host stopped broadcasting');
+  };
+
+  pump(3);
+  pumpToSnap();
+  const t0 = lastSnap()?.tick;
+  const at0 = ns;
+  okO(myPg() === 7,
+      'the transport’s own reading still stands for the beat before a client’s first echo',
+      `${myPg()}ms from rtt() while nothing has been echoed yet — a host that is not behind a `
+      + 'proxy measures this correctly, and one that is spends a single snapshot wrong');
+
+  // 150ms of host time, invented here, between the snapshot leaving and the echo arriving.
+  ns = at0 + 150n * 1000000n;
+  echo(t0);
+  pump(1);
+  okO(myPg() === 150,
+      'and is replaced by the round trip the host timed itself, to the millisecond',
+      `held the echo of tick ${t0} for 150ms and the column reads ${myPg()}ms — both ends of `
+      + 'that subtraction come off the host clock, so the number is not something a client '
+      + 'can talk down: the only thing it chooses is which tick to send back');
+
+  // THE THROTTLE. Inputs arrive at frame rate; echoing the same now-stale tick again inside
+  // PING_SAMPLE_MS must not move the column, or the ping would be an average of sixty
+  // readings a second and would chase every frame hitch on the client.
+  echo(t0);
+  pump(1);
+  okO(myPg() === 150,
+      'a second echo inside the sampling window is dropped rather than averaged in',
+      `tick ${t0} echoed again about 200ms stale and the column is still ${myPg()}ms — one `
+      + 'reading every 250ms is already faster than a column anybody reads changes');
+
+  // SMOOTHING, with the coefficient the client uses on its own reading: one retransmission
+  // should move this by a few milliseconds rather than spike it for a second.
+  pumpToSnap();
+  const t2 = lastSnap()?.tick;
+  const at2 = ns;
+  ns = at2 + 350n * 1000000n;
+  echo(t2);
+  pump(1);
+  okO(myPg() === 190,
+      'and a slower sample is smoothed in rather than swapped in',
+      `150ms then 350ms reads ${myPg()}ms, which is 150 × 0.8 + 350 × 0.2 — the same 0.2 the `
+      + 'client puts on its own samples in net.js, so a scoreboard and a HUD do not disagree '
+      + 'about the same connection by more than the tick they were read on');
+
+  // ── the two things a client could try, and what each of them gets
+  const pgSettled = myPg();
+  pump(6); // OUTSIDE the sampling window, or the throttle answers this before the lookup does
+  echo(t2 + 100000);
+  pump(1);
+  okO(myPg() === pgSettled,
+      'a tick the server never sent buys nothing: it is not in the ring, so there is no sample',
+      `echoed tick ${t2 + 100000} against a room on tick ${lastSnap()?.tick} and the column is `
+      + `still ${myPg()}ms — the lookup is the whole validation, and a client cannot invent a `
+      + 'stamp for a snapshot that was never stamped');
+
+  echo(t0); // still outside the window: the check above took no sample, so none was timed
+  pump(1);
+  okO(myPg() > pgSettled,
+      'and echoing an older tick reads as a WORSE connection, which is the direction that makes it safe',
+      `a tick about a second stale moved the column from ${pgSettled}ms to ${myPg()}ms — every `
+      + 'choice a client has here is worse for itself, so the field needs no signing and no '
+      + 'trust: there is no edit that makes the gap smaller');
+
+  // THE RING. Sixty snapshots is three seconds at SNAPSHOT_HZ, and a stamp older than that is
+  // dropped rather than kept — a client that far behind gets no reading instead of a wrong one.
+  const pgBefore = myPg();
+  pump(PING_RING_SNAPS + 4);
+  echo(t0);
+  pump(1);
+  okO(myPg() === pgBefore,
+      'a stamp that has fallen out of the ring is gone, and no sample is taken from it',
+      `tick ${t0} is more than ${PING_RING_SNAPS} snapshots old and the column held at `
+      + `${myPg()}ms — the ring is bounded on purpose, and the alternative to forgetting a `
+      + 'stamp is a map that grows for as long as a match runs');
+
+  // THE FIELD NAME, on both sides of the wire. The client cannot be imported here — see the
+  // lift below — so this is the one thing worth reading out of its text: a rename on one side
+  // and not the other is a ping column that silently goes back to measuring the proxy.
+  const netSrc = readFileSync('client/src/net.js', 'utf8');
+  okO(/st:\s*seenTick/.test(netSrc) && /if \(m\.tick > seenTick\) seenTick = m\.tick;/.test(netSrc)
+      && hostSrc.includes('samplePing(slot, id, m.st'),
+      'the client echoes the newest tick it has seen, under the name the host reads',
+      'net.js sends `st` monotonically — snapshots can arrive out of order, and echoing a tick '
+      + 'older than one already sent would read on the far side as a trip that got longer '
+      + 'while nothing changed');
 }
 
 // ─────────────────────────────── the row a player actually reads, lifted out of hud.js

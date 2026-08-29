@@ -229,13 +229,23 @@ const wss = new WebSocketServer({ server });
  * a close frame — a laptop lid, a dropped mobile connection — stops answering, and the
  * `pong` that never arrives leaves its last measurement standing rather than growing without
  * bound, which is why the reading below is a stored sample and not `now - sentAt`.
+ *
+ * WHAT THIS NUMBER IS NOT ANY MORE: the ping on the scoreboard. Behind Render's proxy the
+ * pong to an app's ping comes back from the edge and not from the browser — measured 1ms on
+ * sockets whose real round trip was 184ms to Oregon and 83ms to Singapore, clocked from the
+ * far end of the same wire. The column is measured by the host off an echoed snapshot tick
+ * instead; see samplePing in server/index.js. This stays because it is still the cheapest
+ * liveness probe there is, and because it is the reading a client sees before its first
+ * input arrives — one snapshot's worth, on a host that is not behind a proxy.
  */
 const PING_MS = 1000;
 
 wss.on('connection', (ws) => {
-  // ROUND TRIP, MEASURED HERE, because this is the only layer that can measure it: a
-  // WebSocket ping is answered by the peer's socket stack itself, with no page or script
-  // involved, so the number cannot be shaded by a client that would rather show a 5.
+  // ROUND TRIP TO WHATEVER ANSWERS CONTROL FRAMES — the browser on a direct connection, the
+  // proxy in front of us on a hosted one. A WebSocket ping is answered by a socket stack and
+  // never by a page, so the number cannot be shaded by a client that would rather show a 5;
+  // it can, and on Render does, describe a hop that stops well short of the player. The note
+  // on PING_MS above says what that cost and what measures the column now.
   //
   // Smoothed the same way client/src/net.js smooths its own, and with the same coefficient:
   // one retransmission on a mobile connection should move a scoreboard column by a few

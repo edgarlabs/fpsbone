@@ -61,6 +61,69 @@ const MAX_CATCHUP = 8;
 const NO_RANKS = { careerOf: () => 0, badgesOf: () => ({}), setCareer: () => {} };
 
 /**
+ * How many snapshot send times a room remembers, for the ping column. In snapshots, not
+ * milliseconds: the ring only has to outlive one round trip, and sixty of them is three
+ * seconds at SNAPSHOT_HZ — longer than any round trip a playable game has. A client whose
+ * echo arrives later than that gets no sample, which is the right answer for a connection
+ * that far gone.
+ */
+const PING_RING = 60;
+
+/**
+ * Smallest gap between two ping samples for one player, in ms. Inputs arrive at frame rate,
+ * so without this the column would be an average of sixty readings a second — a number that
+ * chases every frame hitch on the client instead of the connection underneath it.
+ */
+const PING_SAMPLE_MS = 250;
+
+/**
+ * ROUND TRIP, TIMED BY THE SERVER, off a tick number the client echoes back.
+ *
+ * `ws.ping()` looks like the tool for this and is the wrong one behind a reverse proxy. On
+ * the Render deploy the app's own control frames are answered by Render's edge rather than
+ * by the browser: serve.js measured 1ms on sockets whose real round trip, clocked from the
+ * far end of the same wire, was 184ms to Oregon and 83ms to Singapore. Every human on the
+ * scoreboard wore a ping no human has, while the bots beside them wobbled around a
+ * believable 20-60 — the exact inversion of what the seeded bot ping is for.
+ *
+ * So this measures the path the GAME takes, which is the only path anybody cares about: the
+ * server stamps when a snapshot left, the client echoes the newest tick it has seen on its
+ * next input, and the difference is a round trip through everything in the middle, edge
+ * included.
+ *
+ * A CLIENT CANNOT TALK ITS PING DOWN WITH THIS. Both ends of the subtraction are read off a
+ * clock only the server holds; the one thing a client chooses is WHICH tick it echoes, and
+ * every choice available to it is worse for itself — an older tick reads as a longer trip,
+ * and a tick it has not been sent is not in the ring and reads as nothing at all. There is
+ * no edit that makes the gap smaller, which is the property that made ws.ping() attractive
+ * and is kept here without it.
+ *
+ * It reads a few milliseconds above the wire, because the echo waits for the client's next
+ * input send. That is the same bias client/src/net.js documents on its own reading, and for
+ * a scoreboard it is the better number: it is the lag the player is actually playing with.
+ *
+ * `now` is the HOST'S clock and not `Date.now()`, for the same reason the simulation runs on
+ * one: a wall clock steps when NTP corrects it, and a step backwards through a subtraction
+ * like this one is a negative round trip. It also means the suite can drive this at whatever
+ * speed it likes, which is the only way to assert a latency without waiting for one.
+ */
+function samplePing(slot, id, tick, now) {
+  if (!Number.isFinite(tick)) return;
+  const left = slot.sentAt.get(tick);
+  if (left === undefined) return; // out of the ring, or a tick this server never sent
+  const p = slot.room.players.get(id);
+  if (!p) return;
+  if (p.pingAt && now - p.pingAt < PING_SAMPLE_MS) return;
+  const sample = now - left;
+  // Smoothed the way the client smooths its own reading, with the same coefficient: one
+  // retransmission on a mobile connection should move a column by a few milliseconds rather
+  // than spike it to 400 for a second. The first sample stands alone — there is nothing to
+  // average it against, and starting from 0 would spend a second climbing to the truth.
+  p.ping = p.pingAt ? p.ping * 0.8 + sample * 0.2 : sample;
+  p.pingAt = now;
+}
+
+/**
  * Build a host. Nothing starts on its own — the caller owns the loop and calls `advance()`.
  *
  * @param {object}   opts
@@ -88,8 +151,12 @@ export function createHost({ nowNs, ranks = NO_RANKS, log = () => {} }) {
     // not 0 so an empty room's first push is still a push: a Room starts at rev 0, and a
     // sentinel that matched it would mean the first client to join a fresh room learned the
     // roster only when the second one did.
-    rooms.set(id, { room, clients: new Map(), rosterSent: -1 });
+    rooms.set(id, { room, clients: new Map(), rosterSent: -1, sentAt: new Map() });
   }
+
+  /** The host clock in whole milliseconds. Ping arithmetic only — the simulation keeps
+   *  using the BigInt nanoseconds, where a rounded millisecond would accumulate drift. */
+  const msNow = () => Number(nowNs() / 1000000n);
 
   const AVAILABLE = [...rooms.keys()];
   const pending = MODE_IDS.filter((id) => !rooms.has(id));
@@ -192,17 +259,28 @@ export function createHost({ nowNs, ranks = NO_RANKS, log = () => {} }) {
     }
 
     const msg = slot.room.snapshotBase();
+    // WHEN THIS TICK LEFT, so that a client echoing the tick number back turns into a round
+    // trip. One entry per snapshot for the whole room, not per client: the broadcast below
+    // hands every client the same bytes at the same instant. See samplePing.
+    slot.sentAt.set(msg.tick, msNow());
+    if (slot.sentAt.size > PING_RING) slot.sentAt.delete(slot.sentAt.keys().next().value);
     const ev = slot.room.drainEvents();
     if (ev.length) msg.ev = ev;
 
     for (const [id, client] of slot.clients) {
       if (!client.isOpen()) continue;
       const p = slot.room.players.get(id);
-      // The transport's measurement, onto the body, for the NEXT snapshot rather than this
-      // one — `snapshotBase` above has already been built. That one-snapshot lag is 50ms on
-      // a number that moves over seconds, and the alternative is walking every client twice
-      // per broadcast to collect pings before building the base that everyone shares.
-      if (p) p.ping = client.rtt?.() ?? 0;
+      // The transport's measurement — used only until this client's first echo lands, and
+      // then never again. A transport measures the hop it owns, which behind a reverse proxy
+      // is not the hop to the player; samplePing explains what that cost and what replaced
+      // it. A transport with no `rtt()` at all leaves the field at 0 until then, which the
+      // snapshot omits rather than sends.
+      //
+      // Onto the body, for the NEXT snapshot rather than this one — `snapshotBase` above has
+      // already been built. That one-snapshot lag is 50ms on a number that moves over
+      // seconds, and the alternative is walking every client twice per broadcast to collect
+      // pings before building the base that everyone shares.
+      if (p && !p.pingAt) p.ping = client.rtt?.() ?? 0;
 
       // Two per-recipient fields:
       //   ack  — newest input consumed from them; they replay everything after it.
@@ -364,7 +442,12 @@ export function createHost({ nowNs, ranks = NO_RANKS, log = () => {} }) {
       }
 
       if (id === null) return; // must say hello first
-      if (m.t === MSG.INPUT && Array.isArray(m.inputs)) slot.room.queueInput(id, m.inputs);
+      if (m.t === MSG.INPUT && Array.isArray(m.inputs)) {
+        slot.room.queueInput(id, m.inputs);
+        // The same message carries the newest tick this client has seen, which is what the
+        // scoreboard's ping column is measured from — see samplePing.
+        samplePing(slot, id, m.st, msNow());
+      }
       // INPUT is the only thing a seated client can send. There is deliberately no
       // message for the bot count any more: it is `slots - humans`, which is the server's
       // arithmetic and not a preference, so there is nothing for a client to ask for.
