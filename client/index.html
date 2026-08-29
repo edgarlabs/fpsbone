@@ -362,7 +362,13 @@
          box with a contained image is what keeps every badge the same HEIGHT, which is the
          same promise the plate over the head makes. */
       #board td.ins .rki {
-        display: inline-block; width: 30px; height: 16px; vertical-align: -3px;
+        /* 32x16 is not a taste: `contain` fits the image inside the box, so a box NARROWER than
+           the widest device's aspect would clamp that device by width and draw it shorter than
+           every other rank — the five-star General of the Army, specifically, which is the one
+           rank that must not come out smaller. FIELD_W_MAX / FIELD_H is 1.92, so 16px of height
+           needs 30.8px of width before nothing clamps. Verify holds these two numbers against
+           the drawing's own bounds. */
+        display: inline-block; width: 32px; height: 16px; vertical-align: -3px;
         background: center / contain no-repeat;
       }
       #board tbody tr { box-shadow: inset 3px 0 0 transparent; }

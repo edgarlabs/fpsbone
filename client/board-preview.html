@@ -1,0 +1,105 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>board preview</title>
+<style>
+  html, body { margin: 0; height: 100%; }
+  /* Something for the panel to be translucent OVER — the glass is most of the redesign and a
+     white page behind it proves nothing. Roughly the arena's palette. */
+  body {
+    background:
+      radial-gradient(900px 600px at 22% 18%, #cfe0ef 0%, rgba(207,224,239,0) 60%),
+      radial-gradient(700px 500px at 82% 78%, #e6d9c8 0%, rgba(230,217,200,0) 60%),
+      repeating-linear-gradient(115deg, #b9c6d3 0 42px, #aebcca 42px 84px),
+      #b3c1cf;
+  }
+</style>
+<div id="board"><div id="board-head"><div id="board-cap">scores</div>
+<div id="board-tally"></div></div>
+<div class="board-body"><table><thead><tr>
+<th class="pl">#</th><th class="ins"></th><th class="who">player</th><th class="bgc">badge</th>
+<th class="num">K</th><th class="num">D</th><th class="pgh">ping</th>
+</tr></thead><tbody id="board-rows"></tbody></table></div></div>
+
+<script type="module">
+// The real board, lifted out of hud.js the same way verify.mjs lifts it, running against the
+// real insignia.js in a real browser. Nothing here re-implements a row — the point is to LOOK
+// at the markup that ships, with the stylesheet that ships.
+import { insigniaPng } from './src/insignia.js';
+import { TIERS } from '../shared/ranks.js';
+import { pingGrade } from '../shared/regions.js';
+import { TEAM_NAMES } from '../shared/modes.js';
+import { TRACK_KEYS, tierName, labelOf } from '../shared/badges.js';
+
+// The stylesheet, straight out of index.html so the preview cannot drift from the game.
+const idx = await (await fetch('./index.html')).text();
+const css = [...idx.matchAll(/<style>([\s\S]*?)<\/style>/g)].map((m) => m[1]).join('\n');
+const st = document.createElement('style');
+st.textContent = css;
+document.head.appendChild(st);
+
+const src = await (await fetch('./src/hud.js')).text();
+const braced = (s, from) => {
+  let d = 0;
+  for (let i = from; i < s.length; i++) {
+    if (s[i] === '{') d++;
+    else if (s[i] === '}' && --d === 0) return s.slice(from, i + 1);
+  }
+  return null;
+};
+const whole = (name) => {
+  const at = src.indexOf(`function ${name}(`);
+  return src.slice(at, src.indexOf('{', at)) + braced(src, src.indexOf('{', at));
+};
+const escSrc = /\r?\nconst esc = ([\s\S]*?);\r?\n/.exec(src)[1];
+const barsSrc = /\nconst SIGNAL_BARS = (\{[^}]*\});/.exec(src)[1];
+const sig = /\n {4}scoreboard\(([^)]*)\) \{/.exec(src);
+const boardSrc = braced(src, sig.index + sig[0].length - 1);
+const ROT = Number(/\n\s*const BADGE_ROT_MS = (\d+);/.exec(src)[1]);
+
+const make = new Function('els', 'TIERS', 'pingGrade', 'TRACK_KEYS', 'tierName', 'labelOf',
+  'BADGE_ROT_MS', 'TEAM_NAMES', 'insigniaPng', 'document',
+  `const esc = ${escSrc};\n${whole('badgeSlot')}\n`
+  + `const SIGNAL_BARS = ${barsSrc};\n`
+  + `const insHave = new Set();\nlet insSheet = null;\n${whole('insigniaCell')}\n`
+  + `let boardHtml = '';\nlet boardTally = '';\n`
+  + `return ({ scoreboard(${sig[1]}) ${boardSrc} }).scoreboard;`);
+
+const els = {
+  board: document.getElementById('board'),
+  boardCap: document.getElementById('board-cap'),
+  boardTally: document.getElementById('board-tally'),
+  boardRows: document.getElementById('board-rows'),
+};
+const board = make(els, TIERS, pingGrade, TRACK_KEYS, tierName, labelOf, ROT,
+                   TEAM_NAMES, insigniaPng, document);
+
+const team = new URL(location.href).searchParams.has('teams');
+// A room worth looking at: the top of the ladder, the bottom of it, a Private with no device,
+// bots, a long name that has to ellipsis, and one of every ping grade.
+const snap = [
+  { id: 1, n: 'Vandal', k: 24, d: 9, rk: 20, pg: 31, tm: 1 },
+  { id: 2, n: 'you', k: 21, d: 11, rk: 13, pg: 84, tm: 2 },
+  { id: 3, n: 'Kestrel_the_Unyielding_Longname', k: 19, d: 12, rk: 9, pg: 148, tm: 1 },
+  { id: 4, n: 'BOT Ivy', k: 15, d: 14, rk: 6, pg: 212, tm: 2 },
+  { id: 5, n: 'Marlowe', k: 12, d: 15, rk: 4, pg: 47, tm: 1 },
+  { id: 6, n: 'BOT Rook', k: 9, d: 16, rk: 3, pg: 39, tm: 2 },
+  { id: 7, n: 'Halloran', k: 6, d: 17, rk: 1, pg: 320, tm: 1 },
+  { id: 8, n: 'freshmeat', k: 0, d: 21, tm: 2 },
+];
+const roster = new Map(snap.map((p) => [p.id, {
+  i: p.id, n: p.n, rk: p.rk,
+  bg: p.id === 1 ? { hs: 5, rifle: 4, knife: 2 }
+    : p.id === 2 ? { sniper: 4, rifle: 2 }
+    : p.id === 3 ? { rifle: 3 }
+    : p.id === 4 ? { knife: 2 }
+    : p.id === 5 ? { smg: 1 }
+    : p.id === 7 ? { grenade: 2 } : undefined,
+}]));
+// In a FFA the server still sends `tm`, and it is 0 — there are no sides to draw, so the row
+// must carry no team edge and no coloured name. Zeroing it here is what makes this preview a
+// picture of deathmatch rather than of tdm with the wrong caption.
+if (!team) for (const p of snap) p.tm = 0;
+board(0, true, snap, roster, 2, team ? 'team deathmatch' : 'deathmatch',
+      team ? [61, 47] : null);
+document.title = 'ready';
+</script>

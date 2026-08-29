@@ -5999,6 +5999,7 @@ driveJ('the plate devices', () => {
 // canvas as a PNG. So the checks here are about the SHAPE of that arrangement: that the drawing
 // exists in exactly one file, and that both consumers reach for it rather than for a copy.
 {
+  const idxJ0 = readFileSync('client/index.html', 'utf8');
   const drawn = (src) => /function (stackTex|rowTex)\(/.test(src) || /const PINS = \{/.test(src);
   okJ(drawn(insJ) && !drawn(rdJ) && !drawn(hudJ),
       'the rank device is drawn in exactly one file, and neither consumer holds a copy of it',
@@ -6017,6 +6018,23 @@ driveJ('the plate devices', () => {
   const bareIns = insJ
     .replace(/\/\*[\s\S]*?\*\//g, '')
     .replace(/(^|[^:])\/\/[^\n]*/gm, '$1');
+  // THE BOX THE DEVICE LANDS IN, against the bounds of the drawing itself. `contain` fits the
+  // image inside the box without cropping it, which means a box narrower than the widest
+  // device's aspect clamps that device by WIDTH and draws it shorter than every other rank —
+  // and the rank it would shrink is the five-star General of the Army, the one that must not
+  // come out smaller than a corporal's. One height for every badge is the promise the plate
+  // makes and the reason fieldWidth has a ceiling; this is the same promise in a table cell.
+  const boxM = /#board td\.ins \.rki \{[\s\S]*?width: (\d+)px; height: (\d+)px;/.exec(idxJ0);
+  const boxAspect = boxM ? Number(boxM[1]) / Number(boxM[2]) : NaN;
+  const widest = PLATE.W_MAX / PLATE.H;
+  okJ(!!boxM && boxAspect >= widest,
+      'the scoreboard gutter is wide enough that no rank is clamped, so one height means one height',
+      boxM ? `${boxM[1]}x${boxM[2]}px = ${boxAspect.toFixed(2)} against a widest device of `
+        + `FIELD_W_MAX/FIELD_H = ${widest.toFixed(2)} — the two numbers in the stylesheet are `
+        + 'held against the drawing\u2019s own bounds, so widening a device without widening the '
+        + 'cell fails here rather than silently shrinking a general'
+        : 'no match — the .rki box was reshaped, so nothing about its aspect is measured');
+
   okJ(!/\bTHREE\b/.test(bareIns) && !/import .* from 'three'/.test(insJ),
       'the drawing knows nothing about three.js, so nothing about it is renderer-shaped',
       'plateTexOf in render.js is where a canvas becomes a texture; the day this file needs a '
