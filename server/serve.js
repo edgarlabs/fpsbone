@@ -109,6 +109,9 @@ const host = createHost({
   region: REGION,
   log: (line) => console.log(line),
 });
+let rateLimitedTotal = 0;
+let handshakeTimeoutTotal = 0;
+let socketAcceptedTotal = 0;
 
 /**
  * Resolve a request path to a file inside WEB_ROOT, or null.
@@ -191,6 +194,37 @@ async function serveStatic(req, res) {
     return;
   }
 
+  /** Identity-free operational truth for deciding when the free instance is at its limit. */
+  if (req.url === '/status') {
+    const memory = process.memoryUsage();
+    const mb = (bytes) => Math.round(bytes / 1048576 * 10) / 10;
+    res.writeHead(200, {
+      ...CORS,
+      'content-type': 'application/json; charset=utf-8',
+      'cache-control': 'no-store',
+    });
+    res.end(JSON.stringify({
+      region: REGION,
+      population: host.population(),
+      performance: host.metrics(),
+      process: {
+        uptimeSec: Math.round(process.uptime() * 10) / 10,
+        rssMb: mb(memory.rss),
+        heapUsedMb: mb(memory.heapUsed),
+        heapTotalMb: mb(memory.heapTotal),
+        externalMb: mb(memory.external),
+      },
+      transport: {
+        openSockets: wss.clients.size,
+        acceptedTotal: socketAcceptedTotal,
+        rateLimitedTotal,
+        handshakeTimeoutTotal,
+      },
+      t: Date.now(),
+    }));
+    return;
+  }
+
   const abs = resolveFile(req.url ?? '/');
   if (!abs) {
     res.writeHead(403).end('forbidden');
@@ -268,15 +302,18 @@ function allowAttempt(ip, now = Date.now()) {
 
 wss.on('connection', (ws, req) => {
   if (!allowAttempt(remoteIp(req))) {
+    rateLimitedTotal++;
     ws.send(encode({
       t: MSG.REJECT,
       reason: REJECT.RATE_LIMITED,
       lob: host.occupancy(),
+      pop: host.population(),
       cap: C.REGION_HUMAN_CAP,
     }));
     ws.close(1013, REJECT.RATE_LIMITED);
     return;
   }
+  socketAcceptedTotal++;
 
   // An unpredictable token can only be echoed after this player's JavaScript receives it.
   // That keeps both ends of the duration on this process without trusting a client-supplied
@@ -308,7 +345,10 @@ wss.on('connection', (ws, req) => {
   });
 
   const handshake = setTimeout(() => {
-    if (!conn.seated && ws.readyState === ws.OPEN) ws.close(4001, 'handshake_timeout');
+    if (!conn.seated && ws.readyState === ws.OPEN) {
+      handshakeTimeoutTotal++;
+      ws.close(4001, 'handshake_timeout');
+    }
   }, HANDSHAKE_MS);
 
   let faulted = false;

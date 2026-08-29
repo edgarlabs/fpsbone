@@ -414,6 +414,7 @@ net.on('reject', (m) => {
 // accurate on its first paint, and then as its own message whenever anyone joins or
 // leaves any room. Same shape both times, so one handler serves both.
 net.on('lobby', (rooms) => menu.setLobby(rooms));
+net.on('population', (population) => menu.setPopulation(population));
 
 net.on('welcome', (m) => {
   selfId = m.id;

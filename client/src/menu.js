@@ -77,6 +77,8 @@ export function createMenu(settings, cbs) {
    * absent count is the truth. See `setLobby`.
    */
   let lobby = {};
+  /** Rich, identity-free room counts: connected people, reserved seats, bots and bodies. */
+  let population = { rooms: {} };
   /**
    * The servers this page can offer and their measured pings, as last reported by main.js.
    *
@@ -216,7 +218,8 @@ export function createMenu(settings, cbs) {
         const m = MODES[id];
         const on = settings.mode === id;
         const live = available.has(id);
-        const here = lobby[id];
+        const roomPop = population.rooms?.[id];
+        const here = Number.isFinite(roomPop?.humans) ? roomPop.humans : lobby[id];
         // The menu prevents the ordinary over-capacity click; the server repeats this gate
         // authoritatively during HELLO to close the race where two clients saw one seat.
         //
@@ -233,7 +236,20 @@ export function createMenu(settings, cbs) {
         // full when in fact it is nearly empty, which is the opposite of what the number
         // is for.
         const count = live && here !== undefined ? `<u>${here}/${m.slots}</u>` : '';
-        const blurb = !live ? 'not available yet' : full ? 'lobby full — wait for a slot' : m.blurb;
+        let blurb = !live ? 'not available yet' : full ? 'lobby full — wait for a slot' : m.blurb;
+        if (live && roomPop) {
+          const players = roomPop.connected ?? 0;
+          const bots = roomPop.bots ?? 0;
+          const reserved = roomPop.reserved ?? 0;
+          if (roomPop.state === 'dormant') {
+            blurb = `empty · join to start with ${Math.max(0, m.slots - 1)} bots`;
+          } else if (full) {
+            blurb = `${players} players${reserved ? ` · ${reserved} reconnecting` : ''} · full`;
+          } else {
+            blurb = `${players} player${players === 1 ? '' : 's'} · ${bots} bot${bots === 1 ? '' : 's'}`
+              + `${reserved ? ` · ${reserved} reconnecting` : ''}`;
+          }
+        }
         card.innerHTML = `<b>${m.label}${count}</b><i>${blurb}</i>`;
         if (live && !on && !full) {
           card.addEventListener('click', () => {
@@ -550,6 +566,12 @@ export function createMenu(settings, cbs) {
     setLobby(rooms) {
       if (!rooms || typeof rooms !== 'object') return;
       lobby = rooms;
+      renderModes();
+    },
+    /** Detailed counts share the server's exact admission/backfill calculation. */
+    setPopulation(next) {
+      if (!next || typeof next !== 'object') return;
+      population = next;
       renderModes();
     },
     /** Reflect the mode the server actually granted, which may not be the one

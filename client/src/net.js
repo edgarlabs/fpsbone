@@ -28,7 +28,9 @@ export function createNet({
    *  arrive on a join, a drop or a promotion, so they are not in the twenty-a-second
    *  snapshot. The scoreboard reads both — this for who somebody is, the snapshot for how
    *  they are doing and what their ping is right now. */
-  const handlers = { welcome: [], reject: [], snapshot: [], status: [], lobby: [], roster: [] };
+  const handlers = {
+    welcome: [], reject: [], snapshot: [], status: [], lobby: [], population: [], roster: [],
+  };
   const emit = (k, v) => handlers[k].forEach((f) => f(v));
 
   // `lag` is a round-trip figure, so half of it is applied in each direction.
@@ -81,11 +83,13 @@ export function createNet({
     if (m.t === MSG.WELCOME) {
       if (typeof m.resume === 'string' && m.resume) resumeToken = m.resume;
       retryCount = 0;
+      if (m.pop && typeof m.pop === 'object') emit('population', m.pop);
       return emit('welcome', m);
     }
     if (m.t === MSG.REJECT) {
       rejected = true;
       if (m.lob && typeof m.lob === 'object') emit('lobby', m.lob);
+      if (m.pop && typeof m.pop === 'object') emit('population', m.pop);
       emit('reject', m);
       ws?.close?.(4003, m.reason ?? 'rejected');
       return;
@@ -93,7 +97,10 @@ export function createNet({
     // Occupancy. The initial figures ride on WELCOME instead, so a client greys out a full
     // lobby from its first frame rather than after the first join anywhere on the server;
     // both carry the same shape, and main.js points both at one handler.
-    if (m.t === MSG.LOBBY) return emit('lobby', m.rooms);
+    if (m.t === MSG.LOBBY) {
+      if (m.pop && typeof m.pop === 'object') emit('population', m.pop);
+      return emit('lobby', m.rooms);
+    }
     // Who is in this room and what they wear. Rare, unprompted, and REPLACES rather than
     // merges: the server sends the whole room every time, so a player who left is gone by
     // absence and there is no removal message to miss.

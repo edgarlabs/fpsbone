@@ -105,6 +105,26 @@ export function createHost({
   // into eleven while reclaiming the slot it was promised.
   const rooms = new Map();
   const reservations = new Map(); // opaque resume token -> reservation
+  const startedNs = nowNs();
+  const recentSteps = [];
+  const recentSnapshots = [];
+  const tickWorkMs = [];
+  const schedulerLateMs = [];
+  const totals = {
+    joins: 0,
+    resumes: 0,
+    disconnects: 0,
+    reservations: 0,
+    reservationExpirations: 0,
+    serverFull: 0,
+    modeFull: 0,
+    steps: 0,
+    snapshotFrames: 0,
+    snapshotMessages: 0,
+    outboundMessages: 0,
+    outboundBytesApprox: 0,
+    droppedCatchups: 0,
+  };
 
   for (const id of MODE_IDS) {
     if (!hasController(MODES[id].ctl)) continue;
@@ -190,6 +210,107 @@ export function createHost({
     return out;
   };
 
+  /** One identity-free source of truth for both the lobby and the operations endpoint. */
+  const populationState = () => {
+    const out = {
+      humans: 0,
+      connected: 0,
+      reserved: 0,
+      bots: 0,
+      bodies: 0,
+      capacity: C.REGION_HUMAN_CAP,
+      activeRooms: 0,
+      dormantRooms: 0,
+      reservedRooms: 0,
+      fullRooms: 0,
+      rooms: {},
+    };
+    for (const [modeId, slot] of rooms) {
+      const connected = slot.clients.size;
+      const reserved = slot.reserved.size;
+      const humans = connected + reserved;
+      const bots = slot.room.bots.size;
+      const capacity = slot.room.mode.slots;
+      const full = humans >= capacity;
+      const state = full ? 'full' : connected ? 'active' : reserved ? 'reserved' : 'dormant';
+      out.rooms[modeId] = {
+        humans, connected, reserved, bots,
+        bodies: slot.room.players.size,
+        capacity,
+        state,
+      };
+      out.humans += humans;
+      out.connected += connected;
+      out.reserved += reserved;
+      out.bots += bots;
+      out.bodies += slot.room.players.size;
+      if (connected) out.activeRooms++;
+      if (!humans) out.dormantRooms++;
+      if (!connected && reserved) out.reservedRooms++;
+      if (full) out.fullRooms++;
+    }
+    return out;
+  };
+
+  const keepSample = (list, value, limit = 600) => {
+    list.push(value);
+    if (list.length > limit) list.splice(0, list.length - limit);
+  };
+  const percentile = (list, p) => {
+    if (!list.length) return 0;
+    const sorted = [...list].sort((a, b) => a - b);
+    return r3(sorted[Math.min(sorted.length - 1, Math.floor((sorted.length - 1) * p))]);
+  };
+  const sampleSummary = (list) => ({
+    p50: percentile(list, 0.5),
+    p95: percentile(list, 0.95),
+    max: list.length ? r3(Math.max(...list)) : 0,
+  });
+  const recentRate = (list, nowMs, uptimeMs) => {
+    while (list.length && nowMs - list[0] > 10000) list.shift();
+    const span = Math.min(10000, Math.max(1000, uptimeMs));
+    return r3(list.length * 1000 / span);
+  };
+  const metricsState = () => {
+    const now = nowNs();
+    const uptimeMs = Math.max(0, Number(now - startedNs) / 1e6);
+    const nowMs = Number(now) / 1e6;
+    return {
+      uptimeSec: r3(uptimeMs / 1000),
+      simulation: {
+        steps: totals.steps,
+        stepHz: recentRate(recentSteps, nowMs, uptimeMs),
+        tickWorkMs: sampleSummary(tickWorkMs),
+        schedulerLateMs: sampleSummary(schedulerLateMs),
+        droppedCatchups: totals.droppedCatchups,
+      },
+      snapshots: {
+        frames: totals.snapshotFrames,
+        messages: totals.snapshotMessages,
+        hz: recentRate(recentSnapshots, nowMs, uptimeMs),
+      },
+      traffic: {
+        outboundMessages: totals.outboundMessages,
+        outboundBytesApprox: totals.outboundBytesApprox,
+      },
+      admissions: {
+        joins: totals.joins,
+        resumes: totals.resumes,
+        disconnects: totals.disconnects,
+        reservations: totals.reservations,
+        reservationExpirations: totals.reservationExpirations,
+        refused: { serverFull: totals.serverFull, modeFull: totals.modeFull },
+      },
+    };
+  };
+
+  function sendPayload(client, payload, snapshot = false) {
+    client.send(payload);
+    totals.outboundMessages++;
+    totals.outboundBytesApprox += payload.length;
+    if (snapshot) totals.snapshotMessages++;
+  }
+
   /**
    * Tell every connected client, in every room, how full the lobbies now are.
    *
@@ -199,10 +320,10 @@ export function createHost({
    * on a join or a drop, thousands of ticks apart, never per tick.
    */
   function pushLobby() {
-    const payload = encode({ t: MSG.LOBBY, rooms: lobbyState() });
+    const payload = encode({ t: MSG.LOBBY, rooms: lobbyState(), pop: populationState() });
     for (const slot of rooms.values()) {
       for (const client of slot.clients.values()) {
-        if (client.isOpen()) client.send(payload);
+        if (client.isOpen()) sendPayload(client, payload);
       }
     }
   }
@@ -230,7 +351,7 @@ export function createHost({
       slot.rosterSent = slot.room.rosterRev;
       const roster = encode({ t: MSG.ROSTER, players: slot.room.rosterState() });
       for (const client of slot.clients.values()) {
-        if (client.isOpen()) client.send(roster);
+        if (client.isOpen()) sendPayload(client, roster);
       }
     }
 
@@ -336,7 +457,7 @@ export function createHost({
           }
         : null;
 
-      client.send(encode(msg));
+      sendPayload(client, encode(msg), true);
     }
   }
 
@@ -368,7 +489,7 @@ export function createHost({
 
     const sendWelcome = (modeId) => {
       resumeToken = makeToken();
-      client.send(
+      sendPayload(client,
         encode({
           t: MSG.WELCOME,
           id,
@@ -388,17 +509,19 @@ export function createHost({
           // arriving as the first MSG.LOBBY push so that the mode picker is never
           // briefly showing every room as empty; pushes carry every later change.
           lob: lobbyState(),
+          pop: populationState(),
         }),
       );
     };
 
     const reject = (reason, modeId) => {
-      client.send(encode({
+      sendPayload(client, encode({
         t: MSG.REJECT,
         reason,
         mode: modeId,
         lob: lobbyState(),
         cap: C.REGION_HUMAN_CAP,
+        pop: populationState(),
       }));
       client.close?.(4003, reason);
     };
@@ -423,6 +546,7 @@ export function createHost({
           id = held.id;
           slot.clients.set(id, client);
           slot.rosterSent = -1; // the returning socket has not seen the current roster
+          totals.resumes++;
           sendWelcome(slot.room.modeId);
           log(`~ ${slot.room.players.get(id)?.name ?? '?'} (#${id}) resumed ${slot.room.modeId}`);
           return;
@@ -436,11 +560,13 @@ export function createHost({
         // handshakes serially, so checking and inserting in this same callback makes the
         // final seat atomic: two callers cannot both observe 19 and become player twenty.
         if (humansTotal() >= C.REGION_HUMAN_CAP) {
+          totals.serverFull++;
           reject(REJECT.SERVER_FULL, modeId);
           slot = null;
           return;
         }
         if (seatsOf(slot) >= slot.room.mode.slots) {
+          totals.modeFull++;
           reject(REJECT.MODE_FULL, modeId);
           slot = null;
           return;
@@ -456,15 +582,15 @@ export function createHost({
         // and the store must only ever change through setCareer's monotonic guard.
         slot.room.players.get(id).badges = ranks.badgesOf(account);
         slot.clients.set(id, client);
+        totals.joins++;
+        // Backfill immediately, so this player's WELCOME population and first snapshot
+        // already show the full room. After `add`, so bots spawn away from the human; after
+        // `clients.set`, because occupied human seats decide how many bots remain.
+        syncBots(slot);
         sendWelcome(modeId);
         log(
           `+ ${slot.room.players.get(id).name} (#${id}) -> ${modeId} — ${seatsOf(slot)} human seat(s)`,
         );
-        // Backfill immediately, so this player's first snapshot already has the room
-        // filled rather than showing an empty arena for a beat. Placed after `add`, so
-        // the spawn picker puts the bots away from them — and after `clients.set` above,
-        // because the count of humans is what decides how many bots there are.
-        syncBots(slot);
         // And tell everybody, this client included, that a seat just went.
         pushLobby();
         return;
@@ -481,9 +607,11 @@ export function createHost({
 
     const drop = ({ reserve = false } = {}) => {
       if (id === null) return;
+      totals.disconnects++;
       const name = slot.room.players.get(id)?.name ?? '?';
 
       if (reserve && resumeToken && C.RECONNECT_GRACE_MS > 0) {
+        totals.reservations++;
         const heldSlot = slot;
         const heldId = id;
         const heldToken = resumeToken;
@@ -512,6 +640,7 @@ export function createHost({
           reservations.delete(heldToken);
           heldSlot.reserved.delete(heldId);
           heldSlot.room.remove(heldId);
+          totals.reservationExpirations++;
           log(`- ${name} reconnect expired — ${seatsOf(heldSlot)} human seat(s) in room`);
           syncBots(heldSlot);
           if (seatsOf(heldSlot) === 0) resetRoom(heldSlot);
@@ -578,21 +707,33 @@ export function createHost({
 
     let steps = 0;
     let snapDue = false;
+    if (acc >= STEP_NS) keepSample(schedulerLateMs, Number(acc - STEP_NS) / 1e6);
     while (acc >= STEP_NS && steps < MAX_CATCHUP) {
       // No open audience means no work. A wholly empty room has already been reset; a room
       // containing only a ten-second reconnect reservation is frozen until it resumes or
       // expires, preserving the exact match state without burning bot AI on nobody.
+      const workStarted = nowNs();
       for (const slot of rooms.values()) if (slot.clients.size) slot.room.step();
+      keepSample(tickWorkMs, Math.max(0, Number(nowNs() - workStarted) / 1e6));
       hostTick++;
       acc -= STEP_NS;
       steps++;
+      totals.steps++;
+      keepSample(recentSteps, Number(nowNs()) / 1e6, 1200);
       if (hostTick % C.TICKS_PER_SNAPSHOT === 0) snapDue = true;
     }
     // Fell far enough behind that catching up tick-by-tick would spiral. Drop the
     // backlog instead and accept a discontinuity.
-    if (steps === MAX_CATCHUP && acc >= STEP_NS * BigInt(MAX_CATCHUP)) acc = 0n;
+    if (steps === MAX_CATCHUP && acc >= STEP_NS * BigInt(MAX_CATCHUP)) {
+      totals.droppedCatchups++;
+      acc = 0n;
+    }
 
-    if (snapDue) for (const slot of rooms.values()) broadcast(slot);
+    if (snapDue) {
+      totals.snapshotFrames++;
+      keepSample(recentSnapshots, Number(nowNs()) / 1e6, 240);
+      for (const slot of rooms.values()) broadcast(slot);
+    }
 
     const waitMs = Number((STEP_NS - acc) / 1000000n);
     return Math.max(0, Math.min(waitMs, 4));
@@ -605,6 +746,8 @@ export function createHost({
     advance,
     rooms,
     occupancy: lobbyState,
+    population: populationState,
+    metrics: metricsState,
     get humans() { return humansTotal(); },
   };
 }

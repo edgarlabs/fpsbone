@@ -7855,6 +7855,12 @@ function fakeClient(host, mode, name, hello = {}) {
       'counting the joiner themselves, and counting HUMANS rather than bodies',
       `${DEFAULT_MODE}=${a.welcome?.lob?.[DEFAULT_MODE]} with `
       + `${host.rooms.get(DEFAULT_MODE).room.players.size} bodies in the room`);
+  const firstPop = a.welcome?.pop;
+  okM(firstPop?.humans === 1 && firstPop.connected === 1 && firstPop.reserved === 0
+      && firstPop.bots === MODES[DEFAULT_MODE].slots - 1
+      && firstPop.rooms?.[DEFAULT_MODE]?.state === 'active',
+      'WELCOME also tells the full population truth: player, bots, reservations and room state',
+      `pop=${JSON.stringify(firstPop)}`);
   okM(a.welcome?.maxBots === undefined,
       'and no longer advertises a bot ceiling, for a slider that no longer exists');
 
@@ -7868,12 +7874,52 @@ function fakeClient(host, mode, name, hello = {}) {
   okM(push?.rooms?.tdm === 1 && push?.rooms?.[DEFAULT_MODE] === 1,
       'and names every room, so one handler can repaint every card',
       `rooms=${JSON.stringify(push?.rooms)}`);
+  okM(push?.pop?.rooms?.tdm?.connected === 1 && push.pop.rooms.tdm.bots === 9
+      && push.pop.bodies === 20 && push.pop.activeRooms === 2,
+      'the same push shows how many players and bots occupy each active match',
+      `pop=${JSON.stringify(push?.pop)}`);
 
   a.inbox.length = 0;
   b.conn.drop();
   const freed = a.inbox.find((m) => m.t === MSG.LOBBY);
   okM(freed?.rooms?.tdm === 0, "a leaver frees the slot on everybody else's menu too",
       `rooms=${JSON.stringify(freed?.rooms)}`);
+  okM(freed?.pop?.rooms?.tdm?.state === 'dormant'
+      && freed.pop.rooms.tdm.bots === 0 && freed.pop.rooms.tdm.bodies === 0,
+      'and reports that the emptied match is dormant rather than simulating ten invisible bots',
+      `tdm=${JSON.stringify(freed?.pop?.rooms?.tdm)}`);
+}
+
+{
+  // ── rolling host telemetry uses the same host that enforces admission and drives ticks
+  let now = 0n;
+  const host = createHost({ nowNs: () => now });
+  const a = fakeClient(host, DEFAULT_MODE, 'metrics-alpha');
+  now = BigInt(Math.round(1e9 / C.TICK_HZ)) * 6n;
+  host.advance();
+  const perf = host.metrics();
+  const pop = host.population();
+  okM(pop.humans === 1 && pop.bots === 9 && pop.bodies === 10
+      && pop.capacity === C.REGION_HUMAN_CAP && pop.dormantRooms === host.available.length - 1,
+      'the regional population roll-up agrees with its per-room figures',
+      `pop=${JSON.stringify(pop)}`);
+  okM(perf.admissions.joins === 1 && perf.simulation.steps > 0
+      && perf.snapshots.frames > 0 && perf.snapshots.messages > 0
+      && perf.traffic.outboundMessages >= perf.snapshots.messages,
+      'telemetry counts admissions, simulation work, snapshots and approximate outbound traffic',
+      `metrics=${JSON.stringify(perf)}`);
+  okM(Number.isFinite(perf.simulation.tickWorkMs.p95)
+      && Number.isFinite(perf.simulation.schedulerLateMs.p95),
+      'tick work and scheduler delay expose bounded rolling percentiles',
+      `work=${JSON.stringify(perf.simulation.tickWorkMs)}, late=${JSON.stringify(perf.simulation.schedulerLateMs)}`);
+  a.conn.drop();
+
+  const menuSrc = readFileSync('client/src/menu.js', 'utf8');
+  const netSrc = readFileSync('client/src/net.js', 'utf8');
+  okM(menuSrc.includes('setPopulation(next)') && menuSrc.includes('roomPop.bots')
+      && netSrc.includes("emit('population', m.pop)"),
+      'the browser receives the rich counts and renders bots beside human occupancy',
+      'the mode card no longer hides a bot-filled match behind a humans-only fraction');
 }
 
 {
@@ -8555,6 +8601,15 @@ const okN = (cond, label, detail = '') => {
   okN(ping.includes('...CORS'),
       'and sends CORS, without which every region but your own reads as unreachable',
       'the menu on one region has to ask all of them');
+  const statusAt = serveSrc.indexOf("=== '/status'");
+  const status = serveSrc.slice(statusAt, serveSrc.indexOf('const abs =', statusAt));
+  okN(status.includes("'cache-control': 'no-store'") && status.includes('host.population()')
+      && status.includes('host.metrics()') && status.includes('process.memoryUsage()'),
+      'an uncached status endpoint reports population, simulation traffic and process memory');
+  okN(status.includes('openSockets') && status.includes('rateLimitedTotal')
+      && status.includes('handshakeTimeoutTotal')
+      && !status.includes('players') && !status.includes('name') && !status.includes('account'),
+      'status includes transport pressure but no player identities or account data');
 
   // ── THE PRIVATE-NAME TRAP. This is the one that reached production: `fromService … property:
   // host` fills in the peer's PRIVATE NETWORK name — `fpsbone-sea`, no domain — and the spec has

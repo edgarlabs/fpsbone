@@ -36,15 +36,19 @@ const say = (ok, label, detail) => {
 function join(name, mode) {
   return new Promise((resolve, reject) => {
     const ws = new WebSocket(wsBase);
-    const rec = { ws, name, mode, id: null, bots: 0, bodies: 0, sawOther: 0, teams: null, lob: null };
+    const rec = {
+      ws, name, mode, id: null, bots: 0, bodies: 0, sawOther: 0, teams: null, lob: null, pop: null,
+    };
     const t = setTimeout(() => reject(new Error(`${name} never got a WELCOME from ${wsBase}`)), 20000);
     ws.on('error', reject);
     ws.on('open', () => ws.send(encode({ t: MSG.HELLO, name, cosmetics: {}, id: null, mode })));
     ws.on('message', (raw) => {
       const m = decode(raw);
       if (!m) return;
-      if (m.t === MSG.WELCOME) { clearTimeout(t); rec.id = m.id; rec.lob = m.lob?.rooms ?? null; resolve(rec); }
-      if (m.t === MSG.LOBBY) rec.lob = m.rooms ?? rec.lob;
+      if (m.t === MSG.WELCOME) {
+        clearTimeout(t); rec.id = m.id; rec.lob = m.lob ?? null; rec.pop = m.pop ?? null; resolve(rec);
+      }
+      if (m.t === MSG.LOBBY) { rec.lob = m.rooms ?? rec.lob; rec.pop = m.pop ?? rec.pop; }
       if (m.t === MSG.SNAPSHOT && Array.isArray(m.players)) {
         // The wire never labels a bot; the BOT name prefix is what the killfeed reads too.
         const isBot = (p) => typeof p.n === 'string' && p.n.startsWith('BOT ');
@@ -125,6 +129,16 @@ say(page.ok && html.includes('<canvas'), 'the client is served from the same ori
   const badHost = (table?.regions ?? []).filter((r) => !/^https?:\/\/[^/]+$/.test(String(r.host)));
   say(badHost.length === 0, 'and every address in it is a bare http(s) origin a socket can be built from',
       badHost.length ? badHost.map((r) => `${r.id}=${r.host}`).join(' ') : 'endpoints get appended to these');
+
+  const status = await fetch(`${base}/status`, { cache: 'no-store' });
+  const state = status.ok ? await status.json() : null;
+  say(status.ok && state?.population?.capacity === C.REGION_HUMAN_CAP
+      && state?.performance?.simulation && state?.process && state?.transport,
+      '/status exposes population, performance, memory and transport totals',
+      `${status.status} — ${state?.population?.humans ?? '?'} / ${state?.population?.capacity ?? '?'} humans`);
+  say((status.headers.get('cache-control') ?? '').includes('no-store')
+      && status.headers.get('access-control-allow-origin') === '*',
+      'and operational status is fresh and readable across regions without exposing identities');
 }
 
 for (const mode of live) {
@@ -145,11 +159,24 @@ for (const mode of live) {
   }
   say((a.lob?.[mode] ?? 0) >= 1 && Object.keys(a.lob ?? {}).length > 1,
       `${label} occupancy reported for every lobby`, JSON.stringify(a.lob));
+  const roomPop = a.pop?.rooms?.[mode];
+  say(roomPop?.humans === 2 && roomPop.connected === 2 && roomPop.bots === slots - 2
+      && roomPop.bodies === slots && roomPop.state === 'active',
+      `${label} population wire names humans, bots, bodies and active state`,
+      JSON.stringify(roomPop));
 
   a.ws.close();
   b.ws.close();
   await new Promise((r) => setTimeout(r, 900)); // let the room empty before the next mode
 }
+
+const finalStatus = await (await fetch(`${base}/status`, { cache: 'no-store' })).json();
+say(finalStatus.performance?.admissions?.joins >= live.length * 2
+    && finalStatus.population?.humans === 0
+    && finalStatus.population?.dormantRooms === live.length,
+    'status counted the probe joins and every emptied room returned to dormant',
+    `${finalStatus.performance?.admissions?.joins ?? '?'} joins, `
+    + `${finalStatus.population?.dormantRooms ?? '?'}/${live.length} dormant`);
 
 const pass = results.filter(Boolean).length;
 console.log(`\n${pass}/${results.length} passed across ${live.length} modes — ${live.join(', ')}`);
