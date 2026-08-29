@@ -831,6 +831,44 @@
       .market-note span { margin-top: 5px; color: var(--dim); font-size: 9px; }
       .market-note em { display: inline-block; margin-top: 9px; padding: 2px 5px; color: var(--dim); border: 1px solid var(--line); font-size: 8px; font-style: normal; letter-spacing: 1px; text-transform: uppercase; }
       .settings-screen { max-width: 900px; margin: 0 auto; }
+      #results {
+        --ink: #eef4f8; --dim: #8291a2; --panel: rgba(16, 25, 35, 0.96);
+        --line: rgba(190, 216, 230, 0.14); --self: #35c49b; --accent: #f05d49;
+        display: none; width: min(760px, 94vw); overflow: hidden; color: var(--ink);
+        border: 1px solid var(--line); background: rgba(9, 15, 22, .96);
+        box-shadow: 0 28px 90px rgba(0,0,0,.55); backdrop-filter: blur(18px);
+      }
+      #start.results { place-content: center; }
+      #start.results #menu { display: none; }
+      #start.results #results { display: block; }
+      .results-head { padding: 26px 30px 22px; border-bottom: 1px solid var(--line); text-align: center; }
+      .results-head .panel-kicker { display: block; }
+      #result-outcome { margin-top: 5px; color: #fff; font-size: 34px; letter-spacing: 5px; text-transform: uppercase; }
+      #result-mode { margin-top: 6px; color: var(--dim); font-size: 10px; letter-spacing: 1.6px; text-transform: uppercase; }
+      .result-stats { display: grid; grid-template-columns: repeat(4,1fr); gap: 1px; background: var(--line); }
+      .result-stats div { padding: 18px 10px; text-align: center; background: rgba(13,22,31,.98); }
+      .result-stats span, .result-stats b { display: block; }
+      .result-stats span { color: var(--dim); font-size: 8px; letter-spacing: 1.2px; text-transform: uppercase; }
+      .result-stats b { margin-top: 6px; color: #fff; font-size: 22px; }
+      .result-stats .xp b { color: var(--self); }
+      .result-progression { padding: 26px 30px; }
+      .result-progression > label { color: var(--dim); font-size: 9px; letter-spacing: 1.5px; text-transform: uppercase; }
+      .result-rank-flow { display: grid; grid-template-columns: 1fr 42px 1fr; align-items: center; gap: 16px; margin-top: 17px; }
+      .result-rank { display: grid; grid-template-columns: 64px 1fr; align-items: center; gap: 13px; min-width: 0; }
+      .result-rank.after { text-align: right; grid-template-columns: 1fr 64px; }
+      .result-rank img { width: 62px; height: 38px; object-fit: contain; }
+      .result-rank span, .result-rank b { display: block; }
+      .result-rank span { color: var(--dim); font-size: 8px; letter-spacing: 1px; text-transform: uppercase; }
+      .result-rank b { margin-top: 4px; overflow: hidden; color: #fff; font-size: 12px; text-overflow: ellipsis; white-space: nowrap; }
+      .rank-arrow { color: var(--self); text-align: center; font-size: 24px; }
+      .result-progress { height: 5px; margin-top: 22px; background: rgba(255,255,255,.08); }
+      #result-progress-fill { display: block; width: 0; height: 100%; background: var(--self); box-shadow: 0 0 13px rgba(53,196,155,.5); }
+      #result-progress-text { margin-top: 8px; color: var(--dim); font-size: 9px; text-align: center; }
+      .result-actions { display: flex; justify-content: flex-end; gap: 10px; padding: 18px 30px; border-top: 1px solid var(--line); background: rgba(5,10,16,.72); }
+      .result-actions button, #leave-match { padding: 11px 18px; cursor: pointer; font: inherit; font-size: 10px; font-weight: 700; letter-spacing: 1.4px; text-transform: uppercase; }
+      #result-lobby, #leave-match { color: var(--dim); border: 1px solid var(--line); background: transparent; }
+      #result-replay { color: #06130f; border: 1px solid var(--self); background: var(--self); }
+      #result-lobby:hover, #leave-match:hover { color: var(--ink); border-color: var(--ink); }
       .grp { margin-top: 22px; }
       .grp > label {
         display: block; font-size: 10px; letter-spacing: 1.6px; text-transform: uppercase;
@@ -968,9 +1006,11 @@
       .reset:hover { color: var(--ink); border-color: var(--ink); }
 
       .lobby-footer { min-height: 72px; display: flex; align-items: center; justify-content: flex-end; gap: 20px; padding: 12px 24px; border-top: 1px solid var(--line); background: rgba(5,10,16,.76); }
+      #leave-match[hidden] { display: none; }
       #play { min-width: 255px; padding: 12px 14px; display: flex; align-items: center; justify-content: space-between; cursor: pointer; font: inherit; font-weight: 700; letter-spacing: 1.8px; text-transform: uppercase; color: #06130f; background: var(--self); border: 0; }
       #play i { padding: 2px 5px; font-size: 8px; font-style: normal; color: rgba(6,19,15,.7); border: 1px solid rgba(6,19,15,.24); }
       #play:hover { filter: brightness(1.08); }
+      #play:disabled { cursor: wait; filter: saturate(.45); opacity: .72; }
       #start-status { margin: 0; font-size: 10px; text-align: right; }
       @media (max-width: 820px) {
         #start { padding: 0; }
@@ -986,6 +1026,13 @@
         .player-panel { min-height: 420px; }
         .lobby-footer { position: sticky; bottom: 0; padding: 10px 14px; }
         #play { min-width: 190px; }
+        #results { width: 100vw; min-height: 100vh; }
+        .result-rank-flow { grid-template-columns: 1fr; }
+        .rank-arrow { transform: rotate(90deg); }
+        .result-rank.after { grid-template-columns: 64px 1fr; text-align: left; }
+        .result-rank.after img { grid-row: 1; }
+        .result-stats { grid-template-columns: repeat(2,1fr); }
+        .result-actions { position: sticky; bottom: 0; padding: 12px 14px; }
       }
     </style>
   </head>
@@ -1330,6 +1377,39 @@
     </div>
 
     <div id="start" class="overlay">
+      <section id="results" role="dialog" aria-labelledby="result-outcome">
+        <header class="results-head">
+          <span class="panel-kicker">after action report</span>
+          <h1 id="result-outcome">MATCH COMPLETE</h1>
+          <p id="result-mode">DEATHMATCH</p>
+        </header>
+        <div class="result-stats">
+          <div><span>eliminations</span><b id="result-kills">0</b></div>
+          <div><span>deaths</span><b id="result-deaths">0</b></div>
+          <div><span>ratio</span><b id="result-ratio">0.00</b></div>
+          <div class="xp"><span>combat xp</span><b id="result-xp">+0</b></div>
+        </div>
+        <div class="result-progression">
+          <label>career progression</label>
+          <div class="result-rank-flow">
+            <div class="result-rank before">
+              <img id="result-rank-before-icon" alt="" />
+              <div><span>entered as</span><b id="result-rank-before">Private</b></div>
+            </div>
+            <div class="rank-arrow" aria-hidden="true">›</div>
+            <div class="result-rank after">
+              <div><span>current rank</span><b id="result-rank-after">Private</b></div>
+              <img id="result-rank-after-icon" alt="" />
+            </div>
+          </div>
+          <div class="result-progress"><i id="result-progress-fill"></i></div>
+          <p id="result-progress-text">0 XP earned</p>
+        </div>
+        <footer class="result-actions">
+          <button id="result-lobby" type="button">back to lobby</button>
+          <button id="result-replay" type="button">play again</button>
+        </footer>
+      </section>
       <div id="menu">
         <header class="lobby-topbar">
           <div class="lobby-brand"><b>fpsbone</b><span>regional combat network</span></div>
@@ -1573,6 +1653,7 @@
 
         <footer class="lobby-footer">
           <p id="start-status">connecting…</p>
+          <button id="leave-match" type="button" hidden>leave match</button>
           <button id="play" type="button"><span>join selected match</span><i>enter</i></button>
         </footer>
       </div>

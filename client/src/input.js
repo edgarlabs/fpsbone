@@ -515,6 +515,12 @@ export function createInput(canvas, settings) {
       kbLocked = await grabKeyboard();
       canvas.requestPointerLock?.();
     },
+    /** Release every browser-level capture before returning to lobby or results. */
+    release() {
+      try { document.exitPointerLock?.(); } catch { /* already released */ }
+      try { navigator.keyboard?.unlock?.()?.catch?.(() => {}); } catch { /* unsupported */ }
+      try { document.exitFullscreen?.()?.catch?.(() => {}); } catch { /* already windowed */ }
+    },
     setSens(mult) {
       sens = BASE_SENS * mult;
     },

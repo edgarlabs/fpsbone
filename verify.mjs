@@ -7940,6 +7940,34 @@ function fakeClient(host, mode, name, hello = {}) {
       && lobbyHtml.includes('id="lobby-region"') && menuSrc.includes('renderRegionSummary()'),
       'the first lobby paint includes authoritative population plus live region and ping context',
       'players should not need a second server event before seeing what they are joining');
+  okM((mainSrc.match(/net\.connect\(\)/g) ?? []).length === 1
+      && mainSrc.includes("if (lifecycle !== 'lobby') return;")
+      && mainSrc.includes("menu.setMatchState('joining')")
+      && !mainSrc.trimEnd().endsWith('net.connect();'),
+      'opening the homepage stays in the lobby until Join explicitly requests a seat',
+      'the only socket connect belongs to the guarded join lifecycle');
+  okM(mainSrc.includes('function leaveMatch()') && mainSrc.includes('net.disconnect()')
+      && mainSrc.includes('input.release()') && netSrc.includes("socket?.close?.(1000, 'left_match')"),
+      'Leave releases pointer lock and closes the match seat intentionally',
+      'a menu departure must not look like a dropped connection that reserves and reconnects');
+  okM(mainSrc.includes('function finishMatch(ev, players)')
+      && mainSrc.includes('careerAtJoin') && mainSrc.includes('XP_PER_ELIMINATION')
+      && menuSrc.includes('showResults(summary)') && menuSrc.includes('toNextRank(summary.careerAfter)')
+      && ['results', 'result-outcome', 'result-xp', 'result-lobby', 'result-replay', 'leave-match']
+        .every((id) => lobbyHtml.includes(`id="${id}"`)),
+      'match end opens a results screen with frozen in-match rank, earned combat XP and replay controls',
+      'career progress is revealed after combat instead of visibly ranking up during the firefight');
+  okM(menuSrc.includes('cbs.onMode?.(id)') && !menuSrc.includes('location.search = qs.toString()')
+      && netSrc.includes('mode: requestedMode') && netSrc.includes('setMode(id)'),
+      'choosing a room no longer reloads the page and the next HELLO carries that choice',
+      'mode selection must remain a lobby action until Join');
+  const regionsSrc = readFileSync('client/src/regions.js', 'utf8');
+  const serveSrc = readFileSync('server/serve.js', 'utf8');
+  okM(serveSrc.includes('avail: host.available')
+      && regionsSrc.includes('avail: Array.isArray(body?.avail) ? body.avail : null')
+      && mainSrc.includes('adoptLobbyPopulation(await res.json())'),
+      'the lightweight lobby probe carries room availability and population before any socket joins',
+      'the menu can describe full or unavailable rooms without spending a player seat');
 }
 
 {
@@ -8078,6 +8106,65 @@ function fakeClient(host, mode, name, hello = {}) {
       && statuses.at(-1) === 'rejected',
       'a capacity refusal reaches the UI and stops the reconnect loop',
       `reason=${refusals[0]?.reason}, statuses=${statuses.join(',')}`);
+}
+
+{
+  // ── explicit browser lifecycle: no socket before Join, selected mode in HELLO, no retry on Leave
+  const sockets = [];
+  const retries = [];
+  const statuses = [];
+  const openSocket = () => {
+    const sock = {
+      OPEN: 1,
+      readyState: 0,
+      sent: [],
+      closeArgs: null,
+      send: (payload) => sock.sent.push(decode(payload)),
+      close(...args) {
+        sock.closeArgs = args;
+        sock.readyState = 3;
+        sock.onclose?.({ code: args[0] });
+      },
+    };
+    sockets.push(sock);
+    return sock;
+  };
+  const net = createNet({
+    url: 'ws://phase-four.test',
+    identity: { id: 'phase-four-player', displayName: 'tester', cosmetics: {} },
+    mode: DEFAULT_MODE,
+    openSocket,
+    scheduleRetry: (fn, ms) => { retries.push({ fn, ms }); return fn; },
+    cancelRetry: () => {},
+  });
+  net.on('status', (s) => statuses.push(s));
+
+  okM(sockets.length === 0 && net.active === false,
+      'constructing the browser network layer does not consume a seat before Join');
+  net.setMode('sniper');
+  net.connect();
+  sockets[0].readyState = sockets[0].OPEN;
+  sockets[0].onopen?.({});
+  const hello = sockets[0].sent.find((m) => m.t === MSG.HELLO);
+  okM(hello?.mode === 'sniper' && net.active === true,
+      'Join sends the room selected in the lobby and marks the connection active',
+      `HELLO mode=${hello?.mode}`);
+
+  net.disconnect();
+  okM(sockets[0].closeArgs?.[0] === 1000 && sockets[0].closeArgs?.[1] === 'left_match'
+      && retries.length === 0 && net.active === false && statuses.at(-1) === 'idle',
+      'Leave closes normally, clears the connection intent and never schedules a reconnect',
+      `close=${JSON.stringify(sockets[0].closeArgs)}, retries=${retries.length}, statuses=${statuses.join(',')}`);
+
+  net.setMode('snow');
+  net.connect();
+  sockets[1].readyState = sockets[1].OPEN;
+  sockets[1].onopen?.({});
+  const replayHello = sockets[1].sent.find((m) => m.t === MSG.HELLO);
+  okM(replayHello?.mode === 'snow' && sockets.length === 2,
+      'the same page can Join again after Leave without carrying the old room or resume token',
+      `HELLO mode=${replayHello?.mode}`);
+  net.disconnect();
 }
 
 {

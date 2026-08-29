@@ -169,6 +169,7 @@ async function serveStatic(req, res) {
       lob,
       humans,
       cap: C.REGION_HUMAN_CAP,
+      avail: host.available,
       t: Date.now(),
     }));
     return;

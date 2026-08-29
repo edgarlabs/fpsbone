@@ -6,9 +6,8 @@
 //
 // The settings are split into four tabs the way CS2 splits its options — game,
 // controls, crosshair, audio — because one flat list of eighteen controls is a list
-// nobody reads. Everything applies live except the game mode: changing mode requires
-// a different room, rooms are chosen at handshake time, so that one control reloads
-// the page.
+// nobody reads. Everything applies live. A mode picked in the lobby becomes the next
+// handshake's room; Phase 4 does not create that handshake until Join is pressed.
 
 import { MODES, MODE_IDS } from '../../shared/modes.js';
 import { WEAPONS } from '../../shared/weapons.js';
@@ -66,6 +65,22 @@ export function createMenu(settings, cbs) {
     chOutline: $('ch-outline'),
     chCol: $('ch-col'),
     play: $('play'),
+    leave: $('leave-match'),
+    start: $('start'),
+    resultOutcome: $('result-outcome'),
+    resultMode: $('result-mode'),
+    resultKills: $('result-kills'),
+    resultDeaths: $('result-deaths'),
+    resultRatio: $('result-ratio'),
+    resultXp: $('result-xp'),
+    resultBeforeIcon: $('result-rank-before-icon'),
+    resultBefore: $('result-rank-before'),
+    resultAfterIcon: $('result-rank-after-icon'),
+    resultAfter: $('result-rank-after'),
+    resultProgressFill: $('result-progress-fill'),
+    resultProgressText: $('result-progress-text'),
+    resultLobby: $('result-lobby'),
+    resultReplay: $('result-replay'),
     lobbyRegion: $('lobby-region'),
     profileName: $('profile-name'),
     profileRankIcon: $('profile-rank-icon'),
@@ -82,14 +97,13 @@ export function createMenu(settings, cbs) {
   const panes = [...document.querySelectorAll('.pane')];
   const screens = [...document.querySelectorAll('.screen')];
 
-  /** Which modes the server can actually host. Until WELCOME lands we assume all
-   *  of them, so the menu is usable while still connecting; the first snapshot
-   *  after WELCOME corrects it. */
+  /** Which modes the server can actually host. Until the lightweight /ping probe or
+   *  WELCOME lands we assume all of them, so a temporarily unreachable lobby remains usable. */
   let available = new Set(MODE_IDS);
   /**
    * Humans per lobby, by mode id, as last reported by the server.
    *
-   * Empty until WELCOME, and a mode missing from it renders with no count rather than
+   * Empty until /ping or WELCOME, and a mode missing from it renders with no count rather than
    * with a zero — "0/10" for a room the server never mentioned would be a claim, and an
    * absent count is the truth. See `setLobby`.
    */
@@ -99,14 +113,15 @@ export function createMenu(settings, cbs) {
   /**
    * The servers this page can offer and their measured pings, as last reported by main.js.
    *
-   * Empty until /regions answers, which is deliberately not waited on: the socket is already
-   * opening against the stored region while this fills in. See `setRegions` / `setPings`.
+   * Empty until /regions answers, which is deliberately not waited on: the lobby can paint
+   * while these measurements fill in, and Join later opens the chosen match socket.
    */
   let regions = [];
   /** Which region the game socket is actually on, or null if something outranked the setting
    *  (a `?server=` override). Not read from `settings` because the setting is a request. */
   let activeRegion = null;
   let playerStats = { career: 0, kills: 0, deaths: 0 };
+  let matchState = 'lobby';
   /** The action waiting for a key, or null. */
   let arming = null;
 
@@ -270,7 +285,7 @@ export function createMenu(settings, cbs) {
         //
         // Your OWN lobby is exempt. It reads 10/10 precisely because you are one of the
         // ten, and greying out the room you are standing in would be nonsense.
-        const full = here !== undefined && here >= m.slots && !on;
+        const full = here !== undefined && here >= m.slots && !(matchState === 'joined' && on);
         const card = document.createElement('div');
         card.className = `card${on ? ' on' : ''}${live ? '' : ' dis'}${full ? ' full' : ''}`;
         // Not "coming soon" as decoration: the server registers controllers one at a
@@ -296,19 +311,34 @@ export function createMenu(settings, cbs) {
           }
         }
         card.innerHTML = `<b>${m.label}${count}</b><i>${blurb}</i>`;
-        if (live && !on && !full) {
+        if (live && !on && !full && matchState === 'lobby') {
           card.addEventListener('click', () => {
             settings.set({ mode: id });
-            // The room is picked during the handshake, so a new mode needs a new
-            // connection. Reloading is the honest way to get one.
-            const qs = new URLSearchParams(location.search);
-            qs.set('mode', id);
-            location.search = qs.toString();
+            renderModes();
+            renderWeapons();
+            cbs.onMode?.(id);
           });
         }
         return card;
       }),
     );
+
+    // Capacity is previewed here for a useful button; HELLO repeats the decision on the
+    // server because another player may take the last seat between this paint and the click.
+    if (matchState === 'lobby') {
+      const selected = MODES[settings.mode];
+      const roomPop = population.rooms?.[settings.mode];
+      const humans = Number.isFinite(roomPop?.humans) ? roomPop.humans : lobby[settings.mode];
+      const full = humans !== undefined && humans >= selected.slots;
+      const live = available.has(settings.mode);
+      const label = els.play.querySelector('span');
+      els.play.disabled = full || !live;
+      if (label) label.textContent = !live
+        ? 'mode unavailable'
+        : full
+          ? 'server full · try again later'
+          : 'join selected match';
+    }
   }
 
   /** The mode decides which weapons exist for you, so this list is derived from it
@@ -584,6 +614,18 @@ export function createMenu(settings, cbs) {
     e.stopPropagation();
     cbs.onPlay?.();
   });
+  els.leave.addEventListener('click', (e) => {
+    e.stopPropagation();
+    cbs.onLeave?.();
+  });
+  els.resultLobby.addEventListener('click', (e) => {
+    e.stopPropagation();
+    cbs.onResultLobby?.();
+  });
+  els.resultReplay.addEventListener('click', (e) => {
+    e.stopPropagation();
+    cbs.onResultReplay?.();
+  });
 
   note(BIND_HELP);
   buildBinds();
@@ -594,11 +636,58 @@ export function createMenu(settings, cbs) {
   refreshAll();
 
   return {
+    /** Lobby, socket handshake, paused match, or results — reflected in footer controls. */
+    setMatchState(state) {
+      matchState = state;
+      const label = els.play.querySelector('span');
+      els.play.disabled = state === 'joining' || state === 'results';
+      if (label) label.textContent = state === 'joining'
+        ? 'joining match…'
+        : state === 'joined'
+          ? 'resume match'
+          : 'join selected match';
+      els.leave.hidden = state !== 'joined';
+      renderModes();
+    },
+    /** Paint one authoritative after-action report. One elimination is 100 combat XP. */
+    showResults(summary) {
+      const beforeTier = rankOf(summary.careerBefore);
+      const afterTier = rankOf(summary.careerAfter);
+      const before = TIERS[beforeTier];
+      const after = TIERS[afterTier];
+      const next = afterTier < MAX_TIER ? TIERS[afterTier + 1] : null;
+      const progress = next
+        ? (summary.careerAfter - after.at) / Math.max(1, next.at - after.at)
+        : 1;
+      els.resultOutcome.textContent = summary.outcome;
+      els.resultMode.textContent = summary.mode;
+      els.resultKills.textContent = String(summary.kills);
+      els.resultDeaths.textContent = String(summary.deaths);
+      els.resultRatio.textContent = summary.deaths
+        ? (summary.kills / summary.deaths).toFixed(2)
+        : summary.kills.toFixed(2);
+      els.resultXp.textContent = `+${summary.xp}`;
+      els.resultBeforeIcon.src = insigniaPng(beforeTier).url;
+      els.resultBeforeIcon.alt = before.name;
+      els.resultBefore.textContent = `${before.name} · ${before.abbr}`;
+      els.resultAfterIcon.src = insigniaPng(afterTier).url;
+      els.resultAfterIcon.alt = after.name;
+      els.resultAfter.textContent = `${after.name} · ${after.abbr}`;
+      els.resultProgressFill.style.width = `${Math.round(Math.max(0, Math.min(1, progress)) * 100)}%`;
+      els.resultProgressText.textContent = next
+        ? `${summary.xp} XP earned · ${toNextRank(summary.careerAfter) * 100} XP to ${next.name}`
+        : `${summary.xp} XP earned · maximum rank achieved`;
+      els.start.classList.add('results');
+      this.setMatchState('results');
+    },
+    hideResults() {
+      els.start.classList.remove('results');
+      showScreen('lobby');
+    },
     /**
      * The servers on offer, and which one this page's socket is actually on.
      *
-     * Called once, after /regions answers — not before the connection, which dials the stored
-     * region without waiting for anything. `active` is passed rather than read from `settings`
+     * Called once after /regions answers. `active` is passed rather than read from `settings`
      * because the setting is a REQUEST: a `?server=` override outranks it, and marking a card
      * the socket is not on would be the picker lying about the state it exists to show.
      */

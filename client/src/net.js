@@ -20,6 +20,7 @@ export function createNet({
   // this line is identical either way, prediction and lag compensation included.
   openSocket = (u) => new WebSocket(u),
 }) {
+  let requestedMode = mode;
   /** `lobby` carries how full every room is. Its own kind rather than a field on
    *  `snapshot` because it arrives on a join or a drop, not per tick, and the menu that
    *  wants it is on screen precisely when snapshots are not being drawn.
@@ -47,6 +48,7 @@ export function createNet({
   let retryTimer = null;
   let retryCount = 0;
   let rejected = false;
+  let wanted = false;
   let connectionSerial = 0;
 
   const sentAt = new Map(); // seq -> local send time
@@ -88,6 +90,7 @@ export function createNet({
     }
     if (m.t === MSG.REJECT) {
       rejected = true;
+      wanted = false;
       if (m.lob && typeof m.lob === 'object') emit('lobby', m.lob);
       if (m.pop && typeof m.pop === 'object') emit('population', m.pop);
       emit('reject', m);
@@ -163,7 +166,7 @@ export function createNet({
           // on trust, so a rank is a claim rather than a proof until that string comes
           // with a signature. Kills are counted server-side either way.
           id: identity.id,
-          mode,
+          mode: requestedMode,
           ...(resumeToken ? { resume: resumeToken } : {}),
         });
       };
@@ -172,6 +175,10 @@ export function createNet({
         open = false;
         if (rejected) {
           emit('status', 'rejected');
+          return;
+        }
+        if (!wanted) {
+          emit('status', 'idle');
           return;
         }
         emit('status', 'reconnecting');
@@ -198,12 +205,42 @@ export function createNet({
       handlers[kind].push(fn);
     },
     connect() {
+      if (wanted || open) return;
+      wanted = true;
       rejected = false;
       cancelRetry(retryTimer);
+      sentAt.clear();
+      rtt = 0;
+      srvMs = 0;
+      srvAt = 0;
       dial();
+    },
+    /** Begin the next seat request with the mode selected in the lobby. */
+    setMode(id) {
+      if (typeof id === 'string' && id) requestedMode = id;
+    },
+    /**
+     * An intentional departure. Invalidating the serial before closing makes the close
+     * callback a no-op locally, while code 1000 tells the host not to reserve the seat.
+     */
+    disconnect() {
+      wanted = false;
+      rejected = false;
+      cancelRetry(retryTimer);
+      retryTimer = null;
+      resumeToken = null;
+      open = false;
+      const socket = ws;
+      ws = null;
+      connectionSerial++;
+      try { socket?.close?.(1000, 'left_match'); } catch { /* already gone */ }
+      emit('status', 'idle');
     },
     get connected() {
       return open;
+    },
+    get active() {
+      return wanted;
     },
     get rtt() {
       return rtt;

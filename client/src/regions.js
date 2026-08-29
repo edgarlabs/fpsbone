@@ -134,6 +134,7 @@ export async function probeRegion(region, onProgress) {
     humans: Number.isFinite(body?.humans) ? body.humans : null,
     cap: Number.isFinite(body?.cap) ? body.cap : null,
     lob: body?.lob ?? null,
+    avail: Array.isArray(body?.avail) ? body.avail : null,
     state: 'ok',
     woke,
     grade: pingGrade(ms),

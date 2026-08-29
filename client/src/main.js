@@ -17,7 +17,7 @@ import * as C from '../../shared/constants.js';
 import { INPUT_REDUNDANCY, EV, REJECT } from '../../shared/protocol.js';
 import { eyeY } from '../../shared/movement.js';
 import { SPAWNS } from '../../shared/map.js';
-import { MODES, TEAM_NAMES, modeOf, CORPSE_MS } from '../../shared/modes.js';
+import { MODES, MODE_IDS, TEAM_NAMES, modeOf, CORPSE_MS } from '../../shared/modes.js';
 import { WEAPON_IDS, WEAPONS, idAt, indexOf, spreadMul, weaponAt } from '../../shared/weapons.js';
 import { TRACK_KEYS, badgeOf, levelOf, stepOf, tierOf } from '../../shared/badges.js';
 import { SPREE_MS, wingsOf } from '../../shared/spree.js';
@@ -91,7 +91,7 @@ const url =
  *  under the page and there is no `npm run dev` to check, so telling someone to do either
  *  would be advice for a situation they are not in. */
 const DOWN_MSG = useLocalHost
-  ? 'match ended — reload to start a new one'
+  ? 'match closed — return to the lobby and join again'
   : 'connection lost — reconnecting…';
 const UNREACHABLE_MSG = useLocalHost
   ? 'the in-page host failed to start — check the console'
@@ -126,7 +126,7 @@ const UNREACHABLE_MSG = useLocalHost
 const canvas = document.getElementById('game');
 const identity = getIdentity();
 /** What we asked for, kept because the server may seat us somewhere else. */
-const requestedMode = settings.mode;
+let requestedMode = settings.mode;
 
 const hud = createHud();
 const audio = createAudio();
@@ -183,6 +183,30 @@ let loadout = mode.loadout.map(indexOf);
 /** Latest `md` blob from the mode controller's `state()`, or null. */
 let match = null;
 let matchOver = false;
+/** The page is a lobby until Join creates a seat. Escape pauses; only Leave releases it. */
+let lifecycle = 'lobby';
+/** Rank progress is frozen at entry and revealed in the after-action report. */
+let careerAtJoin = null;
+let currentCareer = 0;
+let finalMatchStats = { kills: 0, deaths: 0 };
+const XP_PER_ELIMINATION = 100;
+const PROFILE_CACHE_KEY = 'fpsbone.profile.v1';
+
+function cachedCareer() {
+  try {
+    const rec = JSON.parse(localStorage.getItem(PROFILE_CACHE_KEY) ?? 'null');
+    return rec?.id === identity.id && Number.isFinite(rec.career) ? Math.max(0, Math.floor(rec.career)) : 0;
+  } catch {
+    return 0;
+  }
+}
+
+function cacheCareer(career) {
+  currentCareer = Math.max(0, Math.floor(Number(career) || 0));
+  try { localStorage.setItem(PROFILE_CACHE_KEY, JSON.stringify({ id: identity.id, career: currentCareer })); } catch { /* storage optional */ }
+}
+
+cacheCareer(cachedCareer());
 
 // ── badges
 /**
@@ -324,8 +348,14 @@ const menu = createMenu(settings, {
   // FOV needs no callback: the frame loop reads settings.fov through
   // viewmodel.fovFor every frame, so the slider is live even mid-match.
   onFov: null,
-  onPlay: startPlaying,
+  onMode: selectLobbyMode,
+  onPlay: joinOrResume,
+  onLeave: leaveMatch,
+  onResultLobby: returnToLobby,
+  onResultReplay: replayMatch,
 });
+menu.setPlayerStats({ career: currentCareer, kills: 0, deaths: 0 });
+menu.setMatchState('lobby');
 
 /**
  * Fill the server picker: ask this origin which regions exist, then time each one.
@@ -337,6 +367,7 @@ const menu = createMenu(settings, {
  * needs no message: there is nothing for a player to do about it and nothing to tell them.
  */
 let activeGameRegion;
+let lobbyRegionId = null;
 loadRegions()
   .then((list) => {
     // Refresh a moved hostname for the NEXT connection without putting an HTTP lookup in
@@ -357,10 +388,90 @@ loadRegions()
         ? (list.find((r) => r.mine)?.id ?? HERE)
         : settings.region;
     const active = activeGameRegion === undefined ? requested : activeGameRegion;
+    lobbyRegionId = active;
     menu.setRegions(list, active);
-    return probeAll(list, (results) => menu.setPings(results));
+    return probeAll(list, (results) => {
+      menu.setPings(results);
+      const current = results.find((r) => r.id === lobbyRegionId) ?? results.find((r) => r.mine);
+      if (current?.lob) adoptLobbyPopulation(current);
+    });
   })
   .catch(() => {});
+
+/** Turn the lightweight /ping response into the richer shape the Phase 3 cards already read. */
+function adoptLobbyPopulation(source) {
+  if (!source?.lob || typeof source.lob !== 'object') return;
+  // `/ping` names the live controllers explicitly. Older servers did not, but their lobby
+  // object still only contained rooms they could host, so its keys are the safe fallback.
+  const hosted = new Set(Array.isArray(source.avail) ? source.avail : Object.keys(source.lob));
+  const rooms = {};
+  let bots = 0;
+  let bodies = 0;
+  let activeRooms = 0;
+  let dormantRooms = 0;
+  for (const id of MODE_IDS) {
+    if (!hosted.has(id)) continue;
+    const capacity = MODES[id].slots;
+    const humans = Math.max(0, Math.floor(Number(source.lob[id]) || 0));
+    const roomBots = humans ? Math.max(0, capacity - humans) : 0;
+    const state = humans >= capacity ? 'full' : humans ? 'active' : 'dormant';
+    rooms[id] = {
+      humans, connected: humans, reserved: 0, bots: roomBots,
+      bodies: humans + roomBots, capacity, state,
+    };
+    bots += roomBots;
+    bodies += humans + roomBots;
+    if (humans) activeRooms++;
+    else dormantRooms++;
+  }
+  menu.setLobby(source.lob);
+  menu.setPopulation({
+    humans: Math.max(0, Math.floor(Number(source.humans) || 0)),
+    connected: Math.max(0, Math.floor(Number(source.humans) || 0)),
+    reserved: 0,
+    bots,
+    bodies,
+    capacity: Number.isFinite(source.cap) ? source.cap : C.REGION_HUMAN_CAP,
+    activeRooms,
+    dormantRooms,
+    reservedRooms: 0,
+    fullRooms: Object.values(rooms).filter((r) => r.state === 'full').length,
+    rooms,
+  });
+  menu.setAvailable([...hosted]);
+}
+
+function httpOrigin(socketUrl) {
+  try {
+    const u = new URL(socketUrl, location.href);
+    u.protocol = u.protocol === 'wss:' ? 'https:' : 'http:';
+    return u.origin;
+  } catch {
+    return null;
+  }
+}
+
+const lobbyOrigin = useLocalHost
+  ? null
+  : explicitServer
+    ? httpOrigin(explicitServer)
+    : regionUrl
+      ? httpOrigin(regionUrl)
+      : bakedUrl
+        ? httpOrigin(bakedUrl)
+        : (httpOrigin(url) ?? location.origin);
+
+async function pollLobby() {
+  if (!lobbyOrigin || lifecycle === 'joined' || lifecycle === 'joining') return;
+  try {
+    const res = await fetch(`${lobbyOrigin}/ping`, { cache: 'no-store' });
+    if (!res.ok) return;
+    adoptLobbyPopulation(await res.json());
+  } catch { /* the region card already owns unreachable wording */ }
+}
+
+pollLobby();
+setInterval(pollLobby, 5000);
 
 viewmodel.setHand(settings.hand);
 input.setLoadout(loadout);
@@ -373,23 +484,92 @@ view.setVmFov(settings.vmFov);
 audio.setVolume(settings.vol);
 hud.crosshair(settings);
 
-function startPlaying() {
+function selectLobbyMode(id) {
+  requestedMode = id;
+  net.setMode(id);
+  applyMode(id);
+}
+
+function resetMatchClientState() {
+  selfId = null;
+  primed = false;
+  latestPlayers = [];
+  latestRoster = new Map();
+  match = null;
+  matchOver = false;
+  careerAtJoin = null;
+  finalMatchStats = { kills: 0, deaths: 0 };
+  badgeCounts = null;
+  badgeCards = [];
+  killChains.clear();
+  hud.killmarkClear();
+  hud.alive();
+}
+
+function joinOrResume() {
   audio.resume();
+  if (lifecycle === 'joined') {
+    input.lock();
+    return;
+  }
+  if (lifecycle !== 'lobby') return;
+  resetMatchClientState();
+  lifecycle = 'joining';
+  menu.setMatchState('joining');
+  hud.setStatus(`joining ${MODES[requestedMode]?.label ?? requestedMode}…`);
+  net.setMode(requestedMode);
+  net.connect();
+  // Pointer lock must be requested from this click; waiting for WELCOME loses the browser's
+  // user gesture. The first authoritative snapshot still gates every simulation step.
   input.lock();
+}
+
+function leaveMatch() {
+  if (lifecycle !== 'joined' && lifecycle !== 'joining') return;
+  lifecycle = 'lobby';
+  input.release();
+  net.disconnect();
+  resetMatchClientState();
+  menu.setMatchState('lobby');
+  menu.setPlayerStats({ career: currentCareer, kills: 0, deaths: 0 });
+  hud.showStart('left match · seat released');
+  pollLobby();
+}
+
+function returnToLobby() {
+  menu.hideResults();
+  lifecycle = 'lobby';
+  menu.setMatchState('lobby');
+  menu.setPlayerStats({ career: currentCareer, kills: 0, deaths: 0 });
+  hud.showStart('select a match to join');
+  pollLobby();
+}
+
+function replayMatch() {
+  menu.hideResults();
+  lifecycle = 'lobby';
+  menu.setMatchState('lobby');
+  joinOrResume();
 }
 
 // Clicking the backdrop starts play; clicking inside the panel must not, or
 // nudging the sensitivity slider would grab pointer lock and hide the menu.
-document.getElementById('start').addEventListener('click', startPlaying);
+document.getElementById('start').addEventListener('click', () => {
+  if (lifecycle === 'joined') joinOrResume();
+});
 document.getElementById('menu').addEventListener('click', (e) => e.stopPropagation());
 
 input.onLockChange((locked) => {
   if (locked) hud.hideStart();
-  else hud.showStart(net.connected ? 'click to resume' : DOWN_MSG);
+  else if (lifecycle === 'joined') hud.showStart('match paused · resume or leave');
+  else if (lifecycle === 'results') hud.showStart();
+  else if (lifecycle === 'joining') hud.showStart('joining match…');
+  else hud.showStart('select a match to join');
 });
 
 net.on('status', (s) => {
-  if (s === 'connected') hud.setStatus(`connected as ${identity.displayName}`);
+  if (s === 'connected') hud.setStatus(`securing seat as ${identity.displayName}…`);
+  else if (s === 'idle') return;
   else if (s === 'disconnected' || s === 'reconnecting') hud.showStart(DOWN_MSG);
   else if (s === 'rejected') return;
   else hud.setStatus(UNREACHABLE_MSG);
@@ -408,7 +588,11 @@ net.on('reject', (m) => {
         ? 'TOO MANY CONNECTION ATTEMPTS — WAIT A MOMENT'
         : 'JOIN REFUSED — PLEASE TRY AGAIN';
   hud.setStatus(text);
+  lifecycle = 'lobby';
+  input.release();
+  menu.setMatchState('lobby');
   hud.showStart(text);
+  pollLobby();
 });
 
 // How full every lobby is. Arrives twice over: once on WELCOME as `lob` so the menu is
@@ -418,6 +602,8 @@ net.on('lobby', (rooms) => menu.setLobby(rooms));
 net.on('population', (population) => menu.setPopulation(population));
 
 net.on('welcome', (m) => {
+  lifecycle = 'joined';
+  menu.setMatchState('joined');
   selfId = m.id;
   // The server that accepted the game socket gets the final word. This is what prevents a
   // stale ASIA request from staying highlighted while the match is actually in AMERICA.
@@ -557,11 +743,16 @@ net.on('snapshot', (m) => {
     // and a scoped weapon is drawn as nothing at all, so a stoppage nobody told the latch
     // about is 1.4 seconds of hands you cannot see punching a gun that is not there.
     input.setJammed(jamMs > 0);
-    // Rank, from the private blob rather than from `mine`: the shared list carries the tier
-    // and the HUD wants the career behind it, which only the owner is sent. Fed every
-    // snapshot and early-outed inside the HUD — a career changes a handful of times an hour.
-    hud.rank(m.self.cv ?? 0);
-    menu.setPlayerStats({ career: m.self.cv ?? 0, kills: mine?.k ?? 0, deaths: mine?.d ?? 0 });
+    // The server keeps recording every earned elimination immediately, but Phase 4 freezes
+    // its presentation at entry. Rank movement is revealed in the after-action report rather
+    // than popping halfway through a firefight; the authoritative total is still cached on
+    // every snapshot so a disconnect cannot lose what was earned.
+    const authoritativeCareer = Math.max(0, Math.floor(Number(m.self.cv) || 0));
+    if (careerAtJoin === null) careerAtJoin = authoritativeCareer;
+    cacheCareer(authoritativeCareer);
+    finalMatchStats = { kills: mine?.k ?? 0, deaths: mine?.d ?? 0 };
+    hud.rank(careerAtJoin);
+    menu.setPlayerStats({ career: careerAtJoin, ...finalMatchStats });
     // Badge counts, private for the same reason `cv` is, and omitted entirely while every
     // track is zero -- so `?? {}` is a player who has not scored yet, not a missing field.
     //
@@ -625,6 +816,40 @@ function showBadges(now) {
   // One sound for the kill, chosen by the best news in it. `some` and not `cards[0]`: the
   // card shown is the most specific track, but a level-up on ANY track is worth the note.
   audio.badge(ups.length > 0, cards.some((c) => c.levelUp));
+}
+
+function finishMatch(ev, players) {
+  if (lifecycle !== 'joined') return;
+  const mine = players.find((p) => p.id === selfId);
+  let outcome = 'MATCH COMPLETE';
+  let winnerLabel = null;
+  if (mode.teams) {
+    winnerLabel = ev.wt ? TEAM_NAMES[ev.wt] : null;
+    outcome = !ev.wt ? 'DRAW' : mine?.tm === ev.wt ? 'VICTORY' : 'DEFEAT';
+  } else {
+    winnerLabel = ev.w ? nameOf(ev.w) : null;
+    outcome = !ev.w ? 'DRAW' : ev.w === selfId ? 'VICTORY' : 'DEFEAT';
+  }
+  const before = careerAtJoin ?? currentCareer;
+  const earned = Math.max(0, currentCareer - before);
+  lifecycle = 'results';
+  menu.showResults({
+    outcome,
+    mode: winnerLabel ? `${mode.label} · ${winnerLabel} wins` : mode.label,
+    kills: Math.max(0, Math.floor(finalMatchStats.kills)),
+    deaths: Math.max(0, Math.floor(finalMatchStats.deaths)),
+    xp: earned * XP_PER_ELIMINATION,
+    careerBefore: before,
+    careerAfter: currentCareer,
+  });
+  // A finished match is not a pause. Release the human seat immediately; Play Again creates
+  // a new admission against the latest capacity instead of riding into the server's reset.
+  input.release();
+  net.disconnect();
+  primed = false;
+  menu.setPlayerStats({ career: currentCareer, ...finalMatchStats });
+  hud.showStart();
+  pollLobby();
 }
 
 function handleEvent(ev, now, players) {
@@ -797,9 +1022,8 @@ function handleEvent(ev, now, players) {
       break;
 
     case EV.MATCH:
-      // Pop the scoreboard at the final whistle rather than requiring the player to
-      // know to hold tab for the one moment the result is on screen.
       matchOver = ev.ph === 'over';
+      if (matchOver) finishMatch(ev, players);
       break;
 
     case EV.BURST:
@@ -1069,5 +1293,5 @@ function frame(now) {
 
 hud.health(C.MAX_HP);
 if (lag) console.info(`[fpsbone] simulating ${lag}ms RTT, ${jitter}ms jitter`);
-net.connect();
+hud.showStart('select a match to join');
 requestAnimationFrame(frame);
