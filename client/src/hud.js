@@ -669,16 +669,24 @@ export function createHud() {
 
     /** @param zone HIT_ZONE of the finishing shot, 1 for a head -- compared as a number
      *         for the reason hitmarker does: this file has never imported the enum. */
-    feed(killerName, victimName, isSelfKiller, wep, zone = 0) {
+    feed(killerName, victimName, isSelfKiller, isSelfVictim, wep, zone = 0) {
       const row = document.createElement('div');
-      const killer = isSelfKiller ? `<b>${esc(killerName)}</b>` : esc(killerName);
-      // The weapon is the interesting half of a killfeed line: it is how you learn
-      // that the player across the map has a sniper before they use it on you.
-      const tail = wep == null ? '' : ` <em>${esc(WEAPONS[idAt(wep)].label)}</em>`;
-      // And the zone, for heads only. Legs are not marked: the multiplier is 0.85, and a
-      // feed that annotated four fifths of its lines would be annotating nothing.
-      const hs = zone === 1 ? ' <i>HS</i>' : '';
-      row.innerHTML = `${killer} <s>&rsaquo;&rsaquo;</s> ${esc(victimName)}${tail}${hs}`;
+      const weaponId = wep == null ? 'kills' : idAt(wep);
+      const weaponLabel = wep == null ? 'elimination' : WEAPONS[weaponId].label.toLowerCase();
+      const head = zone === 1;
+      // CS-style reading order: killer, weapon silhouette, optional headshot silhouette,
+      // victim. The weapon and headshot are pictures rather than trailing words, so the
+      // feed can be understood in peripheral vision instead of read like a sentence.
+      row.innerHTML =
+        `<span class="kf-name${isSelfKiller ? ' self' : ''}">${esc(killerName)}</span>`
+        + `<span class="kf-action" title="${esc(weaponLabel + (head ? ' headshot' : ''))}">`
+        + `<svg class="kf-weapon" viewBox="-42 -24 84 48" aria-hidden="true">`
+        + `<use href="#g-${weaponId}"></use></svg>`
+        + (head
+          ? '<svg class="kf-head" viewBox="-24 -24 48 48" aria-hidden="true"><use href="#g-hs"></use></svg>'
+          : '')
+        + '</span>'
+        + `<span class="kf-name${isSelfVictim ? ' self victim' : ''}">${esc(victimName)}</span>`;
       els.feed.prepend(row);
       while (els.feed.children.length > 5) els.feed.lastChild.remove();
       setTimeout(() => row.remove(), 5200);

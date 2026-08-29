@@ -1,8 +1,8 @@
-// The killmark: a six-legged star that grows a leg per kill, and dies if you stop killing.
+// The killmark: a six-legged star that grows a leg per kill during the current life.
 //
 // This is CrossFire's killstreak, which is a different animal from shared/badges.js and has
 // to stay one. A badge counts every kill you have ever scored and takes months; a killmark
-// counts the last four seconds. One is who you are, the other is what is happening right
+// counts the current life. One is who you are, the other is what is happening right
 // now — and the reason both exist is that neither answers the other's question. Six kills
 // in a row is a story about this fight. Fifteen thousand kills is a story about the year.
 //
@@ -11,9 +11,8 @@
 // test. verify.mjs imports this the same way it imports badges.js. If a future mode ever
 // wants to pay out for a six-chain, the ladder is already here rather than in the HUD.
 //
-// The window is the whole mechanic. Without it the star is a scoreboard and fills itself
-// eventually; with it, six legs means six kills inside about twenty seconds of real fight,
-// which is not something you can grind.
+// The visibility window is presentation only: it takes the mark off-screen between fights,
+// but it never erases rays. Only death starts the life count over.
 
 /**
  * Legs on the star, and so the longest chain the mark can show.
@@ -27,15 +26,10 @@
 export const SPREE_LEGS = 6;
 
 /**
- * How long a chain survives without a kill, in milliseconds.
+ * How long the latest killmark stays visible, in milliseconds.
  *
- * FOUR SECONDS is a decision, not a citation. CrossFire's own base window is not published
- * — the wiki gives only the boosted ceiling (27.9 s, with two rings and every upgradeable
- * VVIP weapon) — so this is the genre's usual figure, chosen against this game's own pace:
- * a rifle kills in about 250 ms of fire, and crossing between two players on these maps
- * takes two to three seconds. Four seconds means a second kill has to already be in front
- * of you. Six legs is therefore twenty seconds of continuous fighting, which nobody gets
- * by accident.
+ * Four seconds is long enough to read the result without leaving it permanently over the
+ * weapon HUD. Expiry hides the drawing; main.js keeps the life count until death.
  */
 export const SPREE_MS = 4000;
 

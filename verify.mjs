@@ -7177,7 +7177,7 @@ ${grabH(/    tick\(now\) \{[\s\S]*?\n    \},/, 'hud.tick')}
 
 console.log([...pK, ...fK].join('\n'));
 
-// ────────────────────── Part L: the killmark, and the four seconds that own it
+// ────────────────────── Part L: the life-streak killmark and its display timer
 //
 // "if you kill one up to six during the game ... once it full the six kills it just
 // continuiously in multikill theres a seconds when it will be in multikill the concept
@@ -7195,9 +7195,9 @@ console.log([...pK, ...fK].join('\n'));
 //   import; what it cannot check is that the cap actually caps and that junk reads as no
 //   chain rather than as NaN in a class name.
 //
-//   main.js owns WHEN a chain grows, and the two ways it goes wrong are both invisible in
-//   play. Trusting a tick instead of the kill's own timestamp hands a chain to a
-//   backgrounded tab; forgetting the server's grenade exemption hands a leg to a suicide.
+//   main.js owns WHEN the life streak grows, and the two ways it goes wrong are both invisible
+//   in play. Letting the display timer reset the count loses rays between kills; forgetting
+//   the server's grenade exemption hands a leg to a suicide.
 //   room.js broadcasts that suicide as a KILL with `by` set to the victim, so the client has
 //   to restate a rule the ledger already enforces — and the only place that is written down
 //   is the `if` this part lifts.
@@ -7277,7 +7277,7 @@ const driveL = (what, fn) => {
 // transcription of them into this file would only ever prove that the transcription works.
 // The case is pulled as text between its label and its `break`, then closed over stubs for
 // everything main.js has that this file does not.
-driveL('the kill chain', () => {
+driveL('the life streak', () => {
   const mainL = readFileSync(new URL('./client/src/main.js', import.meta.url), 'utf8');
   const grabL = (re, what) => {
     const m = re.exec(mainL);
@@ -7285,7 +7285,7 @@ driveL('the kill chain', () => {
         m ? `lifted ${m[0].trim().split('\n').length} lines` : 'no match — renamed or reshaped');
     return m ? m[0] : '';
   };
-  const state = grabL(/let spree = 0;\nlet spreeUntil = 0;\n/, 'the chain state');
+  const state = grabL(/let lifeKills = 0;\n/, 'the life-streak state');
   const glyph = grabL(/function killGlyph\(wIdx, zone\) \{[\s\S]*?\n\}\n/, 'killGlyph');
   const body = grabL(/(?<=case EV\.KILL:\n)[\s\S]*?\n      break;/, 'the EV.KILL case body');
 
@@ -7306,7 +7306,7 @@ ${glyph}
       kill: (now, ev) => { switch (ev.e) { case EV.KILL:
 ${body}
       } },
-      read: () => ({ spree, spreeUntil, killer }),
+      read: () => ({ lifeKills, killer }),
       setCareer: (n) => { badgeCounts = { kills: n }; },
     };
   `)(EV, TRACK_KEYS, SPREE_MS, wingsOf, tierOf, idAt, () => log);
@@ -7314,34 +7314,32 @@ ${body}
   const K = (now, over) => sim.kill(now, { e: EV.KILL, by: 7, on: 9, w: indexOf('rifle'), ...over });
   const marks = () => log.filter((m) => typeof m === 'object');
 
-  // ── inside the window it climbs, outside it starts over. The boundary is EXCLUSIVE on
-  //    both sides of the codebase -- main.js extends on `now < spreeUntil` and hud.tick
-  //    expires on `now >= kmUntil` -- so a kill landing on the exact millisecond of the
-  //    deadline is a new chain, and that is the edge worth pinning rather than the middle.
+  // ── the HUD may disappear after four seconds, but the rays belong to the whole life.
+  //    Widely separated kills must therefore keep climbing exactly like adjacent ones.
   const t1 = 1000 + SPREE_MS - 1;
   const t2 = t1 + SPREE_MS - 1;
   K(1000);
   K(t1);
-  const inside = sim.read().spree;
+  const inside = sim.read().lifeKills;
   K(t2);
-  const atEdge = sim.read().spree;
+  const atEdge = sim.read().lifeKills;
   K(t2 + SPREE_MS);
-  okL(inside === 2 && atEdge === 3 && sim.read().spree === 1,
-      `two kills ${SPREE_MS - 1}ms apart chain, and one exactly ${SPREE_MS}ms late starts over`,
-      `1 → ${inside} → ${atEdge}, then reset to ${sim.read().spree} — and the window is `
-      + "measured from the kill's OWN timestamp, so a tab that lost focus for ten seconds "
-      + 'gets no frames and therefore no chain it did not earn');
+  okL(inside === 2 && atEdge === 3 && sim.read().lifeKills === 4,
+      'rays keep counting across the four-second display boundary',
+      `1 → ${inside} → ${atEdge} → ${sim.read().lifeKills} — the timer hides the mark but `
+      + 'never rewrites the current-life kill count');
 
   // ── the cap: the count keeps going, the drawing does not
+  sim.kill(t2 + SPREE_MS + 1, { e: EV.KILL, by: 9, on: 7, w: indexOf('rifle') });
   log = [];
   let t = 50_000;
   for (let i = 0; i < 9; i += 1) { K(t); t += 100; }
   const drawn = marks().map((m) => legsOf(m.n));
-  okL(sim.read().spree === 9 && drawn.join() === '1,2,3,4,5,6,6,6,6'
+  okL(sim.read().lifeKills === 9 && drawn.join() === '1,2,3,4,5,6,6,6,6'
       && marks().map((m) => m.n).join() === '1,2,3,4,5,6,7,8,9',
-      'a ninth chained kill still counts nine and still draws six legs',
-      `legs drawn: ${drawn.join(',')} — main.js keeps the TRUE count because the window has `
-      + 'to keep refreshing past the cap; legsOf is the only thing that clamps, and it clamps '
+      'a ninth kill in one life still counts nine and still draws six legs',
+      `legs drawn: ${drawn.join(',')} — main.js keeps the TRUE count while legsOf is the `
+      + 'only thing that clamps, and it clamps '
       + 'inside the two places that draw and sound rather than at the counter');
 
   // ── death ends it on the instant
@@ -7350,11 +7348,10 @@ ${body}
   K(60_100);
   sim.kill(60_200, { e: EV.KILL, by: 9, on: 7, w: indexOf('rifle') });
   const afterDeath = sim.read();
-  okL(afterDeath.spree === 0 && afterDeath.spreeUntil === 0 && log.includes('clear')
+  okL(afterDeath.lifeKills === 0 && log.includes('clear')
       && afterDeath.killer?.name === 'p9',
-      'dying ends the chain on the instant rather than letting it time out',
-      'the window would otherwise leave the mark up for four seconds over a death overlay, '
-      + 'counting down toward a kill the player cannot go and get');
+      'dying resets the life streak on the instant',
+      'the next life starts from one ray even if the previous life filled the crest');
 
   // ── the two kills that are not kills, each laid on top of a LIVE chain so a missing
   //    exemption shows up as a leg rather than being hidden by an already-empty counter
@@ -7366,8 +7363,8 @@ ${body}
   K(75_000);
   log = [];
   sim.kill(75_100, { e: EV.KILL, by: 0, on: 7, w: indexOf('rifle') });
-  okL(suicideLog.join() === 'clear' && suicide.spree === 0
-      && log.join() === 'clear' && sim.read().spree === 0,
+  okL(suicideLog.join() === 'clear' && suicide.lifeKills === 0
+      && log.join() === 'clear' && sim.read().lifeKills === 0,
       'your own grenade and a fall out of the world earn no leg and no sound',
       `the grenade logged [${suicideLog.join(' ')}] and the world death [${log.join(' ')}] — the `
       + 'same two exemptions server/room.js:738 puts on the career ledger, restated here '
@@ -7600,6 +7597,7 @@ ${grabM(/    tick\(now\) \{[\s\S]*?\n    \},/, 'hud.tick')}
 // star nobody can see. Both halves are asserted against the same numbers.
 {
   const page = readFileSync(new URL('./client/index.html', import.meta.url), 'utf8');
+  const hudSrc = readFileSync(new URL('./client/src/hud.js', import.meta.url), 'utf8');
   const km = /<div id="killmark">[\s\S]*?\n    <\/div>/.exec(page)?.[0] ?? '';
   const legCls = [...km.matchAll(/class="km-leg l(\d+)"/g)].map((m) => Number(m[1]));
   okL(legCls.join() === Array.from({ length: SPREE_LEGS }, (_, i) => i + 1).join()
@@ -7655,6 +7653,18 @@ ${grabM(/    tick\(now\) \{[\s\S]*?\n    \},/, 'hud.tick')}
       'the killmark still comes after #dead in the document',
       'same reason #badge does: a trade kill has to paint its mark over the death overlay, '
       + 'and with no z-index anywhere in the HUD that is decided by document order alone');
+
+  okL(/class="kf-weapon"[\s\S]*?<use href="#g-\$\{weaponId\}"/.test(hudSrc)
+      && /class="kf-head"[\s\S]*?<use href="#g-hs"/.test(hudSrc)
+      && !/&rsaquo;|>HS<|\$\{esc\(WEAPONS\[idAt\(wep\)\]\.label\)\}/.test(hudSrc),
+      'the killfeed is killer, weapon icon, optional headshot icon, victim — never text arrows',
+      'the weapon silhouette remains visible on a headshot, so the feed reports both how and where');
+
+  okL(/#feed > div \{[\s\S]*?display: flex/.test(page)
+      && /#feed \.kf-weapon \{ width: 43px; height: 22px; \}/.test(page)
+      && /#feed \.kf-head \{ width: 18px; height: 18px; color: var\(--head-col\); \}/.test(page),
+      'the CS-style feed has a compact dark row and readable weapon/headshot silhouettes',
+      'icons replace the old trailing “SNIPER HS” text without losing either fact');
 }
 
 console.log([...pL, ...fL].join('\n'));

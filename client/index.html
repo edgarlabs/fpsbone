@@ -241,14 +241,28 @@
       #m-teams em { font-style: normal; color: var(--dim); font-weight: 400; margin: 0 7px; }
 
       /* ---- killfeed ---- */
-      #feed { position: absolute; right: 24px; top: 20px; text-align: right; }
-      #feed div { margin-bottom: 4px; opacity: 0.95; animation: slide 160ms ease-out; }
-      #feed b { color: var(--self); }
-      #feed s { color: var(--accent); text-decoration: none; }
-      #feed em { color: var(--dim); font-style: normal; font-size: 11px; }
-      /* Headshot, in the headshot gold. The killfeed is where a kill becomes public, so
-         it is also where the 4x multiplier stops being visible only to the shooter. */
-      #feed i { color: var(--head-col); font-style: normal; font-size: 11px; font-weight: 700; }
+      #feed {
+        position: absolute; right: 22px; top: 18px; text-align: right;
+        display: flex; flex-direction: column; align-items: flex-end; gap: 4px;
+      }
+      #feed > div {
+        min-height: 28px; padding: 3px 8px 3px 10px;
+        display: flex; align-items: center; justify-content: flex-end; gap: 7px;
+        color: #f4f7fb; background: rgba(12, 18, 27, 0.74);
+        border-right: 2px solid rgba(244, 247, 251, 0.34);
+        box-shadow: 0 2px 9px rgba(5, 9, 15, 0.2);
+        text-shadow: 0 1px 2px #05080c;
+        opacity: 0.96; animation: slide 160ms ease-out;
+      }
+      #feed .kf-name { max-width: 150px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+      #feed .kf-name.self { color: #62e0c2; font-weight: 800; }
+      #feed .kf-name.victim { color: #ff9b87; }
+      #feed .kf-action { height: 22px; display: inline-flex; align-items: center; gap: 1px; color: #f4f7fb; }
+      #feed svg { display: block; fill: currentColor; overflow: visible; filter: drop-shadow(0 1px 1px #05080c); }
+      #feed .kf-weapon { width: 43px; height: 22px; }
+      /* A separate gold head silhouette after the weapon is CS2's compact distinction:
+         the gun still answers HOW, and the head answers WHERE, with neither printed as text. */
+      #feed .kf-head { width: 18px; height: 18px; color: var(--head-col); }
       @keyframes slide { from { opacity: 0; transform: translateX(12px); } }
 
       /* ---- damage vignette ---- */
@@ -1176,8 +1190,9 @@
           <!-- A double-edged dark medallion keeps every weapon glyph readable. -->
           <circle id="km-ring" cx="100" cy="46" r="21" />
           <circle id="km-hub" cx="100" cy="46" r="17.5" />
-          <!-- Which kill it was: the weapon, or the head for a headshot. Same sprite the
-               badge emblem draws from — the glyphs are authored at roughly ±34 about their
+          <!-- Which weapon scored the latest kill, or the head for a headshot. This changes
+               independently of the rays, which count every kill in the current life. Same
+               sprite the badge emblem draws from — the glyphs are authored at roughly ±34 about their
                own origin, so 0.45 puts one inside the 17.5 hub with room to breathe. -->
           <use id="km-glyph" href="#g-kills" transform="translate(100 46) scale(0.45)" />
         </svg>
