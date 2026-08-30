@@ -86,6 +86,7 @@ export function createTdm(room) {
     phase = 'over';
     winner = score[0] === score[1] ? 0 : score[0] > score[1] ? 1 : 2;
     resetAt = now + OVER_MS;
+    room.settleMatch({ winnerTeam: winner });
     // `w` is a player id in every other mode's MATCH event and the client resolves it to
     // a name, so the winning TEAM travels as its own field and `w` stays 0. A team number
     // in there would render as "player #2 wins".
@@ -104,6 +105,7 @@ export function createTdm(room) {
     phase = 'live';
     winner = 0;
     endsAt = now + mode.timeMs;
+    room.beginProgressionMatch();
     room.events.push({ e: EV.MATCH, ph: phase, w: 0 });
   }
 

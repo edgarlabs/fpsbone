@@ -12,7 +12,8 @@
 import { MODES, MODE_IDS } from '../../shared/modes.js';
 import { WEAPONS } from '../../shared/weapons.js';
 import { HERE, fastest, pingGrade } from '../../shared/regions.js';
-import { TIERS, MAX_TIER, rankOf, toNextRank } from '../../shared/ranks.js';
+import { TIERS, MAX_TIER } from '../../shared/ranks.js';
+import { XP_TIERS, rankOfXp, toNextRankXp } from '../../shared/progression.js';
 import { CH_COLORS } from './settings.js';
 import { ACTIONS, keyLabel, refuseReason, rebind } from './binds.js';
 import { insigniaPng } from './insignia.js';
@@ -73,6 +74,7 @@ export function createMenu(settings, cbs) {
     resultDeaths: $('result-deaths'),
     resultRatio: $('result-ratio'),
     resultXp: $('result-xp'),
+    resultXpBreakdown: $('result-xp-breakdown'),
     resultBeforeIcon: $('result-rank-before-icon'),
     resultBefore: $('result-rank-before'),
     resultAfterIcon: $('result-rank-after-icon'),
@@ -83,6 +85,7 @@ export function createMenu(settings, cbs) {
     resultReplay: $('result-replay'),
     lobbyRegion: $('lobby-region'),
     profileName: $('profile-name'),
+    profileAccount: $('profile-account'),
     profileRankIcon: $('profile-rank-icon'),
     profileRankName: $('profile-rank-name'),
     profileRankProgress: $('profile-rank-progress'),
@@ -120,7 +123,7 @@ export function createMenu(settings, cbs) {
   /** Which region the game socket is actually on, or null if something outranked the setting
    *  (a `?server=` override). Not read from `settings` because the setting is a request. */
   let activeRegion = null;
-  let playerStats = { career: 0, kills: 0, deaths: 0 };
+  let playerStats = { career: 0, xp: 0, stats: {}, kills: 0, deaths: 0 };
   let matchState = 'lobby';
   /** The action waiting for a key, or null. */
   let arming = null;
@@ -390,23 +393,28 @@ export function createMenu(settings, cbs) {
   }
 
   function renderProfile() {
-    const career = Math.max(0, Math.floor(Number(playerStats.career) || 0));
-    const tier = rankOf(career);
+    const xp = Math.max(0, Math.floor(Number(playerStats.xp) || 0));
+    const tier = rankOfXp(xp);
     const rank = TIERS[tier];
-    const left = toNextRank(career);
-    const next = tier < MAX_TIER ? TIERS[tier + 1] : null;
-    const floor = rank.at;
+    const left = toNextRankXp(xp);
+    const next = tier < MAX_TIER ? XP_TIERS[tier + 1] : null;
+    const floor = XP_TIERS[tier].at;
     const span = next ? Math.max(1, next.at - floor) : 1;
-    const progress = next ? Math.max(0, Math.min(1, (career - floor) / span)) : 1;
+    const progress = next ? Math.max(0, Math.min(1, (xp - floor) / span)) : 1;
+    const stats = playerStats.stats ?? {};
+    const matches = Math.max(0, Math.floor(Number(stats.matches) || 0));
+    const wins = Math.max(0, Math.floor(Number(stats.wins) || 0));
+    const kills = Math.max(0, Math.floor(Number(stats.kills) || 0));
+    const deaths = Math.max(0, Math.floor(Number(stats.deaths) || 0));
     els.profileName.textContent = cbs.identity?.displayName ?? 'player';
     els.profileRankIcon.src = insigniaPng(tier).url;
     els.profileRankIcon.alt = rank.name;
     els.profileRankName.textContent = `${rank.name} · ${rank.abbr}`;
-    els.profileRankProgress.textContent = next ? `${left} kills to ${next.name}` : 'maximum rank achieved';
+    els.profileRankProgress.textContent = next ? `${left} XP to ${next.name}` : 'maximum rank achieved';
     els.profileRankFill.style.width = `${Math.round(progress * 100)}%`;
-    els.profileCareer.textContent = String(career);
-    els.profileKills.textContent = String(Math.max(0, Math.floor(Number(playerStats.kills) || 0)));
-    els.profileDeaths.textContent = String(Math.max(0, Math.floor(Number(playerStats.deaths) || 0)));
+    els.profileCareer.textContent = xp.toLocaleString();
+    els.profileKills.textContent = `${wins} / ${matches}`;
+    els.profileDeaths.textContent = deaths ? (kills / deaths).toFixed(2) : kills.toFixed(2);
   }
 
   // ──────────────────────────────────────────────────────────── chip toggles
@@ -649,15 +657,15 @@ export function createMenu(settings, cbs) {
       els.leave.hidden = state !== 'joined';
       renderModes();
     },
-    /** Paint one authoritative after-action report. One elimination is 100 combat XP. */
+    /** Paint the server-issued after-action receipt and its exact XP breakdown. */
     showResults(summary) {
-      const beforeTier = rankOf(summary.careerBefore);
-      const afterTier = rankOf(summary.careerAfter);
+      const beforeTier = rankOfXp(summary.xpBefore);
+      const afterTier = rankOfXp(summary.xpAfter);
       const before = TIERS[beforeTier];
       const after = TIERS[afterTier];
-      const next = afterTier < MAX_TIER ? TIERS[afterTier + 1] : null;
+      const next = afterTier < MAX_TIER ? XP_TIERS[afterTier + 1] : null;
       const progress = next
-        ? (summary.careerAfter - after.at) / Math.max(1, next.at - after.at)
+        ? (summary.xpAfter - XP_TIERS[afterTier].at) / Math.max(1, next.at - XP_TIERS[afterTier].at)
         : 1;
       els.resultOutcome.textContent = summary.outcome;
       els.resultMode.textContent = summary.mode;
@@ -667,6 +675,17 @@ export function createMenu(settings, cbs) {
         ? (summary.kills / summary.deaths).toFixed(2)
         : summary.kills.toFixed(2);
       els.resultXp.textContent = `+${summary.xp}`;
+      const award = summary.award ?? {};
+      const parts = [
+        ['played', award.participation],
+        ['human combat', award.humans],
+        ['bot combat', award.bots],
+        ['assists', award.assists],
+        ['objectives', award.objectives],
+        ['win', award.win],
+      ].filter(([, value]) => Number(value) > 0).map(([label, value]) => `${label} +${value}`);
+      if (Number(award.botXpDiscarded) > 0) parts.push(`${award.botXpDiscarded} bot XP capped`);
+      els.resultXpBreakdown.textContent = parts.join(' · ') || 'no qualifying participation XP';
       els.resultBeforeIcon.src = insigniaPng(beforeTier).url;
       els.resultBeforeIcon.alt = before.name;
       els.resultBefore.textContent = `${before.name} · ${before.abbr}`;
@@ -675,7 +694,7 @@ export function createMenu(settings, cbs) {
       els.resultAfter.textContent = `${after.name} · ${after.abbr}`;
       els.resultProgressFill.style.width = `${Math.round(Math.max(0, Math.min(1, progress)) * 100)}%`;
       els.resultProgressText.textContent = next
-        ? `${summary.xp} XP earned · ${toNextRank(summary.careerAfter) * 100} XP to ${next.name}`
+        ? `${summary.xp} XP earned · ${toNextRankXp(summary.xpAfter)} XP to ${next.name}`
         : `${summary.xp} XP earned · maximum rank achieved`;
       els.start.classList.add('results');
       this.setMatchState('results');
@@ -744,6 +763,14 @@ export function createMenu(settings, cbs) {
       population = next;
       renderModes();
       renderRegionSummary();
+    },
+    /** Guest is today's identity type; durability says whether this region shares Postgres. */
+    setAccount(account) {
+      const durable = account?.durable === true;
+      els.profileAccount.textContent = durable
+        ? 'guest account · progress synced'
+        : 'guest account · local progress only';
+      els.profileAccount.classList.toggle('durable', durable);
     },
     /** The career is private owner data; current kills/deaths come from this match's snapshot. */
     setPlayerStats(next) {

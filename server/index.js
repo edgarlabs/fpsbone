@@ -60,7 +60,14 @@ const IDLE_WAIT_MS = 50;
 /** A career store that keeps nothing, for a host built without one. Same three functions
  *  the real stores expose, so nothing below needs a branch: a host with no store is one
  *  where every account reads back empty and every write goes nowhere. */
-const NO_RANKS = { careerOf: () => 0, badgesOf: () => ({}), setCareer: () => {} };
+const NO_RANKS = {
+  careerOf: () => 0,
+  badgesOf: () => ({}),
+  profileOf: () => ({ xp: 0, career: 0, badges: {}, stats: {} }),
+  setCareer: () => {},
+  settleMatch: () => {},
+  storageState: () => ({ kind: 'none', durable: false }),
+};
 
 /** Browser- and Node-safe resume token. The Math.random fallback is reached only by an old
  *  browser running its private in-page host, where the token never crosses a network. */
@@ -132,6 +139,7 @@ export function createHost({
     // The one wire between the simulation and the store, installed from this side so a
     // Room built anywhere else — the test suite builds four — persists nothing.
     room.onCareer = ranks.setCareer;
+    room.onMatch = ranks.settleMatch;
     // `rosterSent` is the last `room.rosterRev` this room's clients were told about. -1 and
     // not 0 so an empty room's first push is still a push: a Room starts at rev 0, and a
     // sentinel that matched it would mean the first client to join a fresh room learned the
@@ -159,6 +167,7 @@ export function createHost({
   function resetRoom(slot) {
     const fresh = new Room(slot.room.modeId);
     fresh.onCareer = ranks.setCareer;
+    fresh.onMatch = ranks.settleMatch;
     slot.room = fresh;
     slot.rosterSent = -1;
   }
@@ -422,6 +431,13 @@ export function createHost({
             // nothing to aim at. Raw for the same reason the stamina above is raw: it is an
             // integer, and r3() on an integer only invites someone to make it a float later.
             cv: p.career,
+            // Account XP and cumulative career stats are private. Rank tiers are public;
+            // the ledger that produced one belongs only to its player.
+            xp: p.xp,
+            ps: p.accountStats,
+            // One authoritative match receipt, delivered once in the same snapshot as the
+            // MATCH over event. The client can display it but cannot manufacture another.
+            ...(p.pendingResult ? { mr: p.pendingResult } : {}),
             // Badge counts, `{ track: count }`, and PRIVATE for exactly the reason `cv` above
             // is: what you have done with each weapon over a career is nobody else's business,
             // and the public player list already carries the one derived number — the rank
@@ -458,6 +474,7 @@ export function createHost({
         : null;
 
       sendPayload(client, encode(msg), true);
+      if (p?.pendingResult) p.pendingResult = null;
     }
   }
 
@@ -504,7 +521,8 @@ export function createHost({
           // A stale saved address must not let the menu claim the match is elsewhere.
           r: region,
           avail: AVAILABLE,
-          cap: C.REGION_HUMAN_CAP,
+            cap: C.REGION_HUMAN_CAP,
+            account: { type: 'guest', ...ranks.storageState?.() },
           // How full every lobby is, right now. It rides on WELCOME rather than
           // arriving as the first MSG.LOBBY push so that the mode picker is never
           // briefly showing every room as empty; pushes carry every later change.
@@ -574,13 +592,19 @@ export function createHost({
 
         const account = sanitizeAccount(m.id);
         id = slot.room.add(sanitizeName(m.name), m.cosmetics ?? {}, account);
-        // Load the career onto the player right after `add`, which starts everyone at 0 —
-        // Room has no way to look one up and is not supposed to gain one.
-        slot.room.players.get(id).career = ranks.careerOf(account);
-        // And the badge counts, from the same store on the same terms. `badgesOf` hands back
-        // a copy, because the player object below is about to be incremented on every kill
-        // and the store must only ever change through setCareer's monotonic guard.
-        slot.room.players.get(id).badges = ranks.badgesOf(account);
+        // One private profile read at admission. Combat and snapshots stay in memory; the
+        // next database operation is the authoritative match-end settlement.
+        const profile = ranks.profileOf?.(account) ?? {
+          career: ranks.careerOf(account),
+          badges: ranks.badgesOf(account),
+          xp: 0,
+          stats: {},
+        };
+        const player = slot.room.players.get(id);
+        player.career = profile.career ?? 0;
+        player.badges = profile.badges ?? {};
+        player.xp = profile.xp ?? 0;
+        player.accountStats = profile.stats ?? {};
         slot.clients.set(id, client);
         totals.joins++;
         // Backfill immediately, so this player's WELCOME population and first snapshot

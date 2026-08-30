@@ -32,6 +32,7 @@ export function createFfa(room) {
     phase = 'over';
     winner = leader()?.id ?? 0;
     resetAt = now + OVER_MS;
+    room.settleMatch({ winnerId: winner });
     room.events.push({ e: EV.MATCH, ph: phase, w: winner });
   }
 
@@ -46,6 +47,7 @@ export function createFfa(room) {
     phase = 'live';
     winner = 0;
     endsAt = now + mode.timeMs;
+    room.beginProgressionMatch();
     room.events.push({ e: EV.MATCH, ph: phase, w: 0 });
   }
 

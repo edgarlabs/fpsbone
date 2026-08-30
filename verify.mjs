@@ -76,6 +76,9 @@ import { socketFor } from './client/src/regions.js';
 import { createNet } from './client/src/net.js';
 import { TIERS, MAX_TIER, rankOf, toNextRank } from './shared/ranks.js';
 import {
+  XP_TIERS, XP_RULES, matchXp, rankOfXp, toNextRankXp,
+} from './shared/progression.js';
+import {
   BADGES, TRACK_KEYS, SPECIAL_KEYS, TIER_NAMES, MAX_BADGE_TIER, MAX_LEVEL, MAX_STEP,
   labelOf, tierName, tierOf, badgeOf, levelOf, stepOf, toNextStep, tracksFor, publicTiers,
 } from './shared/badges.js';
@@ -6189,7 +6192,7 @@ driveJ('the rank readout', () => {
       const threw = [];
       const say = (cv) => {
         try {
-          body(cv, els, TIERS, MAX_TIER, rankOf, toNextRank);
+          body(cv, els, TIERS, MAX_TIER, rankOfXp, toNextRankXp);
           return true;
         } catch (e) {
           threw.push(`${cv}: ${e?.message ?? e}`);
@@ -6202,13 +6205,13 @@ driveJ('the rank readout', () => {
       };
 
       const fresh = read(0);
-      okJ(fresh === `Private · ${TIERS[1].at} to ${TIERS[1].name}` && out.cls === 'on',
+      okJ(fresh === `Private · ${XP_TIERS[1].at} XP to ${TIERS[1].name}` && out.cls === 'on',
           'the corner names your rank and how far the next one is',
           `"${fresh}" — this is the only place the NAMES appear, because twenty-one of them are `
           + 'unreadable at the four pixels a plate gets in a fight, and the only place the '
           + 'distance appears at all: a bare label gives a player nothing to play toward');
 
-      const top = read(TIERS[MAX_TIER].at + 500);
+      const top = read(XP_TIERS[MAX_TIER].at + 500);
       okJ(top !== null && !/undefined|NaN/.test(top) && top !== fresh,
           'and the top of the ladder reads as the top, not as a distance to a rank above it',
           `"${top}" — TIERS[tier + 1] is off the end of the table there, and the unguarded `
@@ -6219,11 +6222,11 @@ driveJ('the rank readout', () => {
       // shared/ranks.js exists to prevent, and this is the corner half of it.
       const wrong = [];
       for (let i = 0; i <= MAX_TIER; i++) {
-        for (const cv of [TIERS[i].at - 1, TIERS[i].at, TIERS[i].at + 1]) {
+        for (const cv of [XP_TIERS[i].at - 1, XP_TIERS[i].at, XP_TIERS[i].at + 1]) {
           if (cv < 0) continue;
           out.name = undefined;
           say(cv);
-          if (out.name !== TIERS[rankOf(cv)].name) wrong.push(`${cv}→${out.name}`);
+          if (out.name !== TIERS[rankOfXp(cv)].name) wrong.push(`${cv}→${out.name}`);
         }
       }
       okJ(wrong.length === 0,
@@ -7951,8 +7954,8 @@ function fakeClient(host, mode, name, hello = {}) {
       'Leave releases pointer lock and closes the match seat intentionally',
       'a menu departure must not look like a dropped connection that reserves and reconnects');
   okM(mainSrc.includes('function finishMatch(ev, players)')
-      && mainSrc.includes('careerAtJoin') && mainSrc.includes('XP_PER_ELIMINATION')
-      && menuSrc.includes('showResults(summary)') && menuSrc.includes('toNextRank(summary.careerAfter)')
+      && mainSrc.includes('xpAtJoin') && mainSrc.includes('pendingMatchResult')
+      && menuSrc.includes('showResults(summary)') && menuSrc.includes('toNextRankXp(summary.xpAfter)')
       && ['results', 'result-outcome', 'result-xp', 'result-lobby', 'result-replay', 'leave-match']
         .every((id) => lobbyHtml.includes(`id="${id}"`)),
       'match end opens a results screen with frozen in-match rank, earned combat XP and replay controls',
@@ -8667,7 +8670,8 @@ const okN = (cond, label, detail = '') => {
   // `fromService` is what makes this zero-configuration: Render substitutes the real hostname,
   // suffix and all. A name that matches no service in the file substitutes nothing.
   const names = new Set(services.map((s) => s.name));
-  const dangling = services.flatMap((s) => Object.entries(s.from))
+  const serviceRefs = (s) => Object.entries(s.from).filter(([k]) => k.startsWith('FPSBONE_PEER_'));
+  const dangling = services.flatMap(serviceRefs)
     .filter((e) => !names.has(e[1]));
   okN(dangling.length === 0,
       'each peer address is filled in by the host from a service that exists in this file',
@@ -8675,7 +8679,7 @@ const okN = (cond, label, detail = '') => {
         : 'fromService, so nobody types a hostname and nobody gets the suffix wrong');
   // And it must point at the service that IS that region, not merely at some service.
   const byName = new Map(services.map((s) => [s.name, s]));
-  const crossed = services.flatMap((s) => Object.entries(s.from))
+  const crossed = services.flatMap(serviceRefs)
     .filter((e) => byName.get(e[1])?.env.FPSBONE_REGION
       !== e[0].slice('FPSBONE_PEER_'.length).toLowerCase());
   okN(crossed.length === 0, 'and points at the service that actually is that region',
@@ -9560,6 +9564,70 @@ const okO = (cond, label, detail = '') => {
 }
 
 console.log([...pO, ...fO].join('\n'));
+// ─────────────────────────────────────────── Part P: account XP
+console.log('\n=== Part P — account XP and authoritative match settlement ===\n');
+const pP = [], fP = [];
+const okP = (cond, label, detail = '') =>
+  (cond ? pP : fP).push(`${cond ? 'PASS' : 'FAIL'}  ${label}${detail ? `  — ${detail}` : ''}`);
+
+{
+  const human = matchXp({ participated: true, humanKills: 1 });
+  const bot = matchXp({ participated: true, botKills: 1 });
+  okP(human.humans === XP_RULES.humanKill && bot.bots === XP_RULES.botKill
+      && human.humans === bot.bots * 4,
+      'a human elimination is worth four bot eliminations',
+      `${human.humans} human XP against ${bot.bots} bot XP`);
+
+  const farm = matchXp({ participated: true, botKills: 100, botHeadshots: 100 });
+  okP(farm.bots === XP_RULES.botCap && farm.botXpDiscarded > 0,
+      'bot XP has one hard per-match cap, headshots included',
+      `${farm.bots} awarded, ${farm.botXpDiscarded} discarded`);
+
+  const idle = matchXp({ participated: false, humanKills: 99, botKills: 99, won: true });
+  okP(idle.total === 0, 'an unqualified idle seat earns nothing, even on the winning side',
+      `total ${idle.total}`);
+
+  const thresholds = XP_TIERS.every((tier, i) => rankOfXp(tier.at) === i
+    && (i === 0 || rankOfXp(tier.at - 1) === i - 1));
+  okP(thresholds, 'every XP rank boundary is inclusive and preserves the existing ladder names',
+      `${XP_TIERS.length} tiers checked`);
+
+  const room = new Room(DEFAULT_MODE);
+  const id = room.add('phase5', {}, 'guest-phase5');
+  const player = room.players.get(id);
+  player.xp = 0;
+  player.career = 20;
+  const frozen = room.rosterState().find((row) => row.i === id)?.rk ?? 0;
+  player.match.joinedAt = room.now() - XP_RULES.minParticipationSec * 1000;
+  Object.assign(player.match, {
+    humanKills: 2,
+    humanHeadshots: 1,
+    botKills: 20,
+    botHeadshots: 20,
+    assists: 1,
+    deaths: 3,
+  });
+  const saves = [];
+  room.onMatch = (account, value) => { saves.push({ account, value }); };
+  room.settleMatch({ winnerId: id });
+  room.settleMatch({ winnerId: id });
+  const receipt = player.pendingResult;
+  okP(frozen === 0 && receipt?.rankBefore === 0,
+      'career kills can move badges mid-match but the visible account rank stays frozen',
+      `public tier ${frozen}, settled from tier ${receipt?.rankBefore}`);
+  okP(saves.length === 1 && receipt?.award.total === 710 && player.xp === 710,
+      'the server settles a match exactly once and issues the private XP receipt',
+      `${saves.length} save, +${receipt?.award.total} XP, account total ${player.xp}`);
+  okP(receipt?.stats.matches === 1 && receipt?.stats.wins === 1
+      && receipt?.stats.kills === 22 && receipt?.stats.deaths === 3,
+      'career stats are updated from the same server ledger as the award',
+      JSON.stringify(receipt?.stats));
+  room.beginProgressionMatch();
+  okP(player.pendingResult === null && player.match.humanKills === 0 && !player.match.settled,
+      'the next round clears only the match ledger, never account XP',
+      `xp ${player.xp}, receipt ${player.pendingResult}, kills ${player.match.humanKills}`);
+}
+console.log([...pP, ...fP].join('\n'));
 // ─────────────────────────────────────────── Part I: two live clients
 console.log('\n=== Part I — two live clients over the wire ===\n');
 
@@ -9753,9 +9821,9 @@ try {
 
 const total = fail.length + fB.length + fC.length + fD.length + fE.length + fF.length
   + fG.length + fH.length + fJ.length + fK.length + fL.length + fM.length + fN.length
-  + fO.length
+  + fO.length + fP.length
   + f2.length;
 console.log(
-  `\n${total === 0 ? 'ALL PASS' : `${total} FAILURE(S)`} — ${pass.length + pB.length + pC.length + pD.length + pE.length + pF.length + pG.length + pH.length + pJ.length + pK.length + pL.length + pM.length + pN.length + pO.length + p2.length} checks passed`,
+  `\n${total === 0 ? 'ALL PASS' : `${total} FAILURE(S)`} — ${pass.length + pB.length + pC.length + pD.length + pE.length + pF.length + pG.length + pH.length + pJ.length + pK.length + pL.length + pM.length + pN.length + pO.length + pP.length + p2.length} checks passed`,
 );
 process.exit(total === 0 ? 0 : 1);

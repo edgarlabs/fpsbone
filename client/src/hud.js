@@ -9,7 +9,8 @@
 import * as C from '../../shared/constants.js';
 import { WEAPONS, idAt } from '../../shared/weapons.js';
 import { TEAM_NAMES } from '../../shared/modes.js';
-import { TIERS, MAX_TIER, rankOf, toNextRank } from '../../shared/ranks.js';
+import { TIERS, MAX_TIER } from '../../shared/ranks.js';
+import { rankOfXp as rankOf, toNextRankXp as toNextRank } from '../../shared/progression.js';
 import {
   MAX_STEP, TRACK_KEYS, badgeOf, labelOf, levelOf, stepOf, tierName, toNextStep,
 } from '../../shared/badges.js';
@@ -490,7 +491,7 @@ export function createHud() {
       const left = toNextRank(cv);
       // At the top there is nothing left to earn, so it says so rather than showing "0 to".
       els.rkNext.textContent =
-        tier >= MAX_TIER ? 'top of the ladder' : `${left} to ${TIERS[tier + 1].name}`;
+        tier >= MAX_TIER ? 'top of the ladder' : `${left} XP to ${TIERS[tier + 1].name}`;
       els.rank.classList.add('on');
     },
 

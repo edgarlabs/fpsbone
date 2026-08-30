@@ -21,6 +21,7 @@ import { MODES, MODE_IDS, TEAM_NAMES, modeOf, CORPSE_MS } from '../../shared/mod
 import { WEAPON_IDS, WEAPONS, idAt, indexOf, spreadMul, weaponAt } from '../../shared/weapons.js';
 import { TRACK_KEYS, badgeOf, levelOf, stepOf, tierOf } from '../../shared/badges.js';
 import { SPREE_MS, wingsOf } from '../../shared/spree.js';
+import { cleanStats } from '../../shared/progression.js';
 import { getIdentity } from './identity.js';
 import { getSettings } from './settings.js';
 import { HERE, loadRegions, probeAll, socketFor } from './regions.js';
@@ -188,8 +189,11 @@ let lifecycle = 'lobby';
 /** Rank progress is frozen at entry and revealed in the after-action report. */
 let careerAtJoin = null;
 let currentCareer = 0;
+let xpAtJoin = null;
+let currentXp = 0;
+let currentAccountStats = cleanStats();
+let pendingMatchResult = null;
 let finalMatchStats = { kills: 0, deaths: 0 };
-const XP_PER_ELIMINATION = 100;
 const PROFILE_CACHE_KEY = 'fpsbone.profile.v1';
 
 function cachedCareer() {
@@ -201,12 +205,32 @@ function cachedCareer() {
   }
 }
 
-function cacheCareer(career) {
-  currentCareer = Math.max(0, Math.floor(Number(career) || 0));
-  try { localStorage.setItem(PROFILE_CACHE_KEY, JSON.stringify({ id: identity.id, career: currentCareer })); } catch { /* storage optional */ }
+function cachedProfile() {
+  try {
+    const rec = JSON.parse(localStorage.getItem(PROFILE_CACHE_KEY) ?? 'null');
+    if (rec?.id !== identity.id) return { xp: 0, stats: cleanStats() };
+    return { xp: Math.max(0, Math.floor(Number(rec.xp) || 0)), stats: cleanStats(rec.stats) };
+  } catch {
+    return { xp: 0, stats: cleanStats() };
+  }
 }
 
-cacheCareer(cachedCareer());
+function cacheCareer(career, xp = currentXp, stats = currentAccountStats) {
+  currentCareer = Math.max(0, Math.floor(Number(career) || 0));
+  currentXp = Math.max(0, Math.floor(Number(xp) || 0));
+  currentAccountStats = cleanStats(stats);
+  try {
+    localStorage.setItem(PROFILE_CACHE_KEY, JSON.stringify({
+      id: identity.id,
+      career: currentCareer,
+      xp: currentXp,
+      stats: currentAccountStats,
+    }));
+  } catch { /* storage optional */ }
+}
+
+const cached = cachedProfile();
+cacheCareer(cachedCareer(), cached.xp, cached.stats);
 
 // ── badges
 /**
@@ -354,7 +378,7 @@ const menu = createMenu(settings, {
   onResultLobby: returnToLobby,
   onResultReplay: replayMatch,
 });
-menu.setPlayerStats({ career: currentCareer, kills: 0, deaths: 0 });
+menu.setPlayerStats({ career: currentCareer, xp: currentXp, stats: currentAccountStats, kills: 0, deaths: 0 });
 menu.setMatchState('lobby');
 
 /**
@@ -498,6 +522,8 @@ function resetMatchClientState() {
   match = null;
   matchOver = false;
   careerAtJoin = null;
+  xpAtJoin = null;
+  pendingMatchResult = null;
   finalMatchStats = { kills: 0, deaths: 0 };
   badgeCounts = null;
   badgeCards = [];
@@ -531,7 +557,7 @@ function leaveMatch() {
   net.disconnect();
   resetMatchClientState();
   menu.setMatchState('lobby');
-  menu.setPlayerStats({ career: currentCareer, kills: 0, deaths: 0 });
+  menu.setPlayerStats({ career: currentCareer, xp: currentXp, stats: currentAccountStats, kills: 0, deaths: 0 });
   hud.showStart('left match · seat released');
   pollLobby();
 }
@@ -540,7 +566,7 @@ function returnToLobby() {
   menu.hideResults();
   lifecycle = 'lobby';
   menu.setMatchState('lobby');
-  menu.setPlayerStats({ career: currentCareer, kills: 0, deaths: 0 });
+  menu.setPlayerStats({ career: currentCareer, xp: currentXp, stats: currentAccountStats, kills: 0, deaths: 0 });
   hud.showStart('select a match to join');
   pollLobby();
 }
@@ -612,6 +638,7 @@ net.on('welcome', (m) => {
   menu.setAvailable(m.avail ?? []);
   menu.setLobby(m.lob ?? {});
   menu.setPopulation(m.pop ?? {});
+  menu.setAccount(m.account ?? {});
   applyMode(m.mode ?? requestedMode);
 
   hud.setStatus(
@@ -749,10 +776,19 @@ net.on('snapshot', (m) => {
     // every snapshot so a disconnect cannot lose what was earned.
     const authoritativeCareer = Math.max(0, Math.floor(Number(m.self.cv) || 0));
     if (careerAtJoin === null) careerAtJoin = authoritativeCareer;
-    cacheCareer(authoritativeCareer);
+    const authoritativeXp = Math.max(0, Math.floor(Number(m.self.xp) || 0));
+    const authoritativeStats = cleanStats(m.self.ps);
+    if (xpAtJoin === null) xpAtJoin = authoritativeXp;
+    cacheCareer(authoritativeCareer, authoritativeXp, authoritativeStats);
+    if (m.self.mr) pendingMatchResult = m.self.mr;
     finalMatchStats = { kills: mine?.k ?? 0, deaths: mine?.d ?? 0 };
-    hud.rank(careerAtJoin);
-    menu.setPlayerStats({ career: careerAtJoin, ...finalMatchStats });
+    hud.rank(xpAtJoin);
+    menu.setPlayerStats({
+      career: careerAtJoin,
+      xp: xpAtJoin,
+      stats: currentAccountStats,
+      ...finalMatchStats,
+    });
     // Badge counts, private for the same reason `cv` is, and omitted entirely while every
     // track is zero -- so `?? {}` is a player who has not scored yet, not a missing field.
     //
@@ -830,24 +866,34 @@ function finishMatch(ev, players) {
     winnerLabel = ev.w ? nameOf(ev.w) : null;
     outcome = !ev.w ? 'DRAW' : ev.w === selfId ? 'VICTORY' : 'DEFEAT';
   }
-  const before = careerAtJoin ?? currentCareer;
-  const earned = Math.max(0, currentCareer - before);
+  const receipt = pendingMatchResult;
+  const matchStats = receipt?.match ?? finalMatchStats;
+  const before = Math.max(0, Math.floor(Number(receipt?.before ?? xpAtJoin ?? currentXp) || 0));
+  const after = Math.max(before, Math.floor(Number(receipt?.after ?? currentXp) || 0));
+  const earned = Math.max(0, Math.floor(Number(receipt?.award?.total ?? after - before) || 0));
   lifecycle = 'results';
   menu.showResults({
     outcome,
     mode: winnerLabel ? `${mode.label} · ${winnerLabel} wins` : mode.label,
-    kills: Math.max(0, Math.floor(finalMatchStats.kills)),
-    deaths: Math.max(0, Math.floor(finalMatchStats.deaths)),
-    xp: earned * XP_PER_ELIMINATION,
-    careerBefore: before,
-    careerAfter: currentCareer,
+    kills: Math.max(0, Math.floor(Number(matchStats.kills) || 0)),
+    deaths: Math.max(0, Math.floor(Number(matchStats.deaths) || 0)),
+    xp: earned,
+    xpBefore: before,
+    xpAfter: after,
+    award: receipt?.award ?? { total: earned },
+    authoritative: Boolean(receipt),
   });
   // A finished match is not a pause. Release the human seat immediately; Play Again creates
   // a new admission against the latest capacity instead of riding into the server's reset.
   input.release();
   net.disconnect();
   primed = false;
-  menu.setPlayerStats({ career: currentCareer, ...finalMatchStats });
+  menu.setPlayerStats({
+    career: currentCareer,
+    xp: currentXp,
+    stats: receipt?.stats ?? currentAccountStats,
+    ...finalMatchStats,
+  });
   hud.showStart();
   pollLobby();
 }

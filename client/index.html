@@ -786,6 +786,8 @@
       .op-leg.l { left: 45px; transform: rotate(3deg); } .op-leg.r { left: 83px; transform: rotate(-3deg); }
       .operator-floor { position: absolute; left: 16%; right: 16%; bottom: 17px; height: 1px; background: var(--self); box-shadow: 0 0 22px rgba(53,196,155,.55); }
       .profile-name { font-size: 19px; font-weight: 700; letter-spacing: .4px; color: #fff; }
+      .profile-account { margin-top: 4px; color: #8795a3; font-size: 8px; letter-spacing: 1px; text-transform: uppercase; }
+      .profile-account.durable { color: #35c49b; }
       .profile-rank { display: grid; grid-template-columns: 48px 1fr; align-items: center; gap: 11px; margin-top: 14px; }
       .profile-rank img { width: 46px; height: 28px; object-fit: contain; }
       .profile-rank b, .profile-rank span { display: block; }
@@ -851,6 +853,7 @@
       .result-stats span { color: var(--dim); font-size: 8px; letter-spacing: 1.2px; text-transform: uppercase; }
       .result-stats b { margin-top: 6px; color: #fff; font-size: 22px; }
       .result-stats .xp b { color: var(--self); }
+      .result-xp-breakdown { margin: 0; padding: 10px 18px; color: #a9b7c4; border-bottom: 1px solid var(--line); background: rgba(8,15,22,.9); font-size: 8px; letter-spacing: .8px; line-height: 1.6; text-align: center; text-transform: uppercase; }
       .result-progression { padding: 26px 30px; }
       .result-progression > label { color: var(--dim); font-size: 9px; letter-spacing: 1.5px; text-transform: uppercase; }
       .result-rank-flow { display: grid; grid-template-columns: 1fr 42px 1fr; align-items: center; gap: 16px; margin-top: 17px; }
@@ -1389,6 +1392,7 @@
           <div><span>ratio</span><b id="result-ratio">0.00</b></div>
           <div class="xp"><span>combat xp</span><b id="result-xp">+0</b></div>
         </div>
+        <p id="result-xp-breakdown" class="result-xp-breakdown">waiting for server receipt…</p>
         <div class="result-progression">
           <label>career progression</label>
           <div class="result-rank-flow">
@@ -1436,15 +1440,16 @@
                   <span class="operator-floor"></span>
                 </div>
                 <div class="profile-name" id="profile-name">player</div>
+                <div class="profile-account" id="profile-account">guest account · awaiting server</div>
                 <div class="profile-rank">
                   <img id="profile-rank-icon" alt="" />
                   <div><b id="profile-rank-name">Private</b><span id="profile-rank-progress">loading career…</span></div>
                 </div>
                 <div class="career-bar"><i id="profile-rank-fill"></i></div>
                 <div class="profile-stats">
-                  <div><span>career kills</span><b id="profile-career">0</b></div>
-                  <div><span>match kills</span><b id="profile-kills">0</b></div>
-                  <div><span>deaths</span><b id="profile-deaths">0</b></div>
+                  <div><span>career XP</span><b id="profile-career">0</b></div>
+                  <div><span>wins / matches</span><b id="profile-kills">0 / 0</b></div>
+                  <div><span>career K/D</span><b id="profile-deaths">0.00</b></div>
                 </div>
               </aside>
 

@@ -20,6 +20,7 @@
 // the same career plus per-badge counts. Both parse; only the second is written.
 
 import { TRACK_KEYS } from '../../shared/badges.js';
+import { XP_PER_LEGACY_KILL, cleanStats } from '../../shared/progression.js';
 
 const KEY = 'fpsbone.careers.v1';
 
@@ -28,6 +29,7 @@ const KEY = 'fpsbone.careers.v1';
  *  injected seam and not the other is a difference waiting to surprise someone. Insertion
  *  order in a Map is the LRU order for free, so eviction is the first key. */
 const MAX_ACCOUNTS = 5000;
+const MAX_HISTORY = 20;
 
 /** accountId -> `{ k: career kills, b: { track: count } }`. */
 const store = new Map();
@@ -45,7 +47,10 @@ const store = new Map();
  * gets written back out and read in again forever.
  */
 function readRecord(v) {
-  if (Number.isFinite(v) && v >= 0) return { k: Math.floor(v), b: {} };
+  if (Number.isFinite(v) && v >= 0) {
+    const k = Math.floor(v);
+    return { k, b: {}, x: k * XP_PER_LEGACY_KILL, s: cleanStats(), h: [] };
+  }
   if (!v || typeof v !== 'object' || Array.isArray(v)) return null;
   if (!(Number.isFinite(v.k) && v.k >= 0)) return null;
   const b = {};
@@ -55,7 +60,10 @@ function readRecord(v) {
       if (Number.isFinite(n) && n > 0) b[key] = Math.floor(n);
     }
   }
-  return { k: Math.floor(v.k), b };
+  const k = Math.floor(v.k);
+  const x = Number.isFinite(v.x) && v.x >= 0 ? Math.floor(v.x) : k * XP_PER_LEGACY_KILL;
+  const h = Array.isArray(v.h) ? v.h.filter((entry) => entry && typeof entry === 'object').slice(-MAX_HISTORY) : [];
+  return { k, b, x, s: cleanStats(v.s), h };
 }
 
 let dirty = false;
@@ -102,7 +110,15 @@ export function flush() {
   dirty = false;
   try {
     const out = {};
-    for (const [id, r] of store) out[id] = Object.keys(r.b).length ? { k: r.k, b: r.b } : { k: r.k };
+    for (const [id, r] of store) {
+      const row = { k: r.k };
+      const hasStats = Object.values(r.s).some((n) => n > 0);
+      if (r.x !== r.k * XP_PER_LEGACY_KILL && (hasStats || r.h.length)) row.x = r.x;
+      if (hasStats) row.s = r.s;
+      if (Object.keys(r.b).length) row.b = r.b;
+      if (r.h.length) row.h = r.h;
+      out[id] = row;
+    }
     localStorage.setItem(KEY, JSON.stringify(out));
   } catch {
     // Quota, or a browser refusing storage. Careers stop persisting; play continues.
@@ -136,12 +152,25 @@ export function badgesOf(id) {
   return { ...(store.get(id)?.b ?? {}) };
 }
 
+export function profileOf(id) {
+  if (!id) return { xp: 0, career: 0, badges: {}, stats: cleanStats(), history: [] };
+  touch(id);
+  const rec = store.get(id);
+  return {
+    xp: rec?.x ?? 0,
+    career: rec?.k ?? 0,
+    badges: { ...(rec?.b ?? {}) },
+    stats: cleanStats(rec?.s),
+    history: [...(rec?.h ?? [])],
+  };
+}
+
 /** Record a career total. Called from the Room's `onCareer` hook, which only fires for a
  *  player that has an account — bots and anonymous clients never reach here. */
 export function setCareer(id, kills, badges) {
   if (!id || !Number.isFinite(kills)) return;
   touch(id);
-  const rec = store.get(id) ?? { k: 0, b: {} };
+  const rec = store.get(id) ?? { k: 0, b: {}, x: 0, s: cleanStats(), h: [] };
   rec.k = Math.max(rec.k, Math.floor(kills));
   // Per key, and monotonic per key for the same reason the kill count is: this arrives from
   // a Room, and a Room that was handed a stale badge map — a second tab on the same
@@ -154,6 +183,30 @@ export function setCareer(id, kills, badges) {
   }
   store.set(id, rec);
   schedule();
+}
+
+export function settleMatch(id, value = {}) {
+  if (!id) return;
+  touch(id);
+  const rec = store.get(id) ?? { k: 0, b: {}, x: 0, s: cleanStats(), h: [] };
+  rec.k = Math.max(rec.k, Math.floor(Number(value.career) || 0));
+  rec.x = Math.max(rec.x, Math.floor(Number(value.xp) || 0));
+  rec.s = cleanStats(value.stats);
+  if (value.badges && typeof value.badges === 'object') {
+    for (const key of TRACK_KEYS) {
+      const n = Math.floor(Number(value.badges[key]) || 0);
+      if (n > 0) rec.b[key] = Math.max(rec.b[key] ?? 0, n);
+    }
+  }
+  if (value.result && typeof value.result === 'object') {
+    rec.h = [...rec.h.filter((entry) => entry?.id !== value.result.id), value.result].slice(-MAX_HISTORY);
+  }
+  store.set(id, rec);
+  schedule();
+}
+
+export function storageState() {
+  return { kind: 'browser', durable: false };
 }
 
 // The browser's version of ranks.js's SIGINT/SIGTERM/exit handlers. `pagehide` is the one

@@ -39,10 +39,11 @@
 #               these two — not 750 each. That is far less alarming than it sounds: a spun-down
 #               service draws none, so two mostly-idle regions cost about what one does. Two
 #               regions busy around the clock would not fit, which is a problem worth having.
-#   careers     Scores and career stats do not survive a spin-down: ranks.json lives in the
-#               container's own filesystem. Point FPSBONE_RANKS at a mounted disk to keep them.
-#               A disk is a paid feature, so this deliberately does not ask for one. Note the
-#               two regions keep SEPARATE careers either way — they are separate machines.
+#   accounts    Phase 5 uses one PostgreSQL account ledger. Singapore receives its private URL
+#               automatically. Oregon is cross-region, so Render requires the same database's
+#               EXTERNAL URL in DATABASE_URL (a dashboard secret); private database hostnames
+#               do not resolve across regions. Without it Oregon safely falls back to a local
+#               test ledger and reports that the account is not durable.
 #   regions     Free-tier availability per region is not something Render documents. If one of
 #               the two refuses to create on the free plan, the other still deploys and still
 #               works; the menu simply has one card in it and hides itself.
@@ -77,6 +78,10 @@ services:
         value: "22"
       - key: FPSBONE_REGION
         value: usw
+      # Copy fpsbone-accounts' EXTERNAL URL here during Blueprint setup. Render cannot expose
+      # an external database URL through `fromDatabase`; connectionString is private-network.
+      - key: DATABASE_URL
+        sync: false
       # WHERE THE OTHER REGION IS, and why this is a literal rather than a `fromService`.
       #
       # A blueprint CAN inject a peer's hostname — and the one it injects is the PRIVATE network
@@ -114,6 +119,10 @@ services:
         value: "22"
       - key: FPSBONE_REGION
         value: sea
+      - key: DATABASE_URL
+        fromDatabase:
+          name: fpsbone-accounts
+          property: connectionString
       # The same table as the other service, for the same reason — see the long note above it.
       - key: FPSBONE_REGIONS
         value: sea=https://fpsbone-sea.onrender.com,usw=https://fpsbone.onrender.com
@@ -122,3 +131,12 @@ services:
           type: web
           name: fpsbone
           property: host
+
+databases:
+  # Central in Singapore because that is the primary player region. Combat never queries it;
+  # admission reads once and match finish writes once, so Oregon's external hop is off the tick.
+  - name: fpsbone-accounts
+    plan: free
+    region: singapore
+    databaseName: fpsbone
+    user: fpsbone

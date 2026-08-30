@@ -20,6 +20,7 @@
     "probe:modes": "node probe-modes.mjs"
   },
   "dependencies": {
+    "pg": "^8.23.0",
     "three": "^0.169.0",
     "ws": "^8.18.0"
   },

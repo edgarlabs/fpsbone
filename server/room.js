@@ -31,7 +31,15 @@ import {
 } from '../shared/weapons.js';
 import { createController } from './modes/index.js';
 import { createBrain } from './ai.js';
-import { TIERS, rankOf } from '../shared/ranks.js';
+import { TIERS } from '../shared/ranks.js';
+import {
+  XP_PER_LEGACY_KILL,
+  XP_RULES,
+  cleanStats,
+  emptyStats,
+  matchXp,
+  rankOfXp,
+} from '../shared/progression.js';
 import {
   BADGES, MAX_LEVEL, MAX_BADGE_TIER, TRACK_KEYS, publicTiers, tierOf, tracksFor,
 } from '../shared/badges.js';
@@ -97,6 +105,13 @@ const botCareer = (id) => {
   h = (h * 1103515245) & 0x7fffffff;
   return TIERS[(h >>> 7) % TIERS.length].at;
 };
+
+/** Direct Room consumers from before Phase 5 seed career only; hosts always seed real XP. */
+const progressionXpOf = (p) => p.bot
+  ? p.career * XP_PER_LEGACY_KILL
+  : Number.isFinite(p.xp)
+  ? p.xp
+  : p.career * XP_PER_LEGACY_KILL;
 
 /**
  * A deterministic badge shelf for a bot: `{ track: count }`, two to four tracks lit.
@@ -209,6 +224,7 @@ export class Room {
      * this be checked every tick and sent almost never.
      */
     this.rosterRev = 0;
+    this.matchNo = 1;
     /**
      * The room's source of chance. Only the jam roll uses it, and it is a field rather
      * than a bare `Math.random()` call for the same reason `rollLoadout` takes one: a
@@ -237,6 +253,8 @@ export class Room {
      * included, gets a Room that counts careers in memory and persists nothing.
      */
     this.onCareer = null;
+    /** Match settlement is injected by the host, beside onCareer, so Rooms remain free of IO. */
+    this.onMatch = null;
 
     // Last, so the controller can read mode/allowed off a fully built room.
     this.ctl = createController(this);
@@ -281,6 +299,21 @@ export class Room {
        * incremented here; the disk is somebody else's problem, by design (see onCareer).
        */
       career: 0,
+      /** Account XP is what rank now derives from. Old careers migrate at 100 XP per kill. */
+      xp: null,
+      accountStats: emptyStats(),
+      match: {
+        joinedAt: this.now(),
+        humanKills: 0,
+        botKills: 0,
+        humanHeadshots: 0,
+        botHeadshots: 0,
+        assists: 0,
+        objectives: 0,
+        deaths: 0,
+        settled: false,
+      },
+      pendingResult: null,
       /**
        * Career kills per badge track, `{ track: count }` — `shared/badges.js` owns the
        * keys. Same deal as `career`: a plain in-memory object, seeded by whoever called
@@ -352,6 +385,7 @@ export class Room {
        */
       protectedUntil: this.now() + C.SPAWN_PROTECT_MS,
       history: [],
+      damageBy: new Set(),
       kills: 0,
       deaths: 0,
 
@@ -439,7 +473,7 @@ export class Room {
       const row = { i: p.id, n: p.name };
       // Omit-when-zero, the same economy `sp`, `jm` and `rk` use in the snapshot: a brand
       // new player is `{ i, n }` and nothing else.
-      const rk = rankOf(p.career);
+      const rk = rankOfXp(progressionXpOf(p));
       if (rk > 0) row.rk = rk;
       const bg = publicTiers(p.badges);
       if (Object.keys(bg).length) row.bg = bg;
@@ -468,6 +502,7 @@ export class Room {
     // most of this feature will ever be seen, a working ladder would look like a broken
     // one. Bots hold no account, so nothing here is ever written to disk.
     p.career = botCareer(id);
+    p.xp = p.career * XP_PER_LEGACY_KILL;
     // And a shelf, on the same seed. See `botBadges`.
     p.badges = botBadges(id);
     // No ping is invented for AI. Its brain is already in this process, so neither a plausible
@@ -568,6 +603,7 @@ export class Room {
     p.hp = C.MAX_HP;
     p.alive = true;
     p.history.length = 0;
+    p.damageBy.clear();
     // The same shield the first spawn gets — measured from now, so a respawn into a
     // firefight buys the same two seconds a fresh join does. Ended early by attacking,
     // see tryFire.
@@ -874,6 +910,7 @@ export class Room {
     // at all and must also still kill, or a protected player who clips out is stuck.
     if (attacker && attacker !== v && this.now() < v.protectedUntil) return;
 
+    if (attacker && attacker !== v) v.damageBy.add(attacker.id);
     v.hp -= dmg;
     const hit = { e: EV.HIT, by: attacker?.id ?? 0, on: v.id, hp: Math.max(0, v.hp) };
     // Omitted for BODY, which is both the common case and HIT_ZONE.BODY's own value, so
@@ -891,6 +928,31 @@ export class Room {
     // decided the fight is the only one the feed says nothing about.
     if (zone) kill.z = zone;
     this.events.push(kill);
+    if (v.account) v.match.deaths++;
+
+    // Match XP distinguishes people from AI using the Room's own bot set. The browser
+    // never reports either count, so changing a name to or from "BOT" cannot affect XP.
+    if (attacker && attacker !== v && attacker.account) {
+      const botVictim = this.bots.has(v.id);
+      if (botVictim) {
+        attacker.match.botKills++;
+        if (zone === HIT_ZONE.HEAD) attacker.match.botHeadshots++;
+      } else {
+        attacker.match.humanKills++;
+        if (zone === HIT_ZONE.HEAD) attacker.match.humanHeadshots++;
+      }
+    }
+
+    // Anyone who damaged a human victim during this life shares assist credit, except
+    // the killer. Bot takedowns do not mint assists, keeping AI farming inside one cap.
+    if (!this.bots.has(v.id)) {
+      for (const helperId of v.damageBy) {
+        if (helperId === attacker?.id) continue;
+        const helper = this.players.get(helperId);
+        if (helper?.account) helper.match.assists++;
+      }
+    }
+    v.damageBy.clear();
     // Career credit, here and not in a mode controller. `p.kills` is the SCOREBOARD
     // count and ffa.js's reset() clears it every match, so it is the wrong number to
     // persist; and modes/index.js defaults `onKill` to a no-op, so a mode added later
@@ -914,7 +976,9 @@ export class Room {
       // that moved a count without moving an emblem must not cost the room a push. The rank
       // is the same question one line up: `rankOf` moves on a couple of dozen kills out of
       // a whole career, so comparing is cheap and pushing on every kill is not.
-      let moved = rankOf(attacker.career) !== rankOf(attacker.career - 1);
+      let moved = !Number.isFinite(attacker.xp)
+        && rankOfXp(attacker.career * XP_PER_LEGACY_KILL)
+          !== rankOfXp((attacker.career - 1) * XP_PER_LEGACY_KILL);
       for (const key of tracksFor(wep >= 0 ? idAt(wep) : '', zone)) {
         const was = tierOf(attacker.badges[key] ?? 0, key);
         attacker.badges[key] = (attacker.badges[key] ?? 0) + 1;
@@ -1222,6 +1286,100 @@ export class Room {
     this.events.push({ e: EV.SHOT, id: p.id, w: p.wep, x: r3(pr.x), y: r3(pr.y), z: r3(pr.z) });
   }
 
+  /** Future objective modes call this server-side; no client message can award itself XP. */
+  creditObjective(id, count = 1) {
+    const p = this.players.get(id);
+    if (!p?.account || p.match.settled) return;
+    p.match.objectives += Math.max(0, Math.floor(Number(count) || 0));
+  }
+
+  /**
+   * Close the current XP ledger exactly once and attach a private receipt to each person.
+   * Controllers supply only the winner that they already decided authoritatively.
+   */
+  settleMatch({ winnerId = 0, winnerTeam = 0 } = {}) {
+    const now = this.now();
+    for (const p of this.players.values()) {
+      if (!p.account || p.match.settled) continue;
+      p.match.settled = true;
+      const combat = p.match.humanKills + p.match.botKills + p.match.assists
+        + p.match.objectives + p.match.deaths;
+      const participated = combat > 0
+        || now - p.match.joinedAt >= XP_RULES.minParticipationSec * 1000;
+      const won = winnerTeam > 0 ? p.team === winnerTeam : winnerId > 0 && p.id === winnerId;
+      const award = matchXp({ ...p.match, participated, won });
+      const before = progressionXpOf(p);
+      const rankBefore = rankOfXp(before);
+      p.xp = before + award.total;
+      const rankAfter = rankOfXp(p.xp);
+
+      const stats = cleanStats(p.accountStats);
+      if (participated) {
+        stats.matches++;
+        if (won) stats.wins++;
+        stats.kills += p.match.humanKills + p.match.botKills;
+        stats.deaths += p.match.deaths;
+        stats.headshots += p.match.humanHeadshots + p.match.botHeadshots;
+        stats.humanKills += p.match.humanKills;
+        stats.botKills += p.match.botKills;
+        stats.assists += p.match.assists;
+        stats.objectives += p.match.objectives;
+      }
+      p.accountStats = stats;
+      const result = {
+        id: `${this.modeId}-${this.matchNo}`,
+        mode: this.modeId,
+        participated,
+        won,
+        before,
+        after: p.xp,
+        rankBefore,
+        rankAfter,
+        award,
+        match: {
+          kills: p.match.humanKills + p.match.botKills,
+          deaths: p.match.deaths,
+          headshots: p.match.humanHeadshots + p.match.botHeadshots,
+          humanKills: p.match.humanKills,
+          botKills: p.match.botKills,
+          assists: p.match.assists,
+          objectives: p.match.objectives,
+        },
+        stats: { ...stats },
+      };
+      p.pendingResult = result;
+      if (rankAfter !== rankBefore) this.rosterRev++;
+      try {
+        this.onMatch?.(p.account, {
+          xp: p.xp,
+          career: p.career,
+          badges: p.badges,
+          stats,
+          result,
+        })?.catch?.(() => {});
+      } catch { /* Progress persistence must never stop a live match from resetting. */ }
+    }
+  }
+
+  /** Start the next controller round with a fresh per-match ledger, not fresh careers. */
+  beginProgressionMatch() {
+    this.matchNo++;
+    for (const p of this.players.values()) {
+      p.match = {
+        joinedAt: this.now(),
+        humanKills: 0,
+        botKills: 0,
+        humanHeadshots: 0,
+        botHeadshots: 0,
+        assists: 0,
+        objectives: 0,
+        deaths: 0,
+        settled: false,
+      };
+      p.pendingResult = null;
+    }
+  }
+
   /** Snapshot body shared by all recipients; `ack` and `self` are stamped per
    *  client in server/index.js. */
   snapshotBase() {
@@ -1272,7 +1430,7 @@ export class Room {
       // what the fight needs. It is also why interp.js needs no change: `{ ...pb }` copies
       // a discrete field through untouched, and snapping a value that moves a handful of
       // times per career at 20Hz is exactly right.
-      const rk = rankOf(p.career);
+      const rk = rankOfXp(progressionXpOf(p));
       if (rk > 0) player.rk = rk;
       // Round-trip milliseconds, and the ONE roster-ish field that belongs in the snapshot
       // rather than in MSG.ROSTER: a ping is a live reading. It moves every second, a

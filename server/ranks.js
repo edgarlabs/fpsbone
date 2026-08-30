@@ -29,8 +29,10 @@
 
 import { readFileSync, writeFileSync, renameSync, unlinkSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
+import { Pool } from 'pg';
 
 import { TRACK_KEYS } from '../shared/badges.js';
+import { XP_PER_LEGACY_KILL, cleanStats } from '../shared/progression.js';
 
 /**
  * FPSBONE_RANKS redirects the store, and exists so that verify.mjs can exercise this
@@ -46,6 +48,9 @@ const TMP = `${FILE}.tmp`;
 /** Bounded, because the keys arrive unverified from clients. Insertion order in a Map is
  *  the LRU order for free, so eviction is the first key and a touch is delete-then-set. */
 const MAX_ACCOUNTS = 5000;
+const MAX_HISTORY = 20;
+let pool = null;
+let storageKind = 'file';
 
 /** accountId -> `{ k: career kills, b: { track: count } }`. */
 const store = new Map();
@@ -65,7 +70,10 @@ const store = new Map();
  * gets written back out and read in again forever.
  */
 function readRecord(v) {
-  if (Number.isFinite(v) && v >= 0) return { k: Math.floor(v), b: {} };
+  if (Number.isFinite(v) && v >= 0) {
+    const k = Math.floor(v);
+    return { k, b: {}, x: k * XP_PER_LEGACY_KILL, s: cleanStats(), h: [] };
+  }
   if (!v || typeof v !== 'object' || Array.isArray(v)) return null;
   if (!(Number.isFinite(v.k) && v.k >= 0)) return null;
   const b = {};
@@ -75,7 +83,12 @@ function readRecord(v) {
       if (Number.isFinite(n) && n > 0) b[key] = Math.floor(n);
     }
   }
-  return { k: Math.floor(v.k), b };
+  const k = Math.floor(v.k);
+  const x = Number.isFinite(v.x) && v.x >= 0
+    ? Math.floor(v.x)
+    : k * XP_PER_LEGACY_KILL;
+  const h = Array.isArray(v.h) ? v.h.filter((entry) => entry && typeof entry === 'object').slice(-MAX_HISTORY) : [];
+  return { k, b, x, s: cleanStats(v.s), h };
 }
 
 let dirty = false;
@@ -111,6 +124,55 @@ try {
   if (err.code !== 'ENOENT') console.warn(`  careers: ${FILE} unreadable (${err.code ?? err.message}) — starting empty`);
 }
 
+// Render supplies DATABASE_URL when a PostgreSQL database is linked. Loading the compact
+// account table once at boot keeps combat and snapshots entirely in memory; only match-end
+// settlement writes to the database. With no URL the same code uses the local JSON store,
+// which keeps development and private browser-hosted matches working.
+const DATABASE_URL = process.env.DATABASE_URL?.trim();
+if (DATABASE_URL) {
+  try {
+    pool = new Pool({
+      connectionString: DATABASE_URL,
+      // Render's private same-region URL is plain private networking; the external URL
+      // explicitly carries sslmode=require. Following the URL keeps both routes valid.
+      ssl: /[?&]sslmode=require(?:&|$)/.test(DATABASE_URL) ? { rejectUnauthorized: false } : false,
+      max: 4,
+      connectionTimeoutMillis: 8000,
+    });
+    await pool.query(`
+      CREATE TABLE IF NOT EXISTS player_accounts (
+        id TEXT PRIMARY KEY,
+        xp BIGINT NOT NULL DEFAULT 0,
+        career_kills INTEGER NOT NULL DEFAULT 0,
+        badges JSONB NOT NULL DEFAULT '{}'::jsonb,
+        stats JSONB NOT NULL DEFAULT '{}'::jsonb,
+        match_history JSONB NOT NULL DEFAULT '[]'::jsonb,
+        updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+      )
+    `);
+    const loaded = await pool.query(
+      'SELECT id, xp, career_kills, badges, stats, match_history FROM player_accounts ORDER BY updated_at DESC LIMIT $1',
+      [MAX_ACCOUNTS],
+    );
+    for (const row of loaded.rows.reverse()) {
+      const rec = readRecord({
+        k: Number(row.career_kills),
+        b: row.badges,
+        x: Number(row.xp),
+        s: row.stats,
+        h: row.match_history,
+      });
+      if (rec) store.set(row.id, rec);
+    }
+    storageKind = 'postgres';
+    console.log(`  accounts: PostgreSQL ready (${loaded.rowCount} loaded)`);
+  } catch (err) {
+    console.warn(`  accounts: PostgreSQL unavailable (${err.code ?? err.message}) — using file fallback`);
+    await pool?.end().catch(() => {});
+    pool = null;
+  }
+}
+
 /** Move a key to the young end, and drop the oldest if the cap is exceeded. */
 function touch(id) {
   if (store.has(id)) {
@@ -123,6 +185,7 @@ function touch(id) {
 }
 
 function schedule() {
+  if (pool) return;
   dirty = true;
   if (timer) return;
   // unref'd: a pending write must not be the reason the process stays alive. The exit
@@ -161,7 +224,15 @@ export function flush() {
   // empty rather than written as `{}` — most accounts on a fresh upgrade have no badges
   // yet, and eight bytes each across five thousand of them is worth not spending.
   const out = {};
-  for (const [id, r] of store) out[id] = Object.keys(r.b).length ? { k: r.k, b: r.b } : { k: r.k };
+  for (const [id, r] of store) {
+    const row = { k: r.k };
+    const hasStats = Object.values(r.s).some((n) => n > 0);
+    if (r.x !== r.k * XP_PER_LEGACY_KILL && (hasStats || r.h.length)) row.x = r.x;
+    if (hasStats) row.s = r.s;
+    if (Object.keys(r.b).length) row.b = r.b;
+    if (r.h.length) row.h = r.h;
+    out[id] = row;
+  }
   const text = JSON.stringify(out);
   let last = null;
   for (const wait of RETRY_MS) {
@@ -207,12 +278,26 @@ export function badgesOf(id) {
   return { ...(store.get(id)?.b ?? {}) };
 }
 
+/** Private account profile. Copies every nested value before a Room can mutate it. */
+export function profileOf(id) {
+  if (!id) return { xp: 0, career: 0, badges: {}, stats: cleanStats(), history: [] };
+  touch(id);
+  const rec = store.get(id);
+  return {
+    xp: rec?.x ?? 0,
+    career: rec?.k ?? 0,
+    badges: { ...(rec?.b ?? {}) },
+    stats: cleanStats(rec?.s),
+    history: [...(rec?.h ?? [])],
+  };
+}
+
 /** Record a career total. Called from the Room's `onCareer` hook, which only fires for a
  *  player that has an account — bots and anonymous clients never reach here. */
 export function setCareer(id, kills, badges) {
   if (!id || !Number.isFinite(kills)) return;
   touch(id);
-  const rec = store.get(id) ?? { k: 0, b: {} };
+  const rec = store.get(id) ?? { k: 0, b: {}, x: 0, s: cleanStats(), h: [] };
   rec.k = Math.max(rec.k, Math.floor(kills));
   // Per key, and monotonic per key for the same reason the kill count is: this arrives from
   // a Room, and a Room that was handed a stale badge map — a second window on the same
@@ -225,6 +310,47 @@ export function setCareer(id, kills, badges) {
   }
   store.set(id, rec);
   schedule();
+}
+
+/** Save one server-issued match receipt. This is the only PostgreSQL write path. */
+export async function settleMatch(id, value = {}) {
+  if (!id) return;
+  touch(id);
+  const rec = store.get(id) ?? { k: 0, b: {}, x: 0, s: cleanStats(), h: [] };
+  rec.k = Math.max(rec.k, Math.floor(Number(value.career) || 0));
+  rec.x = Math.max(rec.x, Math.floor(Number(value.xp) || 0));
+  rec.s = cleanStats(value.stats);
+  if (value.badges && typeof value.badges === 'object') {
+    for (const key of TRACK_KEYS) {
+      const n = Math.floor(Number(value.badges[key]) || 0);
+      if (n > 0) rec.b[key] = Math.max(rec.b[key] ?? 0, n);
+    }
+  }
+  if (value.result && typeof value.result === 'object') {
+    rec.h = [...rec.h.filter((entry) => entry?.id !== value.result.id), value.result].slice(-MAX_HISTORY);
+  }
+  store.set(id, rec);
+
+  if (!pool) {
+    schedule();
+    return;
+  }
+  await pool.query(
+    `INSERT INTO player_accounts (id, xp, career_kills, badges, stats, match_history, updated_at)
+     VALUES ($1, $2, $3, $4::jsonb, $5::jsonb, $6::jsonb, NOW())
+     ON CONFLICT (id) DO UPDATE SET
+       xp = GREATEST(player_accounts.xp, EXCLUDED.xp),
+       career_kills = GREATEST(player_accounts.career_kills, EXCLUDED.career_kills),
+       badges = EXCLUDED.badges,
+       stats = EXCLUDED.stats,
+       match_history = EXCLUDED.match_history,
+       updated_at = NOW()`,
+    [id, rec.x, rec.k, JSON.stringify(rec.b), JSON.stringify(rec.s), JSON.stringify(rec.h)],
+  );
+}
+
+export function storageState() {
+  return { kind: storageKind, durable: storageKind === 'postgres' };
 }
 
 /** Test seam: verify.mjs needs to see the cap and the LRU order without 5000 sockets. */
