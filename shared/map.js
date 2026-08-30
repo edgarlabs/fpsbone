@@ -48,6 +48,13 @@ const box = (x, y, z, w, h, d, c) => ({ x, y, z, w, h, d, c });
  *  shadow frustum has to cover it, and fuzz.mjs asserts nobody ever gets above it. */
 export const ARENA = 64;
 export const WALL_H = 9;
+/** Public identity for the one authored battleground. Kept beside the geometry so the
+ * lobby and the renderer cannot quietly give the same place two different names. */
+export const MAP = Object.freeze({
+  id: 'foundry-64',
+  label: 'FOUNDRY 64',
+  location: 'coastal reclamation yard',
+});
 const HALF = ARENA / 2;
 
 const boxes = [];
@@ -147,6 +154,16 @@ pair(-4.5, MID_TOP + 0.5, 0, 2.5, 1, 3.5, 'wallB');
 for (const z of [-16, 0, 16]) {
   pair(-13.5, 2.0, z, 1.2, 4, 12, 'wallA');
 }
+
+// -------------------------------------------------------------- mid gantry
+// The visual overhaul gives mid a suspended steel service bridge readable from every
+// approach. It could have been client-only because nobody can reach it, but bullets can:
+// visible structure that a shot passes through is dishonest in an FPS. These two boxes
+// therefore join the authoritative collision map. There are deliberately no uprights
+// down to the divider walls: even one interrupted the raised-mid sightline whose whole
+// purpose is tested below in verify.mjs.
+boxes.push(box(0, 7.25, 0, 28, 0.7, 0.8, 'gantry'));
+boxes.push(box(0, 6.55, 0, 9, 0.65, 0.7, 'gantry'));
 
 // -------------------------------------------------------------- lane perches
 // A raised platform in each lane, hard against the outer wall, reached by its own

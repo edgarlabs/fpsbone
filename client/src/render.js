@@ -1,14 +1,14 @@
 // Scene construction and avatar management.
 //
-// The whole visual style is: untextured boxes and capsules, one directional key
-// light, hemisphere fill, fog. A single directional light is what gives every box
-// face its own brightness — that face-value separation *is* the look, and it is
-// why no textures are needed.
+// The combatants remain clean box-and-capsule silhouettes; FOUNDRY 64 adds restrained
+// procedural surface grain, authored markings and an industrial skyline around them.
+// One directional key, hemisphere fill and fog preserve strong face separation so that
+// environment detail never costs player readability.
 
 import * as THREE from 'three';
-import { mergeGeometries } from 'three/examples/jsm/utils/BufferGeometryUtils.js';
 import * as C from '../../shared/constants.js';
-import { ARENA, WORLD_BOXES } from '../../shared/map.js';
+import { ARENA } from '../../shared/map.js';
+import { buildEnvironment } from './environment.js';
 import { halfHAt, eyeY } from '../../shared/movement.js';
 // The rank device, drawn once and worn twice: this file puts it over a head, and
 // hud.js puts the same canvas in the scoreboard's rank gutter. See insignia.js for
@@ -39,30 +39,6 @@ import {
   ARM_UPPER,
   ARM_FORE,
 } from './rig.js';
-
-function buildLevel(scene) {
-  // One merged mesh per palette colour — the entire arena in a handful of draw
-  // calls instead of one per box.
-  const groups = new Map();
-  for (const b of WORLD_BOXES) {
-    const g = new THREE.BoxGeometry(b.w, b.h, b.d);
-    g.translate(b.x, b.y, b.z);
-    if (!groups.has(b.c)) groups.set(b.c, []);
-    groups.get(b.c).push(g);
-  }
-
-  for (const [key, geos] of groups) {
-    const merged = mergeGeometries(geos, false);
-    for (const g of geos) g.dispose();
-    const mesh = new THREE.Mesh(
-      merged,
-      new THREE.MeshLambertMaterial({ color: C.PALETTE[key], flatShading: true }),
-    );
-    mesh.castShadow = true;
-    mesh.receiveShadow = true;
-    scene.add(mesh);
-  }
-}
 
 // Death animation timings. A corpse that vanishes the frame it dies gives you
 // nothing to confirm the kill against, and it deletes the one piece of information
@@ -136,11 +112,9 @@ function setAvatarShield(a, on) {
 // A count of insignia marks floating over each player's head. `shared/ranks.js` argues why
 // it is a COUNT and not a name; this is how the count gets drawn.
 //
-// THIS IS THE GAME'S FIRST TEXTURE. The header of this file says the style is untextured
-// boxes and capsules and that no textures are needed, and that is still true of the WORLD —
-// so the exception is deliberate and worth naming here rather than leaving for the next
-// reader to find and assume is an accident. There is no way to build five stars out of lit
-// boxes that survives being three pixels tall.
+// This remains the only texture carried by a combatant. The world now owns low-contrast
+// procedural grain and signs, but a rank needs a dedicated raster for a different reason:
+// there is no way to build five stars out of lit boxes that survives being three pixels tall.
 //
 // Three choices in it are load-bearing, and each one replaced something that looked simpler:
 //
@@ -886,6 +860,9 @@ export function createScene(canvas, baseFov = 85) {
     powerPreference: 'high-performance',
   });
   renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+  renderer.outputColorSpace = THREE.SRGBColorSpace;
+  renderer.toneMapping = THREE.ACESFilmicToneMapping;
+  renderer.toneMappingExposure = 1.08;
   renderer.shadowMap.enabled = true;
   renderer.shadowMap.type = THREE.PCFSoftShadowMap;
 
@@ -975,7 +952,7 @@ export function createScene(canvas, baseFov = 85) {
   sun.shadow.camera.updateProjectionMatrix();
   scene.add(sun);
 
-  buildLevel(scene);
+  buildEnvironment(scene);
 
   const avatars = new Map();
 

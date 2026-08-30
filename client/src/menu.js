@@ -10,6 +10,7 @@
 // handshake's room; Phase 4 does not create that handshake until Join is pressed.
 
 import { MODES, MODE_IDS } from '../../shared/modes.js';
+import { MAP } from '../../shared/map.js';
 import { WEAPONS } from '../../shared/weapons.js';
 import { HERE, fastest, pingGrade } from '../../shared/regions.js';
 import { TIERS, MAX_TIER } from '../../shared/ranks.js';
@@ -313,7 +314,7 @@ export function createMenu(settings, cbs) {
               + `${reserved ? ` · ${reserved} reconnecting` : ''}`;
           }
         }
-        card.innerHTML = `<b>${m.label}${count}</b><i>${blurb}</i>`;
+        card.innerHTML = `<b>${m.label}${count}</b><i>${MAP.label.toLowerCase()} · ${blurb}</i>`;
         if (live && !on && !full && matchState === 'lobby') {
           card.addEventListener('click', () => {
             settings.set({ mode: id });

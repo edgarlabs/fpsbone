@@ -46,6 +46,9 @@
 // Part L is the killmark: the six-leg ladder in shared/spree.js, the four seconds main.js
 // measures it over, and the class string hud.js turns that into. The only counter in the
 // game with no server copy, so it is the only one where the suite IS the second opinion.
+// Part Q is FOUNDRY 64's environment contract: one public map name, readable zones,
+// authoritative overhead collision, procedural assets and batched static geometry. It
+// protects the visual overhaul from turning back into a grey box or into phantom cover.
 //
 // Part I opens two real sockets and confirms each client sees the other — and each
 // other's bots, since the room is shared and the count is a live request.
@@ -61,7 +64,8 @@ import { readFileSync, writeFileSync, existsSync, unlinkSync, mkdirSync, rmdirSy
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import * as C from './shared/constants.js';
-import { ARENA, SPAWNS, TEAM_SPAWNS, WORLD_BOXES } from './shared/map.js';
+import { ARENA, MAP, SPAWNS, TEAM_SPAWNS, WORLD_BOXES } from './shared/map.js';
+import { ENVIRONMENT_ID, ZONE_LABELS } from './client/src/environment.js';
 import { rayWorld, overlapsBox, depenetrate, EPS } from './shared/collide.js';
 import {
   createPlayerState, stepPlayer, sanitizeInput, EMPTY_INPUT, halfOf, halfHAt, eyeY, aimDir,
@@ -9628,6 +9632,46 @@ const okP = (cond, label, detail = '') =>
       `xp ${player.xp}, receipt ${player.pendingResult}, kills ${player.match.humanKills}`);
 }
 console.log([...pP, ...fP].join('\n'));
+// ─────────────────────────────────────────── Part Q: FOUNDRY 64 environment
+console.log('\n=== Part Q — FOUNDRY 64 environment and visual truth ===\n');
+const pQ = [], fQ = [];
+const okQ = (cond, label, detail = '') =>
+  (cond ? pQ : fQ).push(`${cond ? 'PASS' : 'FAIL'}  ${label}${detail ? `  — ${detail}` : ''}`);
+
+{
+  const envSrc = readFileSync('./client/src/environment.js', 'utf8');
+  const menuSrc = readFileSync('./client/src/menu.js', 'utf8');
+  const gantry = WORLD_BOXES.filter((b) => b.c === 'gantry');
+  const midEye = 2.8 + C.PLAYER_HALF_H + C.EYE_OFFSET;
+
+  okQ(MAP.id === ENVIRONMENT_ID && MAP.label === 'FOUNDRY 64' && MAP.location.length > 8,
+      'the lobby, geometry and renderer share one authored map identity',
+      `${MAP.label} · ${MAP.location}`);
+  okQ(ZONE_LABELS.join('|') === 'ALPHA|MID|BRAVO' && new Set(ZONE_LABELS).size === 3,
+      'the arena has three stable callout zones rather than anonymous grey space',
+      ZONE_LABELS.join(' / '));
+  okQ(new Set([C.PALETTE.floor, C.PALETTE.wallA, C.PALETTE.wallB, C.PALETTE.stair, C.PALETTE.gantry]).size === 5,
+      'floor, concrete, steel cover, climbable stairs and overhead structure have distinct materials',
+      'five gameplay surfaces, five albedos');
+  okQ(gantry.length === 2 && gantry.every((b) => b.y - b.h / 2 > midEye),
+      'the visible service bridge is authoritative collision and stays above the raised-mid eye line',
+      `${gantry.length} solids, lowest edge ${Math.min(...gantry.map((b) => b.y - b.h / 2)).toFixed(2)}u > mid eye ${midEye.toFixed(2)}u`);
+  okQ(/mergeGeometries\(/.test(envSrc) && /new THREE\.InstancedMesh/.test(envSrc),
+      'static detail is merged and repeated markings are instanced for low draw-call pressure',
+      'geometry batching and GPU instances both present');
+  okQ(/buildSky\(scene\)/.test(envSrc) && /buildFloorLanguage\(scene\)/.test(envSrc)
+      && /buildWayfinding\(scene\)/.test(envSrc) && /buildSkyline\(scene\)/.test(envSrc),
+      'the environment includes atmosphere, navigation paint, callout signs and an exterior skyline',
+      'four independent readability layers');
+  okQ(!/TextureLoader|fetch\(|https?:\/\//.test(envSrc),
+      'the map owns its procedural assets and needs no remote texture host',
+      'cold starts and offline practice render the same environment');
+  okQ(menuSrc.includes("import { MAP } from '../../shared/map.js'")
+      && menuSrc.includes('MAP.label.toLowerCase()'),
+      'every lobby card names the battleground before a player joins',
+      MAP.label.toLowerCase());
+}
+console.log([...pQ, ...fQ].join('\n'));
 // ─────────────────────────────────────────── Part I: two live clients
 console.log('\n=== Part I — two live clients over the wire ===\n');
 
