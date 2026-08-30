@@ -16,6 +16,8 @@ import { halfHAt, eyeY } from '../../shared/movement.js';
 import { insigniaCanvas, FIELD_H } from './insignia.js';
 import { stepProjectile } from '../../shared/projectile.js';
 import { JAM_CLEAR_MS, cycleMsOf, idAt } from '../../shared/weapons.js';
+import { DEFAULT_FINISH, finishOf, sanitizeCosmetics } from '../../shared/cosmetics.js';
+import { operatorFor } from '../../shared/operators.js';
 // The rig — proportions, the arm solve, and every hold — lives in its own module with no
 // three.js in it, so `npm run verify` can import it in plain Node and MEASURE that the
 // hands land on the weapon. That is the entire reason it is not in this file: the previous
@@ -94,8 +96,26 @@ function setAvatarOpacity(a, o) {
 function setAvatarTeam(a, team) {
   if (a.team === team) return;
   a.team = team;
-  // The body material is shared with the gun, so the whole silhouette recolours.
-  a.bodyMat.color.setHex(team === 1 ? C.PALETTE.teamA : team === 2 ? C.PALETTE.teamB : C.PALETTE.accent);
+  const op = operatorFor(team, a.id);
+  a.operator = op.id;
+  a.uniformMat.color.setHex(op.primary);
+  a.armorMat.color.setHex(op.secondary);
+  a.clothMat.color.setHex(op.cloth);
+  a.gearMat.color.setHex(op.gear);
+  a.skinMat.color.setHex(op.skin);
+  a.operatorAccentMat.color.setHex(op.accent);
+  for (const g of a.sentinelKit) g.visible = op.id === 'sentinel';
+  for (const g of a.raiderKit) g.visible = op.id === 'raider';
+}
+
+function setAvatarFinish(a, id = DEFAULT_FINISH) {
+  const normalized = sanitizeCosmetics({ finish: id }).finish ?? DEFAULT_FINISH;
+  if (a.finish === normalized) return;
+  const f = finishOf(normalized);
+  a.finish = normalized;
+  a.weaponMat.color.setHex(f.steel);
+  a.weaponDarkMat.color.setHex(f.dark);
+  a.weaponTrimMat.color.setHex(f.trim);
 }
 
 /** Show or hide the spawn-protection ring. Toggled off `sp` in the snapshot, so it
@@ -259,8 +279,9 @@ const SNOW_COLOR = 0xeef3f9;
  */
 function buildWeapon(a, id) {
   const g = new THREE.Group();
-  for (const [w, h, d, x, y, z, tag] of holdOf(id).parts) {
-    const mesh = new THREE.Mesh(new THREE.BoxGeometry(w, h, d), tag === 'snow' ? a.snowMat : a.bodyMat);
+  for (const [i, [w, h, d, x, y, z, tag]] of holdOf(id).parts.entries()) {
+    const weaponMat = i === 0 ? a.weaponMat : i % 3 === 0 ? a.weaponTrimMat : a.weaponDarkMat;
+    const mesh = new THREE.Mesh(new THREE.BoxGeometry(w, h, d), tag === 'snow' ? a.snowMat : weaponMat);
     mesh.position.set(x, y, z);
     // Only the receiver-sized boxes cast. A shadow pass over the slivers — barrels, sights
     // — draws a silhouette indistinguishable from the one the big box draws by itself.
@@ -626,7 +647,16 @@ function reviveAvatar(a) {
 
 function makeAvatar(id) {
   const group = new THREE.Group();
-  const mat = new THREE.MeshLambertMaterial({ color: C.PALETTE.accent, flatShading: true });
+  const material = (color) => new THREE.MeshLambertMaterial({ color, flatShading: true });
+  const uniformMat = material(0x315f82);
+  const armorMat = material(0x1d3548);
+  const clothMat = material(0x5e7682);
+  const gearMat = material(0x18232b);
+  const skinMat = material(0xa97856);
+  const operatorAccentMat = material(0x58c8c7);
+  const weaponMat = material(0x3a4351);
+  const weaponDarkMat = material(0x252c38);
+  const weaponTrimMat = material(0x357e69);
   // Its own material, because the one thing in the game that is not gunmetal must not be
   // repainted by a team colour. Created up front rather than on the first snowball so it is
   // already in `materials` when the corpse fade starts driving opacity.
@@ -648,7 +678,7 @@ function makeAvatar(id) {
   // set only on the parts big enough to matter — torso, thighs, head, gun. A shadow map
   // pass over fourteen little boxes per player costs real time and draws a silhouette
   // indistinguishable from the four large ones.
-  const part = (parent, w, h, d, x, y, z, m = mat, shadow = false) => {
+  const part = (parent, w, h, d, x, y, z, m = uniformMat, shadow = false) => {
     const mesh = new THREE.Mesh(new THREE.BoxGeometry(w, h, d), m);
     mesh.position.set(x, y, z);
     mesh.castShadow = shadow;
@@ -663,9 +693,25 @@ function makeAvatar(id) {
     return g;
   };
 
-  part(duck, RIG.pelvisW, RIG.pelvisH, RIG.pelvisD, 0, RIG.pelvisY);
-  part(duck, RIG.torsoW, RIG.torsoH, RIG.torsoD, 0, RIG.torsoY, 0, mat, true);
-  part(duck, RIG.neckW, RIG.neckH, RIG.neckW, 0, RIG.neckY);
+  part(duck, RIG.pelvisW, RIG.pelvisH, RIG.pelvisD, 0, RIG.pelvisY, 0, armorMat);
+  part(duck, RIG.torsoW, RIG.torsoH, RIG.torsoD, 0, RIG.torsoY, 0, uniformMat, true);
+  part(duck, RIG.neckW, RIG.neckH, RIG.neckW, 0, RIG.neckY, 0, skinMat);
+
+  // Close-fitting faction gear adds identity without lying about the server hitbox.
+  // Sentinel wears a squared plate carrier; Raider wears a lighter crossed harness.
+  const sentinelBody = new THREE.Group();
+  const raiderBody = new THREE.Group();
+  duck.add(sentinelBody, raiderBody);
+  part(sentinelBody, RIG.torsoW + 0.035, RIG.torsoH * 0.55, RIG.torsoD + 0.055,
+    0, RIG.torsoY + 0.07, -0.012, armorMat, true);
+  part(sentinelBody, RIG.torsoW * 0.34, 0.055, RIG.torsoD + 0.07,
+    0, RIG.torsoY - 0.13, -0.01, operatorAccentMat);
+  part(raiderBody, 0.075, RIG.torsoH * 0.9, RIG.torsoD + 0.045,
+    -0.12, RIG.torsoY, -0.02, gearMat);
+  part(raiderBody, 0.075, RIG.torsoH * 0.9, RIG.torsoD + 0.045,
+    0.12, RIG.torsoY, -0.02, gearMat);
+  part(raiderBody, RIG.torsoW + 0.025, 0.07, RIG.torsoD + 0.05,
+    0, RIG.torsoY - 0.17, -0.01, operatorAccentMat);
 
   // Legs. Hip and knee are real joints because the walk cycle swings them — a figure
   // that slides across the floor with rigid legs is the single thing that reads most
@@ -673,11 +719,12 @@ function makeAvatar(id) {
   const legs = [];
   for (const side of [1, -1]) {
     const hip = joint(duck, side * RIG.hipX, RIG.hipY, 0);
-    part(hip, RIG.thighW, RIG.thighH, RIG.thighD, 0, -RIG.thighH / 2, 0, mat, true);
+    part(hip, RIG.thighW, RIG.thighH, RIG.thighD, 0, -RIG.thighH / 2, 0, clothMat, true);
     const knee = joint(hip, 0, -RIG.thighH, 0);
-    part(knee, RIG.shinW, RIG.shinH, RIG.shinD, 0, -RIG.shinH / 2, 0);
+    part(knee, RIG.shinW, RIG.shinH, RIG.shinD, 0, -RIG.shinH / 2, 0, clothMat);
+    part(knee, RIG.shinW + 0.035, 0.11, RIG.shinD + 0.035, 0, -0.08, -0.025, gearMat);
     // Toes forward, so which way a body is facing survives even from directly above.
-    part(knee, RIG.footW, RIG.footH, RIG.footD, 0, -RIG.shinH - RIG.footH / 2, RIG.footZ);
+    part(knee, RIG.footW, RIG.footH, RIG.footD, 0, -RIG.shinH - RIG.footH / 2, RIG.footZ, gearMat);
     legs.push({ hip, knee });
   }
 
@@ -696,9 +743,10 @@ function makeAvatar(id) {
   const arms = {};
   for (const side of [1, -1]) {
     const arm = joint(shoulders, side * RIG.shoulderX, 0, 0);
-    part(arm, RIG.upperW, ARM_UPPER, RIG.upperD, 0, -ARM_UPPER / 2, 0);
+    part(arm, RIG.upperW, ARM_UPPER, RIG.upperD, 0, -ARM_UPPER / 2, 0, uniformMat);
     const elbow = joint(arm, 0, -ARM_UPPER, 0);
-    part(elbow, RIG.foreW, ARM_FORE, RIG.foreD, 0, -ARM_FORE / 2, 0);
+    part(elbow, RIG.foreW, ARM_FORE, RIG.foreD, 0, -ARM_FORE / 2, 0, clothMat);
+    part(elbow, RIG.foreW * 1.12, 0.1, RIG.foreD * 1.12, 0, -ARM_FORE - 0.05, 0, gearMat);
     arms[side] = { arm, elbow };
   }
 
@@ -710,7 +758,7 @@ function makeAvatar(id) {
   tilt.add(pivot);
 
   const visorMat = new THREE.MeshBasicMaterial({ color: C.PALETTE.visor });
-  part(pivot, RIG.headW, RIG.headH, RIG.headD, 0, RIG.headY - C.EYE_OFFSET, 0, mat, true);
+  part(pivot, RIG.headW, RIG.headH, RIG.headD, 0, RIG.headY - C.EYE_OFFSET, 0, skinMat, true);
   part(
     pivot,
     RIG.visorW,
@@ -721,6 +769,19 @@ function makeAvatar(id) {
     -RIG.headD / 2 - 0.01,
     visorMat,
   );
+
+  const sentinelHead = new THREE.Group();
+  const raiderHead = new THREE.Group();
+  pivot.add(sentinelHead, raiderHead);
+  const headY = RIG.headY - C.EYE_OFFSET;
+  part(sentinelHead, RIG.headW + 0.075, 0.13, RIG.headD + 0.07,
+    0, headY + RIG.headH * 0.38, 0.015, armorMat, true);
+  part(sentinelHead, RIG.headW + 0.095, 0.065, RIG.headD + 0.09,
+    0, headY + RIG.headH * 0.16, 0.02, armorMat);
+  part(raiderHead, RIG.headW + 0.06, 0.075, RIG.headD + 0.055,
+    0, headY + RIG.headH * 0.42, 0.01, clothMat, true);
+  part(raiderHead, RIG.headW * 0.9, 0.075, 0.12,
+    0, headY - 0.085, -RIG.headD / 2 - 0.025, gearMat);
 
   // Spawn-protection marker: a flat ring on the floor at the player's feet, hidden
   // until the snapshot says they are protected.
@@ -780,6 +841,7 @@ function makeAvatar(id) {
   group.add(plate);
 
   return {
+    id,
     group,
     tilt,
     duck,
@@ -818,9 +880,22 @@ function makeAvatar(id) {
      *  Free of the drop: with the topple on X, the resting height comes out as -z of the
      *  unrotated point whatever the roll is, so this cannot bury or float a body. */
     roll: (((id * 2654435761) % 977) / 977 - 0.5) * 0.9,
-    bodyMat: mat,
+    uniformMat,
+    armorMat,
+    clothMat,
+    gearMat,
+    skinMat,
+    operatorAccentMat,
+    weaponMat,
+    weaponDarkMat,
+    weaponTrimMat,
+    sentinelKit: [sentinelBody, sentinelHead],
+    raiderKit: [raiderBody, raiderHead],
+    operator: null,
+    finish: null,
     snowMat,
-    materials: [mat, visorMat, snowMat],
+    materials: [uniformMat, armorMat, clothMat, gearMat, skinMat, operatorAccentMat,
+      weaponMat, weaponDarkMat, weaponTrimMat, visorMat, snowMat],
     // Not in `materials`: that list is "everything the corpse fade drives", and the
     // shield has its own fixed opacity. Disposed explicitly in syncAvatars' cull.
     shieldMat,
@@ -1441,7 +1516,7 @@ export function createScene(canvas, baseFov = 85) {
     },
 
     /** @param corpseMs how long a body lies there before fading, from the mode. */
-    syncAvatars(states, selfId, now, corpseMs) {
+    syncAvatars(states, selfId, now, corpseMs, roster = null) {
       for (const [id, p] of states) {
         if (id === selfId) continue; // we're inside our own head
         let a = avatars.get(id);
@@ -1454,6 +1529,7 @@ export function createScene(canvas, baseFov = 85) {
           a.yawPrev = p.yaw;
         }
         setAvatarTeam(a, p.tm ?? 0);
+        setAvatarFinish(a, roster?.get?.(id)?.fn);
         a.group.position.set(p.x, p.y, p.z);
         a.group.rotation.y = p.yaw;
         // Whatever they are holding, before anything poses the hands around it. On the wire

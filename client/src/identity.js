@@ -2,14 +2,15 @@
 // THE WEB3 SEAM.
 //
 // Nothing else in the codebase knows where identity comes from. Today it's a
-// random id kept in localStorage. Later this returns a wallet address plus a
-// signature the server can verify, and `cosmetics` becomes on-chain token
-// ownership — with no changes to game, render, or network code.
+// random id kept in localStorage. Later this can return a wallet address plus a
+// signature the server verifies, and `cosmetics` can be derived from ownership.
 //
 // The server already treats `cosmetics` as untrusted display-only data, so
-// introducing a real chain read is additive: verify the signature, then start
-// trusting the field.
+// introducing a real chain read is additive: verify the signature, resolve an approved
+// catalog id, and keep the server allow-list as the final authority.
 // ─────────────────────────────────────────────────────────────────────────────
+
+import { sanitizeCosmetics } from '../../shared/cosmetics.js';
 
 const KEY = 'fpsbone.identity';
 
@@ -32,6 +33,7 @@ export function getIdentity() {
       };
 
   if (override) identity.displayName = override.slice(0, 16);
+  identity.cosmetics = sanitizeCosmetics(identity.cosmetics);
 
   try {
     localStorage.setItem(KEY, JSON.stringify(identity));
@@ -40,4 +42,15 @@ export function getIdentity() {
   }
 
   return identity;
+}
+
+/** Save an approved cosmetic selection on this device and mutate the live identity. */
+export function setIdentityCosmetics(identity, next) {
+  identity.cosmetics = sanitizeCosmetics(next);
+  try {
+    localStorage.setItem(KEY, JSON.stringify(identity));
+  } catch {
+    // The current session still gets the selection when persistence is unavailable.
+  }
+  return identity.cosmetics;
 }

@@ -18,6 +18,7 @@ import { XP_TIERS, rankOfXp, toNextRankXp } from '../../shared/progression.js';
 import { CH_COLORS } from './settings.js';
 import { ACTIONS, keyLabel, refuseReason, rebind } from './binds.js';
 import { insigniaPng } from './insignia.js';
+import { DEFAULT_FINISH, FINISHES, FINISH_IDS, finishOf } from '../../shared/cosmetics.js';
 
 const $ = (id) => document.getElementById(id);
 
@@ -60,6 +61,7 @@ export function createMenu(settings, cbs) {
     regions: $('regions'),
     regionsGrp: $('grp-regions'),
     weps: $('weps'),
+    finishes: $('finishes'),
     hands: $('hands'),
     binds: $('binds'),
     bindNote: $('bind-note'),
@@ -349,11 +351,32 @@ export function createMenu(settings, cbs) {
    *  rather than from the full weapon table. */
   function renderInventoryPreview(id) {
     const w = id ? WEAPONS[id] : null;
+    const finishId = cbs.identity?.cosmetics?.finish ?? DEFAULT_FINISH;
+    const finish = finishOf(finishId);
     els.inventoryGun.dataset.weapon = id ?? 'random';
+    els.inventoryGun.dataset.finish = finishId;
     els.inventoryName.textContent = w?.label ?? 'RANDOM LOADOUT';
     els.inventoryMeta.textContent = w
-      ? `${w.kind} · ${w.dmg ?? 0} damage · ${w.mag == null ? 'no magazine' : `${w.mag} rounds`}`
-      : 'a new legal loadout is dealt every life';
+      ? `${finish.label.toLowerCase()} · ${w.kind} · gameplay stats locked`
+      : `${finish.label.toLowerCase()} · a legal loadout is dealt every life`;
+  }
+
+  function renderFinishes() {
+    const selected = cbs.identity?.cosmetics?.finish ?? DEFAULT_FINISH;
+    els.finishes.replaceChildren(...FINISH_IDS.map((id) => {
+      const finish = FINISHES[id];
+      const item = document.createElement('button');
+      item.type = 'button';
+      item.className = `finish-item${selected === id ? ' on' : ''}`;
+      item.innerHTML = `<i style="--finish:${`#${finish.trim.toString(16).padStart(6, '0')}`}"></i>`
+        + `<span><b>${finish.label}</b><small>${finish.rarity} · approved</small></span>`;
+      item.addEventListener('click', () => {
+        cbs.onFinish?.(id);
+        renderFinishes();
+        renderInventoryPreview(MODES[settings.mode].randomLoadout ? null : settings.wep);
+      });
+      return item;
+    }));
   }
 
   function renderWeapons() {
@@ -641,6 +664,7 @@ export function createMenu(settings, cbs) {
   renderRegions();
   renderModes();
   renderWeapons();
+  renderFinishes();
   renderProfile();
   refreshAll();
 

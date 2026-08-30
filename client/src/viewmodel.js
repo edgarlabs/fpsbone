@@ -26,6 +26,7 @@ import {
 // inspect rotates the weapon about its own centre rather than about the rig origin,
 // and that means undoing the rotation of the pivot by hand — see the inspect branch.
 import { rotateXYZ, CYCLE_HAND } from './rig.js';
+import { DEFAULT_FINISH, finishOf, sanitizeCosmetics } from '../../shared/cosmetics.js';
 
 // A shot has to read at a glance, so it is drawn three ways: a bright beam along
 // the path, a line of smoke puffs that lingers after the beam is gone, and the
@@ -893,8 +894,12 @@ function buildRig(spec) {
   // the whole rig's contents, so the model is unchanged and nothing needs re-tuning.
   const dz = shiftOf(spec);
   let mag = null;
+  const finishMats = [];
   for (const part of spec.parts) {
     const mat = MATS[part[0]]();
+    if (part[0] === 'steel' || part[0] === 'dark' || part[0] === 'trim') {
+      finishMats.push({ role: part[0], mat });
+    }
     const geo =
       part[1] === 'sphere'
         ? new THREE.IcosahedronGeometry(part[2], 1) // faceted, to match the flat look
@@ -930,6 +935,8 @@ function buildRig(spec) {
     half: [(box.x1 - box.x0) / 2, (box.y1 - box.y0) / 2, (box.z1 - box.z0) / 2],
     /** Skin and sleeve materials for both handednesses, for the inspect's fade. */
     armMats: [...arms[1].mats, ...arms['-1'].mats],
+    /** Approved finish channels only. Skin, sleeves, blades, brass and snow stay honest. */
+    finishMats,
     /** The closest to the camera any pose may bring this rig. Every animated pose
      *  clamps against it, so a new animation cannot silently reintroduce the clipping
      *  — hand-checking each branch every time one changes is not a guarantee. */
@@ -1020,6 +1027,18 @@ export function createViewmodel(camera, scene, vmRoot, hooks = {}) {
     hand.add(built.g);
     rigs.set(id, { ...built, spec });
   }
+
+  let finishId = DEFAULT_FINISH;
+  function applyFinish(id) {
+    const normalized = sanitizeCosmetics({ finish: id }).finish ?? DEFAULT_FINISH;
+    if (finishId === normalized && id !== undefined) return;
+    finishId = normalized;
+    const finish = finishOf(normalized);
+    for (const rig of rigs.values()) {
+      for (const { role, mat } of rig.finishMats) mat.color.setHex(finish[role]);
+    }
+  }
+  applyFinish(DEFAULT_FINISH);
 
   const flash = new THREE.PointLight(0xffd9a0, 0, 8, 2);
   hand.add(flash);
@@ -1363,6 +1382,11 @@ export function createViewmodel(camera, scene, vmRoot, hooks = {}) {
     /** @param idx weapon index, as carried on the wire. */
     setWeapon(idx) {
       request(idAt(idx));
+    },
+
+    /** An approved catalog id; unknown requests visibly fall back to standard issue. */
+    setFinish(id) {
+      applyFinish(id);
     },
 
     /** 'left' | 'right'. Applies immediately, mid-match. */

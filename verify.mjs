@@ -49,6 +49,9 @@
 // Part Q is FOUNDRY 64's environment contract: one public map name, readable zones,
 // authoritative overhead collision, procedural assets and batched static geometry. It
 // protects the visual overhaul from turning back into a grey box or into phantom cover.
+// Part R is operator and cosmetic identity: two faction-readable bodies, a fixed approved
+// finish catalog, authoritative sanitizing and a static roster wire that never bloats the
+// movement snapshot or lets a cosmetic become a gameplay stat.
 //
 // Part I opens two real sockets and confirms each client sees the other — and each
 // other's bots, since the room is shared and the count is a live request.
@@ -113,6 +116,10 @@ import { Room, r3 } from './server/room.js';
 import { createHost } from './server/index.js';
 import { MSG, REJECT, encode, decode } from './shared/protocol.js';
 import { EV } from './shared/protocol.js';
+import {
+  DEFAULT_FINISH, FINISHES, FINISH_IDS, finishOf, sanitizeCosmetics,
+} from './shared/cosmetics.js';
+import { OPERATORS, OPERATOR_IDS, operatorIdFor, operatorFor } from './shared/operators.js';
 
 const pass = [];
 const fail = [];
@@ -9684,6 +9691,77 @@ const okQ = (cond, label, detail = '') =>
       MAP.label.toLowerCase());
 }
 console.log([...pQ, ...fQ].join('\n'));
+// ─────────────────────────────────────────── Part R: operators and approved finishes
+console.log('\n=== Part R — operator identity and approved cosmetics ===\n');
+const pR = [], fR = [];
+const okR = (cond, label, detail = '') =>
+  (cond ? pR : fR).push(`${cond ? 'PASS' : 'FAIL'}  ${label}${detail ? `  — ${detail}` : ''}`);
+
+{
+  const renderSrc = readFileSync('./client/src/render.js', 'utf8');
+  const vmSrc = readFileSync('./client/src/viewmodel.js', 'utf8');
+  const menuSrc = readFileSync('./client/src/menu.js', 'utf8');
+  const htmlSrc = readFileSync('./client/index.html', 'utf8');
+  const forbidden = ['damage', 'dmg', 'range', 'spread', 'speed', 'hp', 'armor'];
+
+  okR(FINISH_IDS.length >= 3 && FINISH_IDS[0] === DEFAULT_FINISH
+      && FINISH_IDS.every((id) => FINISHES[id].approved && FINISHES[id].source === 'base'),
+      'the launch catalog contains only reviewed base finishes, with standard issue first',
+      FINISH_IDS.join(', '));
+  okR(FINISH_IDS.every((id) => forbidden.every((key) => !(key in FINISHES[id]))),
+      'no finish declares a gameplay stat',
+      `${forbidden.join('/')} absent from every cosmetic`);
+  okR(JSON.stringify(sanitizeCosmetics({ finish: 'arctic', damage: 999, owner: 'forged' }))
+        === JSON.stringify({ finish: 'arctic' })
+      && Object.keys(sanitizeCosmetics({ finish: 'not-approved', dmg: 999 })).length === 0
+      && Object.keys(sanitizeCosmetics(null)).length === 0,
+      'untrusted cosmetic data is reduced to one approved id or standard issue',
+      'forged ownership, colour and stat fields discarded');
+  okR(finishOf('__missing__') === FINISHES[DEFAULT_FINISH],
+      'an unknown finish visibly falls back instead of disappearing');
+
+  okR(OPERATOR_IDS.length === 2 && new Set(OPERATOR_IDS).size === 2,
+      'the combat roster has exactly two operator factions', OPERATOR_IDS.join(' / '));
+  okR(operatorIdFor(1, 2) === 'sentinel' && operatorIdFor(2, 1) === 'raider'
+      && operatorIdFor(0, 1) !== operatorIdFor(0, 2),
+      'team modes assign fixed readable factions and free-for-all uses both bodies');
+  okR(OPERATOR_IDS.every((id) => {
+    const op = OPERATORS[id];
+    return new Set([op.primary, op.secondary, op.cloth, op.gear, op.accent]).size === 5;
+  }) && operatorFor(1).primary !== operatorFor(2).primary,
+      'each operator has a layered palette and the two primary colours remain distinct');
+
+  const room = new Room(DEFAULT_MODE);
+  const approvedId = room.add('approved', { finish: 'arctic', damage: 999, color: '#fff' });
+  const refusedId = room.add('refused', { finish: 'hacker-gold', damage: 999 });
+  const approved = room.players.get(approvedId);
+  const refused = room.players.get(refusedId);
+  const roster = room.rosterState();
+  const snapshot = room.snapshotBase();
+  okR(JSON.stringify(approved.cosmetics) === JSON.stringify({ finish: 'arctic' })
+      && Object.keys(refused.cosmetics).length === 0,
+      'the authoritative room sanitizes both accepted and refused requests on admission');
+  okR(roster.find((r) => r.i === approvedId)?.fn === 'arctic'
+      && roster.find((r) => r.i === refusedId)?.fn === undefined,
+      'the approved finish rides once with static identity and default issue costs no field');
+  okR(snapshot.players.every((p) => !('fn' in p) && !('cosmetics' in p)),
+      'cosmetics never bloat the 20Hz movement snapshot');
+
+  okR(/sentinelKit/.test(renderSrc) && /raiderKit/.test(renderSrc)
+      && /operatorFor\(team, a\.id\)/.test(renderSrc),
+      'the third-person renderer switches geometry as well as colour between factions');
+  okR(/a\.weaponMat/.test(renderSrc) && !/a\.bodyMat/.test(renderSrc)
+      && /setAvatarFinish/.test(renderSrc),
+      'remote weapons have finish materials separate from their operator uniform');
+  okR(/setFinish\(id\)/.test(vmSrc) && /finishMats/.test(vmSrc),
+      'the first-person weapon consumes the same approved finish channels');
+  okR(menuSrc.includes('renderFinishes') && menuSrc.includes('cbs.onFinish?.(id)')
+      && htmlSrc.includes('id="finishes"') && htmlSrc.includes('marketplace offline'),
+      'inventory equips reviewed finishes while the future marketplace stays explicitly offline');
+  okR(!/ethers|web3|walletconnect|solana|metamask/i.test(menuSrc),
+      'the inventory adds no wallet or chain dependency before ownership verification exists');
+}
+console.log([...pR, ...fR].join('\n'));
 // ─────────────────────────────────────────── Part I: two live clients
 console.log('\n=== Part I — two live clients over the wire ===\n');
 
@@ -9878,8 +9956,9 @@ try {
 const total = fail.length + fB.length + fC.length + fD.length + fE.length + fF.length
   + fG.length + fH.length + fJ.length + fK.length + fL.length + fM.length + fN.length
   + fO.length + fP.length
+  + fQ.length + fR.length
   + f2.length;
 console.log(
-  `\n${total === 0 ? 'ALL PASS' : `${total} FAILURE(S)`} — ${pass.length + pB.length + pC.length + pD.length + pE.length + pF.length + pG.length + pH.length + pJ.length + pK.length + pL.length + pM.length + pN.length + pO.length + pP.length + p2.length} checks passed`,
+  `\n${total === 0 ? 'ALL PASS' : `${total} FAILURE(S)`} — ${pass.length + pB.length + pC.length + pD.length + pE.length + pF.length + pG.length + pH.length + pJ.length + pK.length + pL.length + pM.length + pN.length + pO.length + pP.length + pQ.length + pR.length + p2.length} checks passed`,
 );
 process.exit(total === 0 ? 0 : 1);

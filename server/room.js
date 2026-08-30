@@ -43,6 +43,7 @@ import {
 import {
   BADGES, MAX_LEVEL, MAX_BADGE_TIER, TRACK_KEYS, publicTiers, tierOf, tracksFor,
 } from '../shared/badges.js';
+import { sanitizeCosmetics } from '../shared/cosmetics.js';
 import { resolveShot, rewindTimeFor } from './hitscan.js';
 import { rayWorld } from '../shared/collide.js';
 import {
@@ -282,7 +283,8 @@ export class Room {
     const p = {
       id,
       name,
-      cosmetics,
+      // HELLO is untrusted. Only a server-approved finish id enters the room.
+      cosmetics: sanitizeCosmetics(cosmetics),
       /**
        * The account this player's career is filed under, or null for a bot or a client
        * that sent no id. Third parameter and defaulted, so all five verify.mjs call
@@ -477,6 +479,8 @@ export class Room {
       if (rk > 0) row.rk = rk;
       const bg = publicTiers(p.badges);
       if (Object.keys(bg).length) row.bg = bg;
+      // Static identity belongs here, not in the 20Hz movement snapshot.
+      if (p.cosmetics.finish) row.fn = p.cosmetics.finish;
       players.push(row);
     }
     return players;

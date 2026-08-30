@@ -22,7 +22,7 @@ import { WEAPON_IDS, WEAPONS, idAt, indexOf, spreadMul, weaponAt } from '../../s
 import { TRACK_KEYS, badgeOf, levelOf, stepOf, tierOf } from '../../shared/badges.js';
 import { SPREE_MS, wingsOf } from '../../shared/spree.js';
 import { cleanStats } from '../../shared/progression.js';
-import { getIdentity } from './identity.js';
+import { getIdentity, setIdentityCosmetics } from './identity.js';
 import { getSettings } from './settings.js';
 import { HERE, loadRegions, probeAll, socketFor } from './regions.js';
 import { createMenu } from './menu.js';
@@ -142,6 +142,7 @@ const viewmodel = createViewmodel(view.camera, view.scene, view.vmRoot, {
   // Both beats come from the animation because it owns where they land in the stroke.
   onCycle: (id, weight, backInMs, homeInMs) => audio.cycle(weight, backInMs, homeInMs),
 });
+viewmodel.setFinish(identity.cosmetics.finish);
 const input = createInput(canvas, settings);
 const interp = createInterpolator();
 const net = createNet({
@@ -362,6 +363,10 @@ const BURST_EARSHOT = {
 const menu = createMenu(settings, {
   identity,
   onWeapon: (id) => input.setWeapon(indexOf(id)),
+  onFinish: (id) => {
+    setIdentityCosmetics(identity, { finish: id });
+    viewmodel.setFinish(identity.cosmetics.finish);
+  },
   onHand: (h) => viewmodel.setHand(h),
   onSens: (v) => input.setSens(v),
   onZoomSens: (v) => input.setZoomSens(v),
@@ -1238,7 +1243,9 @@ function frame(now) {
   view.camera.rotation.set(pitch, yaw, roll);
 
   const states = interp.sample(now);
-  if (states && selfId !== null) view.syncAvatars(states, selfId, now, CORPSE_MS(mode));
+  if (states && selfId !== null) {
+    view.syncAvatars(states, selfId, now, CORPSE_MS(mode), latestRoster);
+  }
   view.tickEffects(now);
 
   const speed = Math.hypot(s.vx, s.vz);

@@ -785,6 +785,10 @@
       .op-leg { top: 141px; width: 31px; height: 82px; border-radius: 4px; }
       .op-leg.l { left: 45px; transform: rotate(3deg); } .op-leg.r { left: 83px; transform: rotate(-3deg); }
       .operator-floor { position: absolute; left: 16%; right: 16%; bottom: 17px; height: 1px; background: var(--self); box-shadow: 0 0 22px rgba(53,196,155,.55); }
+      .faction-strip { display: grid; grid-template-columns: 1fr 1fr; gap: 1px; margin: -7px 0 13px; background: var(--line); }
+      .faction-strip span { padding: 7px 8px; background: rgba(255,255,255,.025); color: var(--dim); font-size: 8px; letter-spacing: 1.1px; text-transform: uppercase; }
+      .faction-strip span:first-child { color: #65b9e7; border-left: 2px solid #438bb9; }
+      .faction-strip span:last-child { color: #e5a65a; border-left: 2px solid #c8792f; }
       .profile-name { font-size: 19px; font-weight: 700; letter-spacing: .4px; color: #fff; }
       .profile-account { margin-top: 4px; color: #8795a3; font-size: 8px; letter-spacing: 1px; text-transform: uppercase; }
       .profile-account.durable { color: #35c49b; }
@@ -810,12 +814,19 @@
       .inventory-list, .inventory-preview { padding: 20px; }
       .inventory-list > label { display: block; margin-bottom: 10px; color: var(--dim); font-size: 9px; letter-spacing: 1.4px; text-transform: uppercase; }
       #weps { display: grid; gap: 7px; }
+      #finishes { display: grid; gap: 7px; margin-top: 10px; }
       .inventory-item { position: relative; display: grid; grid-template-columns: 34px 1fr auto; align-items: center; gap: 10px; padding: 12px; cursor: pointer; border: 1px solid var(--line); background: rgba(255,255,255,.025); }
       .inventory-item:hover { border-color: var(--dim); }
       .inventory-item.on { border-color: var(--self); background: rgba(53,196,155,.08); }
       .inventory-item > span { color: var(--dim); font-size: 9px; }
       .inventory-item b { font-size: 11px; letter-spacing: 1px; }
       .inventory-item i { color: var(--dim); font-style: normal; font-size: 9px; }
+      .finish-item { display: grid; grid-template-columns: 30px 1fr; align-items: center; gap: 10px; padding: 9px 10px; border: 1px solid var(--line); background: rgba(255,255,255,.02); color: var(--ink); cursor: pointer; text-align: left; }
+      .finish-item:hover, .finish-item.on { border-color: var(--self); background: rgba(53,196,155,.065); }
+      .finish-item > i { width: 25px; height: 25px; background: linear-gradient(135deg, var(--finish), #16222c); border: 1px solid rgba(255,255,255,.16); transform: skewX(-8deg); }
+      .finish-item b, .finish-item small { display: block; }
+      .finish-item b { font-size: 9px; letter-spacing: .9px; }
+      .finish-item small { margin-top: 2px; color: var(--dim); font-size: 8px; letter-spacing: .6px; text-transform: uppercase; }
       .inventory-preview { position: relative; display: flex; flex-direction: column; align-items: center; justify-content: center; overflow: hidden; text-align: center; }
       .inventory-preview::before { content: ''; position: absolute; inset: 0; background: radial-gradient(circle, rgba(53,196,155,.1), transparent 56%), repeating-linear-gradient(135deg, transparent 0 19px, rgba(255,255,255,.018) 20px); }
       .inventory-preview > * { position: relative; }
@@ -825,6 +836,10 @@
       #inventory-gun i:nth-child(1) { left: 4%; right: 9%; top: 37px; height: 27px; clip-path: polygon(0 20%,65% 0,100% 30%,99% 75%,22% 100%,0 70%); }
       #inventory-gun i:nth-child(2) { left: 56%; top: 61px; width: 27px; height: 49px; transform: skew(-12deg); }
       #inventory-gun i:nth-child(3) { right: 0; top: 43px; width: 24%; height: 10px; }
+      #inventory-gun[data-finish="foundry"] i { background: linear-gradient(180deg, #45555b, #171f24); border-color: rgba(208,119,38,.55); }
+      #inventory-gun[data-finish="foundry"] i:nth-child(2) { background: linear-gradient(180deg, #dd8735, #713713); }
+      #inventory-gun[data-finish="arctic"] i { background: linear-gradient(180deg, #89a9b8, #273943); border-color: rgba(130,214,220,.6); }
+      #inventory-gun[data-finish="arctic"] i:nth-child(2) { background: linear-gradient(180deg, #94e3e6, #34616e); }
       .inventory-preview h2 { margin-top: 20px; color: #fff; font-size: 23px; letter-spacing: 3px; }
       .inventory-preview > p { margin-top: 4px; font-size: 9px; letter-spacing: 1px; text-transform: uppercase; }
       .market-note { width: min(440px, 90%); margin-top: 30px; padding: 14px; text-align: left; border: 1px solid var(--line); background: rgba(5,10,16,.56); }
@@ -1431,7 +1446,7 @@
           <section class="screen on" data-screen="lobby">
             <div class="lobby-grid">
               <aside class="player-panel">
-                <div class="panel-kicker">active operator</div>
+                <div class="panel-kicker">operator assignment</div>
                 <div class="operator-stage" aria-hidden="true">
                   <div class="operator">
                     <i class="op-head"></i><i class="op-body"></i><i class="op-arm"></i>
@@ -1439,6 +1454,7 @@
                   </div>
                   <span class="operator-floor"></span>
                 </div>
+                <div class="faction-strip"><span>sentinel · security</span><span>raider · breach</span></div>
                 <div class="profile-name" id="profile-name">player</div>
                 <div class="profile-account" id="profile-account">guest account · awaiting server</div>
                 <div class="profile-rank">
@@ -1513,9 +1529,11 @@
               <div class="inventory-list">
                 <label for="weps">available loadout</label>
                 <div id="weps"></div>
+                <label for="finishes" style="margin-top:18px">approved finishes</label>
+                <div id="finishes"></div>
               </div>
               <div class="inventory-preview">
-                <div class="preview-tag">equipped · standard issue</div>
+                <div class="preview-tag">equipped · reviewed cosmetic</div>
                 <div id="inventory-gun"><i></i><i></i><i></i></div>
                 <h2 id="inventory-preview-name">RIFLE</h2>
                 <p id="inventory-preview-meta">base finish · gameplay stats locked</p>
