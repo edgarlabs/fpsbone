@@ -44,5 +44,6 @@ export function createAccountClient({ origin, identity, fetcher = fetch } = {}) 
     profile: () => signed('profile', '/api/account/profile'),
     equip: (finish) => signed('equip', '/api/account/equip', { finish }),
     submit: (submission) => signed('submit', '/api/account/submissions', { submission }),
+    purchase: (finish) => signed('purchase', '/api/account/purchase', { finish }),
   };
 }

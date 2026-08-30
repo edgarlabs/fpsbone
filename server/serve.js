@@ -228,6 +228,7 @@ async function serveApi(req, res, url) {
   const purpose = url.pathname === '/api/account/profile' ? 'profile'
     : url.pathname === '/api/account/equip' ? 'equip'
     : url.pathname === '/api/account/submissions' ? 'submit'
+    : url.pathname === '/api/account/purchase' ? 'purchase'
     : null;
   if (!purpose) {
     json(res, 404, { error: 'not_found' });
@@ -240,23 +241,29 @@ async function serveApi(req, res, url) {
     if (purpose === 'profile') {
       const profile = await ranks.profileFresh(identity.id);
       const submissions = await ranks.submissionsOf(identity.id);
-      json(res, 200, { account: identity.id, profile, submissions });
+      const market = await ranks.marketplaceOf(identity.id, profile);
+      json(res, 200, { account: identity.id, profile, submissions, market });
     } else if (purpose === 'equip') {
       const profile = await ranks.equipFinish(identity.id, body.finish);
       json(res, profile ? 200 : 403, profile ? { profile } : { error: 'finish_not_owned' });
-    } else {
+    } else if (purpose === 'submit') {
       const submission = await ranks.submitCosmetic(identity.id, body.submission);
       const submissions = await ranks.submissionsOf(identity.id);
       json(res, 201, { submission, submissions });
+    } else {
+      const purchase = await ranks.purchaseFinish(identity.id, body.finish);
+      json(res, 200, purchase);
     }
   } catch (err) {
     const known = new Set([
       'body_too_large', 'body_invalid', 'challenge_invalid', 'identity_required',
       'bad_identity_shape', 'bad_identity_signature', 'bad_identity_key',
       'submission_length', 'submission_content', 'submission_palette', 'submission_limit',
+      'finish_not_for_sale', 'already_owned', 'insufficient_credits',
     ]);
     const error = known.has(err?.message) ? err.message : 'request_failed';
     const status = error === 'submission_limit' ? 429
+      : error === 'insufficient_credits' ? 409
       : error === 'request_failed' ? 500
       : error.startsWith('bad_identity') || error.includes('identity') || error === 'challenge_invalid'
         ? 401 : 400;

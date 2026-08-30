@@ -93,6 +93,9 @@ import {
   XP_TIERS, XP_RULES, matchXp, rankOfXp, toNextRankXp,
 } from './shared/progression.js';
 import {
+  STARTER_CREDITS, CREDIT_RULES, MARKET_ITEMS, matchCredits, publicMarket,
+} from './shared/economy.js';
+import {
   BADGES, TRACK_KEYS, SPECIAL_KEYS, TIER_NAMES, MAX_BADGE_TIER, MAX_LEVEL, MAX_STEP,
   labelOf, tierName, tierOf, badgeOf, levelOf, stepOf, toNextStep, tracksFor, publicTiers,
 } from './shared/badges.js';
@@ -7966,9 +7969,10 @@ async function challengeBrowser(sock, nonce) {
   okM(lobbyHtml.includes('id="inventory-preview-name"') && lobbyHtml.includes('id="inventory-gun"')
       && menuSrc.includes('function renderInventoryPreview(id)')
       && lobbyHtml.includes('<b>authoritative ownership</b>')
-      && lobbyHtml.includes('Purchases and NFT claims remain disabled.'),
-      'inventory has a working weapon preview and an explicit reviewed-skins boundary',
-      'the marketplace remains offline while the loadout surface is ready for future cosmetics');
+      && lobbyHtml.includes('Alpha credits have no cash value')
+      && lobbyHtml.includes('promotional items are permanently non-transferable.'),
+      'inventory has a working weapon preview and an explicit closed-alpha economy boundary',
+      'reviewed purchases are live while trading, cash-out and NFT claims remain disabled');
   okM(mainSrc.includes('menu.setPopulation(m.pop ?? {})')
       && lobbyHtml.includes('id="lobby-region"') && menuSrc.includes('renderRegionSummary()'),
       'the first lobby paint includes authoritative population plus live region and ping context',
@@ -9781,8 +9785,8 @@ const okR = (cond, label, detail = '') =>
   okR(/setFinish\(id\)/.test(vmSrc) && /finishMats/.test(vmSrc),
       'the first-person weapon consumes the same approved finish channels');
   okR(menuSrc.includes('renderFinishes') && menuSrc.includes('cbs.onFinish?.(id)')
-      && htmlSrc.includes('id="finishes"') && menuSrc.includes('marketplace offline'),
-      'inventory equips reviewed finishes while the future marketplace stays explicitly offline');
+      && htmlSrc.includes('id="finishes"') && htmlSrc.includes('id="market-items"'),
+      'inventory equips reviewed finishes and keeps the approved marketplace in the same workbench');
   okR(!/ethers|web3|walletconnect|solana|metamask/i.test(menuSrc),
       'the inventory adds no wallet or chain dependency before ownership verification exists');
 }
@@ -10087,6 +10091,125 @@ const okT = (cond, label, detail = '') =>
       'lobby account calls follow the selected game region over HTTP without taking a seat');
 }
 console.log([...pT, ...fT].join('\n'));
+// ─────────────────────────────────────────── Part U: closed alpha economy
+console.log('\n=== Part U — closed alpha marketplace and economy ===\n');
+const pU = [], fU = [];
+const okU = (cond, label, detail = '') =>
+  (cond ? pU : fU).push(`${cond ? 'PASS' : 'FAIL'}  ${label}${detail ? `  — ${detail}` : ''}`);
+
+{
+  const idle = matchCredits({ participated: false, won: true, match: { humanKills: 99 } });
+  const earned = matchCredits({
+    participated: true, won: true,
+    match: { humanKills: 2, botKills: 99, assists: 3, objectives: 1 },
+  });
+  okU(idle.total === 0 && earned.total === CREDIT_RULES.participation
+      + 2 * CREDIT_RULES.humanKill + CREDIT_RULES.botCap
+      + 3 * CREDIT_RULES.assist + CREDIT_RULES.objective + CREDIT_RULES.win,
+      'credits come only from qualifying server-owned match facts',
+      `idle ${idle.total}, earned ${earned.total}`);
+  okU(earned.bots === CREDIT_RULES.botCap
+      && CREDIT_RULES.humanKill > CREDIT_RULES.botKill,
+      'bot farming is capped and a human elimination remains more valuable',
+      `${CREDIT_RULES.humanKill} human, ${CREDIT_RULES.botKill} bot, ${CREDIT_RULES.botCap} bot cap`);
+
+  const catalog = publicMarket([]);
+  okU(STARTER_CREDITS > 0 && catalog.length === Object.keys(MARKET_ITEMS).length
+      && catalog.every((item) => FINISHES[item.finish]?.approved
+        && !FINISHES[item.finish].issued && item.price > 0
+        && item.transferable === false && item.provenance === 'approved_catalog'),
+      'the alpha catalog contains only approved locked cosmetics with non-transferable provenance',
+      catalog.map((item) => `${item.finish}:${item.price}`).join(', '));
+  okU(catalog.every((item) => !['damage', 'dmg', 'range', 'spread', 'speed', 'hp', 'armor']
+    .some((key) => key in item)),
+      'market items cannot carry gameplay statistics');
+
+  let accountClock = 10_000;
+  let accountNonce = 0;
+  const economyGateway = createAccountGateway({
+    ranks: { claimLegacy: async () => {} }, now: () => accountClock,
+    makeToken: () => `economy-nonce-${++accountNonce}`,
+  });
+  const { publicKey, privateKey } = generateKeyPairSync('ec', { namedCurve: 'prime256v1' });
+  const publicDer = publicKey.export({ type: 'spki', format: 'der' }).toString('base64url');
+  const purchaseChallenge = economyGateway.issue('purchase');
+  const purchaseBody = {
+    challenge: purchaseChallenge.challenge,
+    auth: {
+      v: 1, alg: 'ES256', key: publicDer,
+      sig: sign('sha256', Buffer.from(proofText(purchaseChallenge.challenge, '')),
+        { key: privateKey, dsaEncoding: 'ieee-p1363' }).toString('base64url'),
+    },
+  };
+  const purchaseIdentity = await economyGateway.authenticate('purchase', purchaseBody);
+  let replayDenied = false;
+  try { await economyGateway.authenticate('purchase', purchaseBody); } catch { replayDenied = true; }
+  okU(purchaseIdentity.id === deviceAccountId(publicDer) && replayDenied,
+      'a purchase needs its own fresh signed challenge and cannot be replayed');
+
+  const economyFile = join(tmpdir(), `fpsbone-economy-${process.pid}-${Date.now()}.json`);
+  const oldRanksFile = process.env.FPSBONE_RANKS;
+  const oldDatabase = process.env.DATABASE_URL;
+  process.env.FPSBONE_RANKS = economyFile;
+  delete process.env.DATABASE_URL;
+  const economyRanks = await import(`./server/ranks.js?economy=${Date.now()}`);
+  const buyer = `device-${'a'.repeat(32)}`;
+  const poorBuyer = `device-${'b'.repeat(32)}`;
+  const firstItem = catalog.find((item) => item.price <= STARTER_CREDITS);
+  const bought = await economyRanks.purchaseFinish(buyer, firstItem.finish);
+  let duplicateDenied = false;
+  try { await economyRanks.purchaseFinish(buyer, firstItem.finish); } catch (err) {
+    duplicateDenied = err?.message === 'already_owned';
+  }
+  let overspendDenied = false;
+  const expensive = catalog.find((item) => item.price > STARTER_CREDITS);
+  try { await economyRanks.purchaseFinish(poorBuyer, expensive.finish); } catch (err) {
+    overspendDenied = err?.message === 'insufficient_credits';
+  }
+  okU(bought.profile.credits === STARTER_CREDITS - firstItem.price
+      && bought.profile.inventory.includes(firstItem.finish) && duplicateDenied && overspendDenied,
+      'a purchase deducts once, unlocks once, and refuses double ownership or overspending',
+      `${STARTER_CREDITS} → ${bought.profile.credits}, ${firstItem.finish} owned`);
+
+  const result = {
+    id: 'economy-receipt-one', participated: true, won: false,
+    match: { humanKills: 1, botKills: 2, assists: 0, objectives: 0 },
+  };
+  const award = matchCredits(result).total;
+  await economyRanks.settleMatch(buyer, { career: 1, xp: 100, stats: {}, result });
+  const paidOnce = economyRanks.profileOf(buyer);
+  await economyRanks.settleMatch(buyer, { career: 1, xp: 100, stats: {}, result });
+  const paidTwice = economyRanks.profileOf(buyer);
+  okU(paidOnce.credits === bought.profile.credits + award
+      && paidTwice.credits === paidOnce.credits
+      && paidTwice.transactions.filter((tx) => tx.kind === 'match').length === 1,
+      'the same match receipt cannot pay credits twice',
+      `${bought.profile.credits} + ${award} = ${paidTwice.credits}`);
+  economyRanks.flush();
+  if (existsSync(economyFile)) unlinkSync(economyFile);
+  if (existsSync(`${economyFile}.tmp`)) unlinkSync(`${economyFile}.tmp`);
+  if (oldRanksFile === undefined) delete process.env.FPSBONE_RANKS;
+  else process.env.FPSBONE_RANKS = oldRanksFile;
+  if (oldDatabase === undefined) delete process.env.DATABASE_URL;
+  else process.env.DATABASE_URL = oldDatabase;
+
+  const ranksSrc = readFileSync('./server/ranks.js', 'utf8');
+  const serveSrc = readFileSync('./server/serve.js', 'utf8');
+  const mainSrc = readFileSync('./client/src/main.js', 'utf8');
+  const menuSrc = readFileSync('./client/src/menu.js', 'utf8');
+  const lobbyHtml = readFileSync('./client/index.html', 'utf8');
+  okU(ranksSrc.includes('FOR UPDATE') && ranksSrc.includes("source)\n       VALUES ($1, $2, 'purchase')")
+      && ranksSrc.includes("ON CONFLICT (id) DO NOTHING RETURNING id")
+      && ranksSrc.includes("kind, item_id, amount, counterparty, royalty"),
+      'PostgreSQL serializes purchases, records provenance and idempotently pays receipts');
+  okU(serveSrc.includes("'/api/account/purchase'") && mainSrc.includes('accountApi.purchase(finish)')
+      && menuSrc.includes('renderMarketplace') && lobbyHtml.includes('id="market-balance"')
+      && lobbyHtml.includes('no cash value') && lobbyHtml.includes('non-transferable'),
+      'the signed marketplace is wired through the lobby and plainly labels its alpha limits');
+  okU(!/ethers|web3|walletconnect|solana|metamask/i.test(`${serveSrc}\n${mainSrc}\n${menuSrc}`),
+      'real-money, wallet and blockchain behavior stays disabled until a provider and rules exist');
+}
+console.log([...pU, ...fU].join('\n'));
 // ─────────────────────────────────────────── Part I: two live clients
 console.log('\n=== Part I — two live clients over the wire ===\n');
 
@@ -10283,9 +10406,9 @@ try {
 const total = fail.length + fB.length + fC.length + fD.length + fE.length + fF.length
   + fG.length + fH.length + fJ.length + fK.length + fL.length + fM.length + fN.length
   + fO.length + fP.length
-  + fQ.length + fR.length + fS.length + fT.length
+  + fQ.length + fR.length + fS.length + fT.length + fU.length
   + f2.length;
 console.log(
-  `\n${total === 0 ? 'ALL PASS' : `${total} FAILURE(S)`} — ${pass.length + pB.length + pC.length + pD.length + pE.length + pF.length + pG.length + pH.length + pJ.length + pK.length + pL.length + pM.length + pN.length + pO.length + pP.length + pQ.length + pR.length + pS.length + pT.length + p2.length} checks passed`,
+  `\n${total === 0 ? 'ALL PASS' : `${total} FAILURE(S)`} — ${pass.length + pB.length + pC.length + pD.length + pE.length + pF.length + pG.length + pH.length + pJ.length + pK.length + pL.length + pM.length + pN.length + pO.length + pP.length + pQ.length + pR.length + pS.length + pT.length + pU.length + p2.length} checks passed`,
 );
 process.exit(total === 0 ? 0 : 1);

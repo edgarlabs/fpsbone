@@ -79,6 +79,7 @@ export function createMenu(settings, cbs) {
     resultDeaths: $('result-deaths'),
     resultRatio: $('result-ratio'),
     resultXp: $('result-xp'),
+    resultCredits: $('result-credits'),
     resultXpBreakdown: $('result-xp-breakdown'),
     resultBeforeIcon: $('result-rank-before-icon'),
     resultBefore: $('result-rank-before'),
@@ -118,6 +119,10 @@ export function createMenu(settings, cbs) {
     submissionSend: $('submission-send'),
     submissionState: $('submission-state'),
     submissionHistory: $('submission-history'),
+    marketBalance: $('market-balance'),
+    marketItems: $('market-items'),
+    marketHistory: $('market-history'),
+    marketState: $('market-state'),
   };
   const panes = [...document.querySelectorAll('.pane')];
   const screens = [...document.querySelectorAll('.screen')];
@@ -148,6 +153,7 @@ export function createMenu(settings, cbs) {
   let playerStats = { career: 0, xp: 0, stats: {}, kills: 0, deaths: 0 };
   let inventoryState = {
     state: 'loading', owned: new Set(sanitizeInventory()), submissions: [],
+    credits: 0, market: [], transactions: [], purchasing: null,
   };
   let matchState = 'lobby';
   /** The action waiting for a key, or null. */
@@ -399,7 +405,7 @@ export function createMenu(settings, cbs) {
         els.inventoryState.textContent = 'saving equipped finish…';
         try {
           await cbs.onFinish?.(id);
-          els.inventoryState.textContent = `${inventoryState.owned.size}/${FINISH_IDS.length} owned · marketplace offline`;
+          els.inventoryState.textContent = `${inventoryState.owned.size}/${FINISH_IDS.length} owned · economy synced`;
           renderFinishes();
           renderInventoryPreview(MODES[settings.mode].randomLoadout ? null : settings.wep);
         } catch {
@@ -408,6 +414,91 @@ export function createMenu(settings, cbs) {
       });
       return item;
     }));
+  }
+
+  function renderMarketplace() {
+    els.marketBalance.textContent = inventoryState.state === 'ready'
+      ? `${inventoryState.credits} CREDITS` : '— CREDITS';
+    const items = Array.isArray(inventoryState.market) ? inventoryState.market : [];
+    if (!items.length) {
+      const empty = document.createElement('div');
+      empty.className = 'note';
+      empty.textContent = inventoryState.state === 'loading'
+        ? 'Loading approved catalog…' : 'Marketplace unavailable.';
+      els.marketItems.replaceChildren(empty);
+    } else {
+      els.marketItems.replaceChildren(...items.filter((item) => FINISHES[item?.finish]).map((item) => {
+        const finish = FINISHES[item.finish];
+        const row = document.createElement('div');
+        row.className = 'market-item';
+        const swatch = document.createElement('i');
+        swatch.style.setProperty('--finish', `#${finish.trim.toString(16).padStart(6, '0')}`);
+        const copy = document.createElement('span');
+        const title = document.createElement('b');
+        title.textContent = finish.label;
+        const detail = document.createElement('small');
+        detail.textContent = `${item.price} credits · ${item.transferable ? 'transferable' : 'non-transferable'}`;
+        copy.append(title, detail);
+        const buy = document.createElement('button');
+        buy.type = 'button';
+        buy.disabled = item.owned || inventoryState.state !== 'ready'
+          || inventoryState.credits < item.price || inventoryState.purchasing !== null;
+        buy.textContent = item.owned ? 'owned'
+          : inventoryState.credits < item.price ? 'need credits'
+          : inventoryState.purchasing === item.finish ? 'buying…' : 'buy';
+        buy.addEventListener('click', async () => {
+          inventoryState.purchasing = item.finish;
+          els.marketState.textContent = `Purchasing ${finish.label}…`;
+          renderMarketplace();
+          try {
+            const result = await cbs.onMarketPurchase?.(item.finish);
+            const profile = result?.profile ?? {};
+            const market = result?.market ?? {};
+            inventoryState.owned = new Set(sanitizeInventory(profile.inventory));
+            inventoryState.credits = Number(market.credits ?? profile.credits ?? inventoryState.credits);
+            inventoryState.market = market.items ?? inventoryState.market;
+            inventoryState.transactions = market.transactions ?? profile.transactions ?? inventoryState.transactions;
+            els.marketState.textContent = `${finish.label} added to your inventory.`;
+            renderFinishes();
+          } catch (err) {
+            const messages = {
+              insufficient_credits: 'Not enough credits. Complete matches to earn more.',
+              already_owned: 'This finish is already owned.',
+              finish_not_for_sale: 'This catalog item is not for sale.',
+            };
+            els.marketState.textContent = messages[err?.message] ?? 'Purchase failed. No credits were spent.';
+          } finally {
+            inventoryState.purchasing = null;
+            renderMarketplace();
+          }
+        });
+        row.append(swatch, copy, buy);
+        return row;
+      }));
+    }
+
+    const rows = Array.isArray(inventoryState.transactions) ? inventoryState.transactions : [];
+    if (!rows.length) {
+      const empty = document.createElement('div');
+      empty.className = 'note';
+      empty.textContent = 'No economy activity yet.';
+      els.marketHistory.replaceChildren(empty);
+    } else {
+      els.marketHistory.replaceChildren(...rows.slice(0, 8).map((tx) => {
+        const row = document.createElement('div');
+        row.className = 'market-tx';
+        const label = document.createElement('b');
+        label.textContent = tx.kind === 'match' ? 'match award'
+          : tx.kind === 'royalty' ? 'creator royalty'
+          : tx.item_id ? `${tx.item_id} purchase` : tx.kind;
+        const amount = document.createElement('span');
+        const n = Math.floor(Number(tx.amount) || 0);
+        amount.className = n >= 0 ? 'plus' : 'minus';
+        amount.textContent = `${n >= 0 ? '+' : ''}${n}`;
+        row.append(label, amount);
+        return row;
+      }));
+    }
   }
 
   function renderSubmissions() {
@@ -825,6 +916,7 @@ export function createMenu(settings, cbs) {
         ? (summary.kills / summary.deaths).toFixed(2)
         : summary.kills.toFixed(2);
       els.resultXp.textContent = `+${summary.xp}`;
+      els.resultCredits.textContent = `+${Math.max(0, Math.floor(Number(summary.creditAward?.total) || 0))}`;
       const award = summary.award ?? {};
       const parts = [
         ['played', award.participation],
@@ -927,10 +1019,18 @@ export function createMenu(settings, cbs) {
       if (next.state) inventoryState.state = next.state;
       if (Array.isArray(next.owned)) inventoryState.owned = new Set(sanitizeInventory(next.owned));
       if (Array.isArray(next.submissions)) inventoryState.submissions = next.submissions;
+      if (Number.isFinite(next.credits)) inventoryState.credits = Math.max(0, Math.floor(next.credits));
+      if (Array.isArray(next.market)) inventoryState.market = next.market;
+      if (Array.isArray(next.transactions)) inventoryState.transactions = next.transactions;
+      if (Number.isFinite(next.creditDelta)) inventoryState.credits += Math.max(0, Math.floor(next.creditDelta));
+      if (next.transaction && typeof next.transaction === 'object'
+          && !inventoryState.transactions.some((tx) => tx.id === next.transaction.id)) {
+        inventoryState.transactions = [next.transaction, ...inventoryState.transactions].slice(0, 20);
+      }
       if (next.equipped) cbs.identity.cosmetics = next.equipped;
       const labels = {
         loading: 'checking ownership…',
-        ready: `${inventoryState.owned.size}/${FINISH_IDS.length} owned · marketplace offline`,
+        ready: `${inventoryState.owned.size}/${FINISH_IDS.length} owned · economy synced`,
         offline: 'ownership service unavailable · marketplace offline',
         local: 'local practice inventory · marketplace offline',
         guest: 'unsigned guest · inventory saving disabled',
@@ -944,6 +1044,7 @@ export function createMenu(settings, cbs) {
       renderFinishes();
       renderInventoryPreview(MODES[settings.mode].randomLoadout ? null : settings.wep);
       renderSubmissions();
+      renderMarketplace();
     },
     /** The career is private owner data; current kills/deaths come from this match's snapshot. */
     setPlayerStats(next) {

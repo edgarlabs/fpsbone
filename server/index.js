@@ -534,6 +534,7 @@ export function createHost({
             inventory: {
               owned: accountProfile.inventory ?? [],
               equipped: accountProfile.equipped ?? {},
+              credits: accountProfile.credits ?? 0,
             },
           } : {}),
           // How full every lobby is, right now. It rides on WELCOME rather than

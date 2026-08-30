@@ -24,6 +24,7 @@ import {
   DEFAULT_FINISH, FINISHES, sanitizeInventory, sanitizeOwnedCosmetics,
 } from '../../shared/cosmetics.js';
 import { XP_PER_LEGACY_KILL, cleanStats } from '../../shared/progression.js';
+import { STARTER_CREDITS, matchCredits } from '../../shared/economy.js';
 
 const KEY = 'fpsbone.careers.v1';
 
@@ -35,6 +36,7 @@ const MAX_ACCOUNTS = 5000;
 const MAX_HISTORY = 20;
 const freshRecord = () => ({
   k: 0, b: {}, x: 0, s: cleanStats(), h: [], i: sanitizeInventory(), e: DEFAULT_FINISH,
+  c: STARTER_CREDITS, t: [],
 });
 
 /** accountId -> `{ k: career kills, b: { track: count } }`. */
@@ -71,7 +73,9 @@ function readRecord(v) {
   const h = Array.isArray(v.h) ? v.h.filter((entry) => entry && typeof entry === 'object').slice(-MAX_HISTORY) : [];
   const i = sanitizeInventory(v.i);
   const e = sanitizeOwnedCosmetics({ finish: v.e }, i).finish ?? DEFAULT_FINISH;
-  return { k, b, x, s: cleanStats(v.s), h, i, e };
+  const c = Number.isFinite(v.c) && v.c >= 0 ? Math.floor(v.c) : STARTER_CREDITS;
+  const t = Array.isArray(v.t) ? v.t.filter((entry) => entry && typeof entry === 'object').slice(-MAX_HISTORY) : [];
+  return { k, b, x, s: cleanStats(v.s), h, i, e, c, t };
 }
 
 let dirty = false;
@@ -128,6 +132,8 @@ export function flush() {
       const grants = sanitizeInventory(r.i).filter((finish) => !FINISHES[finish].issued);
       if (grants.length) row.i = grants;
       if (r.e && r.e !== DEFAULT_FINISH) row.e = r.e;
+      if (r.c !== STARTER_CREDITS) row.c = r.c;
+      if (r.t.length) row.t = r.t;
       out[id] = row;
     }
     localStorage.setItem(KEY, JSON.stringify(out));
@@ -177,6 +183,7 @@ export function profileOf(id) {
   if (!id) return {
     xp: 0, career: 0, badges: {}, stats: cleanStats(), history: [],
     inventory: sanitizeInventory(), equipped: {},
+    credits: 0, transactions: [],
   };
   touch(id);
   const rec = store.get(id);
@@ -189,6 +196,8 @@ export function profileOf(id) {
     history: [...(rec?.h ?? [])],
     inventory,
     equipped: sanitizeOwnedCosmetics({ finish: rec?.e }, inventory),
+    credits: rec?.c ?? STARTER_CREDITS,
+    transactions: [...(rec?.t ?? [])].reverse(),
   };
 }
 
@@ -238,6 +247,17 @@ export function settleMatch(id, value = {}) {
       const n = Math.floor(Number(value.badges[key]) || 0);
       if (n > 0) rec.b[key] = Math.max(rec.b[key] ?? 0, n);
     }
+  }
+  const resultId = typeof value.result?.id === 'string' ? value.result.id : null;
+  const newResult = resultId && !rec.h.some((entry) => entry?.id === resultId);
+  const creditAward = matchCredits(value.result);
+  if (value.result && typeof value.result === 'object') value.result.creditAward = creditAward;
+  if (newResult && creditAward.total > 0) {
+    rec.c += creditAward.total;
+    rec.t = [...rec.t, {
+      id: `match:${resultId}`, kind: 'match', amount: creditAward.total,
+      created_at: new Date().toISOString(),
+    }].slice(-MAX_HISTORY);
   }
   if (value.result && typeof value.result === 'object') {
     rec.h = [...rec.h.filter((entry) => entry?.id !== value.result.id), value.result].slice(-MAX_HISTORY);

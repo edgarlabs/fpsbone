@@ -202,6 +202,9 @@ let xpAtJoin = null;
 let currentXp = 0;
 let currentAccountStats = cleanStats();
 let pendingMatchResult = null;
+/** Economy receipts repeat in snapshots until the next round. Remember the last one we
+ *  painted so a repeated authoritative receipt cannot visually pay twice. */
+let lastEconomyReceiptId = null;
 let finalMatchStats = { kills: 0, deaths: 0 };
 const PROFILE_CACHE_KEY = 'fpsbone.profile.v1';
 
@@ -381,6 +384,10 @@ const menu = createMenu(settings, {
     if (!accountApi) throw new Error('account_unavailable');
     return accountApi.submit(submission);
   },
+  onMarketPurchase: async (finish) => {
+    if (!accountApi) throw new Error('account_unavailable');
+    return accountApi.purchase(finish);
+  },
   onRecoveryExport: () => exportRecoveryCode(identity),
   onRecoveryImport: async (code) => {
     await importRecoveryCode(code, identity);
@@ -407,12 +414,15 @@ menu.setMatchState('lobby');
 
 if (accountApi) {
   menu.setInventoryState({ state: 'loading' });
-  accountApi.profile().then(({ profile, submissions }) => {
+  accountApi.profile().then(({ profile, submissions, market }) => {
     const finish = profile.equipped?.finish ?? DEFAULT_FINISH;
     setIdentityCosmetics(identity, { finish });
     viewmodel.setFinish(identity.cosmetics.finish);
     menu.setInventoryState({
       state: 'ready', owned: profile.inventory, equipped: profile.equipped, submissions,
+      credits: market?.credits ?? profile.credits,
+      market: market?.items ?? [],
+      transactions: market?.transactions ?? profile.transactions ?? [],
     });
     menu.setPlayerStats({
       career: profile.career, xp: profile.xp, stats: profile.stats, kills: 0, deaths: 0,
@@ -694,6 +704,7 @@ net.on('welcome', (m) => {
     viewmodel.setFinish(identity.cosmetics.finish);
     menu.setInventoryState({
       state: 'ready', owned: m.inventory.owned, equipped: m.inventory.equipped,
+      credits: m.inventory.credits,
     });
   }
   applyMode(m.mode ?? requestedMode);
@@ -837,7 +848,20 @@ net.on('snapshot', (m) => {
     const authoritativeStats = cleanStats(m.self.ps);
     if (xpAtJoin === null) xpAtJoin = authoritativeXp;
     cacheCareer(authoritativeCareer, authoritativeXp, authoritativeStats);
-    if (m.self.mr) pendingMatchResult = m.self.mr;
+    if (m.self.mr) {
+      pendingMatchResult = m.self.mr;
+      if (m.self.mr.id && m.self.mr.id !== lastEconomyReceiptId) {
+        lastEconomyReceiptId = m.self.mr.id;
+        const credits = Math.max(0, Math.floor(Number(m.self.mr.creditAward?.total) || 0));
+        if (credits > 0) menu.setInventoryState({
+          creditDelta: credits,
+          transaction: {
+            id: `match:${m.self.mr.id}`, kind: 'match', amount: credits,
+            created_at: new Date().toISOString(),
+          },
+        });
+      }
+    }
     finalMatchStats = { kills: mine?.k ?? 0, deaths: mine?.d ?? 0 };
     hud.rank(xpAtJoin);
     menu.setPlayerStats({
@@ -938,6 +962,7 @@ function finishMatch(ev, players) {
     xpBefore: before,
     xpAfter: after,
     award: receipt?.award ?? { total: earned },
+    creditAward: receipt?.creditAward ?? { total: 0 },
     authoritative: Boolean(receipt),
   });
   // A finished match is not a pause. Release the human seat immediately; Play Again creates

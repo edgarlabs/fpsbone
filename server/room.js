@@ -40,6 +40,7 @@ import {
   matchXp,
   rankOfXp,
 } from '../shared/progression.js';
+import { matchCredits } from '../shared/economy.js';
 import {
   BADGES, MAX_LEVEL, MAX_BADGE_TIER, TRACK_KEYS, publicTiers, tierOf, tracksFor,
 } from '../shared/badges.js';
@@ -226,6 +227,7 @@ export class Room {
      */
     this.rosterRev = 0;
     this.matchNo = 1;
+    this.matchEpoch = `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 9)}`;
     /**
      * The room's source of chance. Only the jam roll uses it, and it is a field rather
      * than a bare `Math.random()` call for the same reason `rollLoadout` takes one: a
@@ -1331,7 +1333,7 @@ export class Room {
       }
       p.accountStats = stats;
       const result = {
-        id: `${this.modeId}-${this.matchNo}`,
+        id: `${this.modeId}-${this.matchEpoch}-${this.matchNo}`,
         mode: this.modeId,
         participated,
         won,
@@ -1351,6 +1353,7 @@ export class Room {
         },
         stats: { ...stats },
       };
+      result.creditAward = matchCredits(result);
       p.pendingResult = result;
       if (rankAfter !== rankBefore) this.rosterRev++;
       try {

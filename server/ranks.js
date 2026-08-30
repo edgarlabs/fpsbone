@@ -33,6 +33,7 @@ import {
   DEFAULT_FINISH, FINISHES, FINISH_IDS, sanitizeInventory, sanitizeOwnedCosmetics,
 } from '../shared/cosmetics.js';
 import { XP_PER_LEGACY_KILL, cleanStats } from '../shared/progression.js';
+import { STARTER_CREDITS, marketItem, matchCredits, publicMarket } from '../shared/economy.js';
 
 /**
  * FPSBONE_RANKS redirects the store, and exists so that verify.mjs can exercise this
@@ -57,13 +58,14 @@ export const SUBMISSION_STATUSES = Object.freeze([
 let pool = null;
 let storageKind = 'file';
 
-/** accountId -> progression plus granted finish ids (`i`) and equipped finish (`e`). */
+/** accountId -> progression, inventory, equipped finish, credits and recent economy rows. */
 const store = new Map();
 /** Development/file fallback. PostgreSQL remains the shared source of truth in production. */
 const submissions = new Map();
 
 const freshRecord = () => ({
   k: 0, b: {}, x: 0, s: cleanStats(), h: [], i: sanitizeInventory(), e: DEFAULT_FINISH,
+  c: STARTER_CREDITS, t: [],
 });
 
 function cleanEquipped(value, inventory) {
@@ -105,7 +107,9 @@ function readRecord(v) {
     : k * XP_PER_LEGACY_KILL;
   const h = Array.isArray(v.h) ? v.h.filter((entry) => entry && typeof entry === 'object').slice(-MAX_HISTORY) : [];
   const i = sanitizeInventory(v.i);
-  return { k, b, x, s: cleanStats(v.s), h, i, e: cleanEquipped(v.e, i) };
+  const c = Number.isFinite(v.c) && v.c >= 0 ? Math.floor(v.c) : STARTER_CREDITS;
+  const t = Array.isArray(v.t) ? v.t.filter((entry) => entry && typeof entry === 'object').slice(-MAX_HISTORY) : [];
+  return { k, b, x, s: cleanStats(v.s), h, i, e: cleanEquipped(v.e, i), c, t };
 }
 
 let dirty = false;
@@ -165,11 +169,15 @@ if (DATABASE_URL) {
         stats JSONB NOT NULL DEFAULT '{}'::jsonb,
         match_history JSONB NOT NULL DEFAULT '[]'::jsonb,
         equipped_finish TEXT NOT NULL DEFAULT 'standard',
+        credits INTEGER NOT NULL DEFAULT ${STARTER_CREDITS},
         updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
       )
     `);
     await pool.query(
       "ALTER TABLE player_accounts ADD COLUMN IF NOT EXISTS equipped_finish TEXT NOT NULL DEFAULT 'standard'",
+    );
+    await pool.query(
+      `ALTER TABLE player_accounts ADD COLUMN IF NOT EXISTS credits INTEGER NOT NULL DEFAULT ${STARTER_CREDITS}`,
     );
     await pool.query(`
       CREATE TABLE IF NOT EXISTS account_inventory (
@@ -197,8 +205,23 @@ if (DATABASE_URL) {
     await pool.query(
       'CREATE INDEX IF NOT EXISTS community_submissions_account_idx ON community_submissions (account_id, created_at DESC)',
     );
+    await pool.query(`
+      CREATE TABLE IF NOT EXISTS economy_transactions (
+        id TEXT PRIMARY KEY,
+        account_id TEXT NOT NULL,
+        kind TEXT NOT NULL CHECK (kind IN ('match','purchase','royalty','grant')),
+        item_id TEXT,
+        amount INTEGER NOT NULL,
+        counterparty TEXT,
+        royalty INTEGER NOT NULL DEFAULT 0,
+        created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+      )
+    `);
+    await pool.query(
+      'CREATE INDEX IF NOT EXISTS economy_transactions_account_idx ON economy_transactions (account_id, created_at DESC)',
+    );
     const loaded = await pool.query(
-      'SELECT id, xp, career_kills, badges, stats, match_history, equipped_finish FROM player_accounts ORDER BY updated_at DESC LIMIT $1',
+      'SELECT id, xp, career_kills, badges, stats, match_history, equipped_finish, credits FROM player_accounts ORDER BY updated_at DESC LIMIT $1',
       [MAX_ACCOUNTS],
     );
     for (const row of loaded.rows.reverse()) {
@@ -209,6 +232,7 @@ if (DATABASE_URL) {
         s: row.stats,
         h: row.match_history,
         e: row.equipped_finish,
+        c: Number(row.credits),
       });
       if (rec) store.set(row.id, rec);
     }
@@ -295,6 +319,8 @@ export function flush() {
     const grants = sanitizeInventory(r.i).filter((finish) => !FINISHES[finish].issued);
     if (grants.length) row.i = grants;
     if (r.e && r.e !== DEFAULT_FINISH) row.e = cleanEquipped(r.e, r.i);
+    if (r.c !== STARTER_CREDITS) row.c = Math.max(0, Math.floor(r.c));
+    if (r.t.length) row.t = r.t.slice(-MAX_HISTORY);
     out[id] = row;
   }
   const text = JSON.stringify(out);
@@ -353,6 +379,8 @@ export async function claimLegacy(from, to) {
         'UPDATE community_submissions SET account_id = $2, updated_at = NOW() WHERE account_id = $1',
         [from, to],
       );
+      await db.query('UPDATE economy_transactions SET account_id = $2 WHERE account_id = $1', [from, to]);
+      await db.query('UPDATE economy_transactions SET counterparty = $2 WHERE counterparty = $1', [from, to]);
       await db.query('COMMIT');
       dbMigrated = accountMove.rowCount > 0 || inventoryMove.rowCount > 0
         || submissionMove.rowCount > 0;
@@ -398,7 +426,7 @@ export function badgesOf(id) {
 export function profileOf(id) {
   if (!id) return {
     xp: 0, career: 0, badges: {}, stats: cleanStats(), history: [],
-    inventory: sanitizeInventory(), equipped: {},
+    inventory: sanitizeInventory(), equipped: {}, credits: 0, transactions: [],
   };
   touch(id);
   const rec = store.get(id);
@@ -411,31 +439,126 @@ export function profileOf(id) {
     history: [...(rec?.h ?? [])],
     inventory,
     equipped: sanitizeOwnedCosmetics({ finish: rec?.e }, inventory),
+    credits: rec?.c ?? STARTER_CREDITS,
+    transactions: [...(rec?.t ?? [])].reverse(),
   };
 }
 
 /** Refresh one account at admission/API time so two Render regions share grants immediately. */
 export async function profileFresh(id) {
   if (!id || !pool) return profileOf(id);
-  const [account, grants] = await Promise.all([
+  const [account, grants, transactions] = await Promise.all([
     pool.query(
-      `SELECT xp, career_kills, badges, stats, match_history, equipped_finish
+      `SELECT xp, career_kills, badges, stats, match_history, equipped_finish, credits
        FROM player_accounts WHERE id = $1`,
       [id],
     ),
     pool.query('SELECT cosmetic_id FROM account_inventory WHERE account_id = $1', [id]),
+    pool.query(
+      `SELECT id, kind, item_id, amount, counterparty, royalty, created_at
+       FROM economy_transactions WHERE account_id = $1 ORDER BY created_at DESC LIMIT $2`,
+      [id, MAX_HISTORY],
+    ),
   ]);
   const row = account.rows[0];
   const rec = row ? readRecord({
     k: Number(row.career_kills), b: row.badges, x: Number(row.xp), s: row.stats,
     h: row.match_history, i: grants.rows.map((grant) => grant.cosmetic_id),
-    e: row.equipped_finish,
+    e: row.equipped_finish, c: Number(row.credits), t: transactions.rows.reverse(),
   }) : freshRecord();
   rec.i = sanitizeInventory([...rec.i, ...grants.rows.map((grant) => grant.cosmetic_id)]);
   rec.e = cleanEquipped(rec.e, rec.i);
   touch(id);
   store.set(id, rec);
   return profileOf(id);
+}
+
+export async function marketplaceOf(id, knownProfile = null) {
+  const profile = knownProfile ?? await profileFresh(id);
+  return {
+    credits: profile.credits,
+    items: publicMarket(profile.inventory),
+    transactions: profile.transactions,
+  };
+}
+
+/** Atomic closed-credit purchase. Items never become gameplay authority until owned. */
+export async function purchaseFinish(id, finish) {
+  if (!/^device-[A-Za-z0-9_-]{32}$/.test(String(id ?? ''))) throw new Error('identity_required');
+  const item = marketItem(finish);
+  if (!item || !FINISHES[finish]?.approved || FINISHES[finish].issued) {
+    throw new Error('finish_not_for_sale');
+  }
+
+  if (!pool) {
+    const profile = profileOf(id);
+    if (profile.inventory.includes(finish)) throw new Error('already_owned');
+    if (profile.credits < item.price) throw new Error('insufficient_credits');
+    const rec = store.get(id) ?? freshRecord();
+    rec.c = profile.credits - item.price;
+    rec.i = sanitizeInventory([...profile.inventory, finish]);
+    rec.t = [...rec.t, {
+      id: randomUUID(), kind: 'purchase', item_id: finish, amount: -item.price,
+      counterparty: item.creator, royalty: 0, created_at: new Date().toISOString(),
+    }].slice(-MAX_HISTORY);
+    store.set(id, rec);
+    schedule();
+    return { profile: profileOf(id), market: await marketplaceOf(id) };
+  }
+
+  const db = await pool.connect();
+  try {
+    await db.query('BEGIN');
+    await db.query(
+      `INSERT INTO player_accounts (id) VALUES ($1) ON CONFLICT (id) DO NOTHING`, [id],
+    );
+    const balanceRow = await db.query('SELECT credits FROM player_accounts WHERE id = $1 FOR UPDATE', [id]);
+    const balance = Number(balanceRow.rows[0]?.credits ?? STARTER_CREDITS);
+    const owned = await db.query(
+      'SELECT 1 FROM account_inventory WHERE account_id = $1 AND cosmetic_id = $2', [id, finish],
+    );
+    if (owned.rowCount) throw new Error('already_owned');
+    if (balance < item.price) throw new Error('insufficient_credits');
+    const creator = /^device-[A-Za-z0-9_-]{32}$/.test(String(item.creator ?? ''))
+      && item.creator !== id ? item.creator : null;
+    const royalty = creator ? Math.floor(item.price * item.royaltyBps / 10_000) : 0;
+    const purchaseId = randomUUID();
+    await db.query(
+      `INSERT INTO account_inventory (account_id, cosmetic_id, source)
+       VALUES ($1, $2, 'purchase')`, [id, finish],
+    );
+    await db.query(
+      'UPDATE player_accounts SET credits = credits - $2, updated_at = NOW() WHERE id = $1',
+      [id, item.price],
+    );
+    await db.query(
+      `INSERT INTO economy_transactions
+         (id, account_id, kind, item_id, amount, counterparty, royalty)
+       VALUES ($1, $2, 'purchase', $3, $4, $5, $6)`,
+      [purchaseId, id, finish, -item.price, creator, royalty],
+    );
+    if (creator && royalty > 0) {
+      await db.query(`INSERT INTO player_accounts (id) VALUES ($1) ON CONFLICT (id) DO NOTHING`, [creator]);
+      await db.query(
+        'UPDATE player_accounts SET credits = credits + $2, updated_at = NOW() WHERE id = $1',
+        [creator, royalty],
+      );
+      await db.query(
+        `INSERT INTO economy_transactions
+           (id, account_id, kind, item_id, amount, counterparty, royalty)
+         VALUES ($1, $2, 'royalty', $3, $4, $5, 0)`,
+        [`${purchaseId}:royalty`, creator, finish, royalty, id],
+      );
+    }
+    await db.query('COMMIT');
+  } catch (err) {
+    await db.query('ROLLBACK').catch(() => {});
+    throw err;
+  } finally {
+    db.release();
+  }
+  const profile = await profileFresh(id);
+  return { profile, market: { credits: profile.credits, items: publicMarket(profile.inventory), transactions: profile.transactions } };
 }
 
 /** Persist an owned selection. A locked, unknown or unapproved id is refused. */
@@ -646,7 +769,7 @@ export function setCareer(id, kills, badges) {
   schedule();
 }
 
-/** Save one server-issued match receipt. This is the only PostgreSQL write path. */
+/** Save one server-issued match receipt and pay its idempotent credit award. */
 export async function settleMatch(id, value = {}) {
   if (!id) return;
   touch(id);
@@ -660,6 +783,17 @@ export async function settleMatch(id, value = {}) {
       if (n > 0) rec.b[key] = Math.max(rec.b[key] ?? 0, n);
     }
   }
+  const resultId = typeof value.result?.id === 'string' ? value.result.id : null;
+  const newResult = resultId && !rec.h.some((entry) => entry?.id === resultId);
+  const creditAward = matchCredits(value.result);
+  if (value.result && typeof value.result === 'object') value.result.creditAward = creditAward;
+  if (newResult && creditAward.total > 0 && !pool) {
+    rec.c += creditAward.total;
+    rec.t = [...rec.t, {
+      id: `match:${resultId}`, kind: 'match', item_id: null, amount: creditAward.total,
+      counterparty: null, royalty: 0, created_at: new Date().toISOString(),
+    }].slice(-MAX_HISTORY);
+  }
   if (value.result && typeof value.result === 'object') {
     rec.h = [...rec.h.filter((entry) => entry?.id !== value.result.id), value.result].slice(-MAX_HISTORY);
   }
@@ -669,18 +803,41 @@ export async function settleMatch(id, value = {}) {
     schedule();
     return;
   }
-  await pool.query(
-    `INSERT INTO player_accounts (id, xp, career_kills, badges, stats, match_history, updated_at)
-     VALUES ($1, $2, $3, $4::jsonb, $5::jsonb, $6::jsonb, NOW())
-     ON CONFLICT (id) DO UPDATE SET
-       xp = GREATEST(player_accounts.xp, EXCLUDED.xp),
-       career_kills = GREATEST(player_accounts.career_kills, EXCLUDED.career_kills),
-       badges = EXCLUDED.badges,
-       stats = EXCLUDED.stats,
-       match_history = EXCLUDED.match_history,
-       updated_at = NOW()`,
-    [id, rec.x, rec.k, JSON.stringify(rec.b), JSON.stringify(rec.s), JSON.stringify(rec.h)],
-  );
+  const db = await pool.connect();
+  try {
+    await db.query('BEGIN');
+    await db.query('INSERT INTO player_accounts (id) VALUES ($1) ON CONFLICT (id) DO NOTHING', [id]);
+    if (resultId && creditAward.total > 0) {
+      const credited = await db.query(
+        `INSERT INTO economy_transactions (id, account_id, kind, amount)
+         VALUES ($1, $2, 'match', $3) ON CONFLICT (id) DO NOTHING RETURNING id`,
+        [`match:${id}:${resultId}`, id, creditAward.total],
+      );
+      if (credited.rowCount) await db.query(
+        'UPDATE player_accounts SET credits = credits + $2 WHERE id = $1', [id, creditAward.total],
+      );
+    }
+    await db.query(
+      `INSERT INTO player_accounts (id, xp, career_kills, badges, stats, match_history, updated_at)
+       VALUES ($1, $2, $3, $4::jsonb, $5::jsonb, $6::jsonb, NOW())
+       ON CONFLICT (id) DO UPDATE SET
+         xp = GREATEST(player_accounts.xp, EXCLUDED.xp),
+         career_kills = GREATEST(player_accounts.career_kills, EXCLUDED.career_kills),
+         badges = EXCLUDED.badges,
+         stats = EXCLUDED.stats,
+         match_history = EXCLUDED.match_history,
+         updated_at = NOW()`,
+      [id, rec.x, rec.k, JSON.stringify(rec.b), JSON.stringify(rec.s), JSON.stringify(rec.h)],
+    );
+    const balance = await db.query('SELECT credits FROM player_accounts WHERE id = $1', [id]);
+    rec.c = Number(balance.rows[0]?.credits ?? rec.c);
+    await db.query('COMMIT');
+  } catch (err) {
+    await db.query('ROLLBACK').catch(() => {});
+    throw err;
+  } finally {
+    db.release();
+  }
 }
 
 export function storageState() {
