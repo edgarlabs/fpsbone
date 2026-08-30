@@ -17,8 +17,8 @@ import { ARENA, MAP, WORLD_BOXES } from '../../shared/map.js';
 export const ENVIRONMENT_ID = MAP.id;
 export const ZONE_LABELS = Object.freeze(['ALPHA', 'MID', 'BRAVO']);
 
-const STEEL = 0x233941;
-const STEEL_LIGHT = 0x5f7379;
+const STEEL = 0x39535c;
+const STEEL_LIGHT = 0x82969b;
 const SAFETY = 0xe3a33f;
 const SAFETY_DARK = 0x6b3f18;
 const PAINT = 0xd9e4e5;
@@ -281,8 +281,8 @@ function buildSky(scene) {
     side: THREE.BackSide,
     depthWrite: false,
     uniforms: {
-      zenith: { value: new THREE.Color(0x4d829f) },
-      horizon: { value: new THREE.Color(0xd3e0df) },
+      zenith: { value: new THREE.Color(0x70a6c2) },
+      horizon: { value: new THREE.Color(0xe6ece8) },
       sunColor: { value: new THREE.Color(0xffd59b) },
       sunDir: { value: new THREE.Vector3(0.46, 0.78, 0.32).normalize() },
     },

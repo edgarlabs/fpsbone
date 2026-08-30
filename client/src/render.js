@@ -862,7 +862,10 @@ export function createScene(canvas, baseFov = 85) {
   renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
   renderer.outputColorSpace = THREE.SRGBColorSpace;
   renderer.toneMapping = THREE.ACESFilmicToneMapping;
-  renderer.toneMappingExposure = 1.08;
+  // Standard materials and ACES both preserve richer surfaces than the old Lambert pass,
+  // but together they originally crushed the arena's midtones. 1.28 keeps the sky and
+  // safety paint below clipping while lifting shaded concrete into readable daylight.
+  renderer.toneMappingExposure = 1.28;
   renderer.shadowMap.enabled = true;
   renderer.shadowMap.type = THREE.PCFSoftShadowMap;
 
@@ -920,12 +923,12 @@ export function createScene(canvas, baseFov = 85) {
 
   // The ground term is the important half. With a near-black bounce every
   // downward-facing face fell to a void, which is most of what read as "too dark".
-  scene.add(new THREE.HemisphereLight(0xdfe8f5, 0x9aa2b0, 0.62));
+  scene.add(new THREE.HemisphereLight(0xf2f7ff, 0xaab3b5, 0.9));
 
   // Intensities come down as the albedos go up: the sum of hemisphere and sun on a
   // sun-facing face has to stay near 1.55, or lit faces clip to white and the
   // per-face brightness spread that carries the whole look disappears.
-  const sun = new THREE.DirectionalLight(0xfff6e8, 0.95);
+  const sun = new THREE.DirectionalLight(0xfff1d2, 1.25);
   // Direction is what matters for shading — a directional light points from its
   // position at the origin — so this is deliberately far enough out that the whole
   // arena fits between its near and far planes. Scaling the vector moves the shadow

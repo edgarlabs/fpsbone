@@ -277,12 +277,12 @@ export const BTN_SPRINT = 1 << 7;
 // per-face spread *is* the art style. Push these much past 0xC0 and the lit faces
 // clip to white, the spread collapses, and the whole look goes flat.
 export const PALETTE = {
-  bg: 0xa9c4d2, // bright coastal haze behind the procedural sky
-  floor: 0x66747b, // blue-grey poured concrete, dark enough to ground every silhouette
-  wallA: 0x8e9a9d, // weathered structural concrete
-  wallB: 0x405b64, // painted steel cover; distinct from concrete at fighting distance
-  stair: 0xc18a45, // safety ochre: every climbable route announces itself
-  gantry: 0x233941, // overhead steel landmark; also real server collision for honest shots
+  bg: 0xc2d8e2, // bright coastal haze behind the procedural sky
+  floor: 0x94a3aa, // daylight concrete: grounded, but never a dark carpet under the player
+  wallA: 0xb0bab8, // pale weathered structure that keeps shaded faces readable
+  wallB: 0x6f8992, // painted steel cover; distinct from concrete without becoming near-black
+  stair: 0xd6a455, // safety ochre: every climbable route announces itself
+  gantry: 0x405860, // overhead steel landmark; also real server collision for honest shots
   accent: 0xc93a24, // enemies, in the modes without teams
   self: 0x0f7f68, // you
   visor: 0x1b2130, // the one dark colour left; avatars need a readable face

@@ -9641,8 +9641,15 @@ const okQ = (cond, label, detail = '') =>
 {
   const envSrc = readFileSync('./client/src/environment.js', 'utf8');
   const menuSrc = readFileSync('./client/src/menu.js', 'utf8');
+  const renderSrc = readFileSync('./client/src/render.js', 'utf8');
   const gantry = WORLD_BOXES.filter((b) => b.c === 'gantry');
   const midEye = 2.8 + C.PLAYER_HALF_H + C.EYE_OFFSET;
+  const luma = (hex) => {
+    const r = (hex >> 16) & 255;
+    const g = (hex >> 8) & 255;
+    const b = hex & 255;
+    return r * 0.2126 + g * 0.7152 + b * 0.0722;
+  };
 
   okQ(MAP.id === ENVIRONMENT_ID && MAP.label === 'FOUNDRY 64' && MAP.location.length > 8,
       'the lobby, geometry and renderer share one authored map identity',
@@ -9653,6 +9660,11 @@ const okQ = (cond, label, detail = '') =>
   okQ(new Set([C.PALETTE.floor, C.PALETTE.wallA, C.PALETTE.wallB, C.PALETTE.stair, C.PALETTE.gantry]).size === 5,
       'floor, concrete, steel cover, climbable stairs and overhead structure have distinct materials',
       'five gameplay surfaces, five albedos');
+  const fightingSurfaces = [C.PALETTE.floor, C.PALETTE.wallA, C.PALETTE.wallB].map(luma);
+  okQ(Math.min(...fightingSurfaces) > 125 && /toneMappingExposure = 1\.28/.test(renderSrc)
+      && /HemisphereLight\(0xf2f7ff, 0xaab3b5, 0\.9\)/.test(renderSrc),
+      'the surfaces players fight against stay in daylight, including shadow fill',
+      `surface luminance ${fightingSurfaces.map((n) => n.toFixed(0)).join('/')} · exposure 1.28`);
   okQ(gantry.length === 2 && gantry.every((b) => b.y - b.h / 2 > midEye),
       'the visible service bridge is authoritative collision and stays above the raised-mid eye line',
       `${gantry.length} solids, lowest edge ${Math.min(...gantry.map((b) => b.y - b.h / 2)).toFixed(2)}u > mid eye ${midEye.toFixed(2)}u`);
