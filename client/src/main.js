@@ -22,6 +22,7 @@ import { WEAPON_IDS, WEAPONS, idAt, indexOf, spreadMul, weaponAt } from '../../s
 import { TRACK_KEYS, badgeOf, levelOf, stepOf, tierOf } from '../../shared/badges.js';
 import { SPREE_MS, wingsOf } from '../../shared/spree.js';
 import { cleanStats } from '../../shared/progression.js';
+import { DEFAULT_FINISH, sanitizeInventory } from '../../shared/cosmetics.js';
 import {
   exportRecoveryCode, getIdentity, importRecoveryCode, setIdentityCosmetics,
 } from './identity.js';
@@ -37,6 +38,7 @@ import { createScene } from './render.js';
 import { createViewmodel } from './viewmodel.js';
 import { createHud } from './hud.js';
 import { createAudio } from './audio.js';
+import { accountOrigin, createAccountClient } from './account-client.js';
 
 const qs = new URLSearchParams(location.search);
 const lag = Number(qs.get('lag')) || 0;
@@ -128,6 +130,10 @@ const UNREACHABLE_MSG = useLocalHost
 
 const canvas = document.getElementById('game');
 const identity = await getIdentity();
+const accountApi = useLocalHost ? null : createAccountClient({
+  origin: accountOrigin(url),
+  identity,
+});
 /** What we asked for, kept because the server may seat us somewhere else. */
 let requestedMode = settings.mode;
 
@@ -365,9 +371,15 @@ const BURST_EARSHOT = {
 const menu = createMenu(settings, {
   identity,
   onWeapon: (id) => input.setWeapon(indexOf(id)),
-  onFinish: (id) => {
+  onFinish: async (id) => {
+    if (accountApi) await accountApi.equip(id);
     setIdentityCosmetics(identity, { finish: id });
     viewmodel.setFinish(identity.cosmetics.finish);
+    return id;
+  },
+  onCommunitySubmit: async (submission) => {
+    if (!accountApi) throw new Error('account_unavailable');
+    return accountApi.submit(submission);
   },
   onRecoveryExport: () => exportRecoveryCode(identity),
   onRecoveryImport: async (code) => {
@@ -392,6 +404,28 @@ const menu = createMenu(settings, {
 });
 menu.setPlayerStats({ career: currentCareer, xp: currentXp, stats: currentAccountStats, kills: 0, deaths: 0 });
 menu.setMatchState('lobby');
+
+if (accountApi) {
+  menu.setInventoryState({ state: 'loading' });
+  accountApi.profile().then(({ profile, submissions }) => {
+    const finish = profile.equipped?.finish ?? DEFAULT_FINISH;
+    setIdentityCosmetics(identity, { finish });
+    viewmodel.setFinish(identity.cosmetics.finish);
+    menu.setInventoryState({
+      state: 'ready', owned: profile.inventory, equipped: profile.equipped, submissions,
+    });
+    menu.setPlayerStats({
+      career: profile.career, xp: profile.xp, stats: profile.stats, kills: 0, deaths: 0,
+    });
+  }).catch(() => menu.setInventoryState({ state: 'offline' }));
+} else {
+  menu.setInventoryState({
+    state: identity.verified ? 'local' : 'guest',
+    owned: sanitizeInventory(),
+    equipped: identity.cosmetics,
+    submissions: [],
+  });
+}
 
 /**
  * Fill the server picker: ask this origin which regions exist, then time each one.
@@ -654,6 +688,14 @@ net.on('welcome', (m) => {
   menu.setLobby(m.lob ?? {});
   menu.setPopulation(m.pop ?? {});
   menu.setAccount(m.account ?? {});
+  if (m.inventory) {
+    const finish = m.inventory.equipped?.finish ?? DEFAULT_FINISH;
+    setIdentityCosmetics(identity, { finish });
+    viewmodel.setFinish(identity.cosmetics.finish);
+    menu.setInventoryState({
+      state: 'ready', owned: m.inventory.owned, equipped: m.inventory.equipped,
+    });
+  }
   applyMode(m.mode ?? requestedMode);
 
   hud.setStatus(

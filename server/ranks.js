@@ -18,16 +18,20 @@
 //
 // THE FILE HAS TWO LEGAL SHAPES, and will for as long as any ranks.json in the world still
 // holds the first one. `{"id": 93}` is the original schema, a career and nothing else;
-// `{"id": {"k": 93, "b": {"hs": 12}}}` is the same career plus per-badge counts. Both parse;
-// only the second is ever written, so the first kill after an upgrade migrates the file in
-// place. There is no version field and no migration step, because a bare number IS
-// unambiguous — see readRecord.
+// `{"id": {"k": 93, "b": {"hs": 12}, "i": ["ember"], "e": "ember"}}` is the extensible
+// record, now including optional grants and equipped finish. Both parse; only the second is
+// ever written. There is no version field or destructive migration because a bare number is
+// unambiguous and every later field has a safe default — see readRecord.
 
 import { readFileSync, writeFileSync, renameSync, unlinkSync } from 'node:fs';
+import { randomUUID } from 'node:crypto';
 import { fileURLToPath } from 'node:url';
 import { Pool } from 'pg';
 
 import { TRACK_KEYS } from '../shared/badges.js';
+import {
+  DEFAULT_FINISH, FINISHES, FINISH_IDS, sanitizeInventory, sanitizeOwnedCosmetics,
+} from '../shared/cosmetics.js';
 import { XP_PER_LEGACY_KILL, cleanStats } from '../shared/progression.js';
 
 /**
@@ -45,11 +49,27 @@ const TMP = `${FILE}.tmp`;
  *  for free, so eviction is the first key and a touch is delete-then-set. */
 const MAX_ACCOUNTS = 5000;
 const MAX_HISTORY = 20;
+const MAX_SUBMISSIONS_PER_ACCOUNT = 12;
+const ACTIVE_SUBMISSION_LIMIT = 5;
+export const SUBMISSION_STATUSES = Object.freeze([
+  'submitted', 'reviewing', 'approved', 'rejected', 'disabled',
+]);
 let pool = null;
 let storageKind = 'file';
 
-/** accountId -> `{ k: career kills, b: { track: count } }`. */
+/** accountId -> progression plus granted finish ids (`i`) and equipped finish (`e`). */
 const store = new Map();
+/** Development/file fallback. PostgreSQL remains the shared source of truth in production. */
+const submissions = new Map();
+
+const freshRecord = () => ({
+  k: 0, b: {}, x: 0, s: cleanStats(), h: [], i: sanitizeInventory(), e: DEFAULT_FINISH,
+});
+
+function cleanEquipped(value, inventory) {
+  const id = typeof value === 'string' ? value : value?.finish;
+  return sanitizeOwnedCosmetics({ finish: id }, inventory).finish ?? DEFAULT_FINISH;
+}
 
 /**
  * Read one file entry into a record, or null for something unusable.
@@ -68,7 +88,7 @@ const store = new Map();
 function readRecord(v) {
   if (Number.isFinite(v) && v >= 0) {
     const k = Math.floor(v);
-    return { k, b: {}, x: k * XP_PER_LEGACY_KILL, s: cleanStats(), h: [] };
+    return { ...freshRecord(), k, x: k * XP_PER_LEGACY_KILL };
   }
   if (!v || typeof v !== 'object' || Array.isArray(v)) return null;
   if (!(Number.isFinite(v.k) && v.k >= 0)) return null;
@@ -84,7 +104,8 @@ function readRecord(v) {
     ? Math.floor(v.x)
     : k * XP_PER_LEGACY_KILL;
   const h = Array.isArray(v.h) ? v.h.filter((entry) => entry && typeof entry === 'object').slice(-MAX_HISTORY) : [];
-  return { k, b, x, s: cleanStats(v.s), h };
+  const i = sanitizeInventory(v.i);
+  return { k, b, x, s: cleanStats(v.s), h, i, e: cleanEquipped(v.e, i) };
 }
 
 let dirty = false;
@@ -143,11 +164,41 @@ if (DATABASE_URL) {
         badges JSONB NOT NULL DEFAULT '{}'::jsonb,
         stats JSONB NOT NULL DEFAULT '{}'::jsonb,
         match_history JSONB NOT NULL DEFAULT '[]'::jsonb,
+        equipped_finish TEXT NOT NULL DEFAULT 'standard',
         updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
       )
     `);
+    await pool.query(
+      "ALTER TABLE player_accounts ADD COLUMN IF NOT EXISTS equipped_finish TEXT NOT NULL DEFAULT 'standard'",
+    );
+    await pool.query(`
+      CREATE TABLE IF NOT EXISTS account_inventory (
+        account_id TEXT NOT NULL,
+        cosmetic_id TEXT NOT NULL,
+        source TEXT NOT NULL DEFAULT 'grant',
+        granted_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+        PRIMARY KEY (account_id, cosmetic_id)
+      )
+    `);
+    await pool.query(`
+      CREATE TABLE IF NOT EXISTS community_submissions (
+        id TEXT PRIMARY KEY,
+        account_id TEXT NOT NULL,
+        title TEXT NOT NULL,
+        description TEXT NOT NULL,
+        manifest JSONB NOT NULL DEFAULT '{}'::jsonb,
+        status TEXT NOT NULL DEFAULT 'submitted'
+          CHECK (status IN ('submitted','reviewing','approved','rejected','disabled')),
+        reviewer_note TEXT NOT NULL DEFAULT '',
+        created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+        updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+      )
+    `);
+    await pool.query(
+      'CREATE INDEX IF NOT EXISTS community_submissions_account_idx ON community_submissions (account_id, created_at DESC)',
+    );
     const loaded = await pool.query(
-      'SELECT id, xp, career_kills, badges, stats, match_history FROM player_accounts ORDER BY updated_at DESC LIMIT $1',
+      'SELECT id, xp, career_kills, badges, stats, match_history, equipped_finish FROM player_accounts ORDER BY updated_at DESC LIMIT $1',
       [MAX_ACCOUNTS],
     );
     for (const row of loaded.rows.reverse()) {
@@ -157,8 +208,22 @@ if (DATABASE_URL) {
         x: Number(row.xp),
         s: row.stats,
         h: row.match_history,
+        e: row.equipped_finish,
       });
       if (rec) store.set(row.id, rec);
+    }
+    if (loaded.rows.length) {
+      const grants = await pool.query(
+        'SELECT account_id, cosmetic_id FROM account_inventory WHERE account_id = ANY($1::text[])',
+        [loaded.rows.map((row) => row.id)],
+      );
+      for (const row of grants.rows) {
+        const rec = store.get(row.account_id);
+        if (rec) {
+          rec.i = sanitizeInventory([...rec.i, row.cosmetic_id]);
+          rec.e = cleanEquipped(rec.e, rec.i);
+        }
+      }
     }
     storageKind = 'postgres';
     console.log(`  accounts: PostgreSQL ready (${loaded.rowCount} loaded)`);
@@ -227,6 +292,9 @@ export function flush() {
     if (hasStats) row.s = r.s;
     if (Object.keys(r.b).length) row.b = r.b;
     if (r.h.length) row.h = r.h;
+    const grants = sanitizeInventory(r.i).filter((finish) => !FINISHES[finish].issued);
+    if (grants.length) row.i = grants;
+    if (r.e && r.e !== DEFAULT_FINISH) row.e = cleanEquipped(r.e, r.i);
     out[id] = row;
   }
   const text = JSON.stringify(out);
@@ -260,23 +328,48 @@ export function flush() {
  * freshly signed HELLO is no weaker than the system being retired; deleting it closes that
  * path permanently after the first successful upgrade.
  */
-export function claimLegacy(from, to) {
+export async function claimLegacy(from, to) {
   if (!from || !to || from === to || store.has(to)) return false;
   const rec = store.get(from);
+  let dbMigrated = false;
+  if (pool) {
+    const db = await pool.connect();
+    try {
+      await db.query('BEGIN');
+      const accountMove = await db.query(
+        `UPDATE player_accounts SET id = $2, updated_at = NOW()
+         WHERE id = $1
+           AND NOT EXISTS (SELECT 1 FROM player_accounts WHERE id = $2)`,
+        [from, to],
+      );
+      const inventoryMove = await db.query(
+        `INSERT INTO account_inventory (account_id, cosmetic_id, source, granted_at)
+         SELECT $2, cosmetic_id, source, granted_at FROM account_inventory WHERE account_id = $1
+         ON CONFLICT (account_id, cosmetic_id) DO NOTHING`,
+        [from, to],
+      );
+      await db.query('DELETE FROM account_inventory WHERE account_id = $1', [from]);
+      const submissionMove = await db.query(
+        'UPDATE community_submissions SET account_id = $2, updated_at = NOW() WHERE account_id = $1',
+        [from, to],
+      );
+      await db.query('COMMIT');
+      dbMigrated = accountMove.rowCount > 0 || inventoryMove.rowCount > 0
+        || submissionMove.rowCount > 0;
+    } catch (err) {
+      await db.query('ROLLBACK').catch(() => {});
+      console.warn(`  accounts: identity migration failed (${err.code ?? err.message})`);
+      return false;
+    } finally {
+      db.release();
+    }
+  }
   if (rec) {
     store.delete(from);
     store.set(to, rec);
     if (!pool) schedule();
   }
-  if (pool) {
-    pool.query(
-      `UPDATE player_accounts SET id = $2, updated_at = NOW()
-       WHERE id = $1
-         AND NOT EXISTS (SELECT 1 FROM player_accounts WHERE id = $2)`,
-      [from, to],
-    ).catch((err) => console.warn(`  accounts: identity migration failed (${err.code ?? err.message})`));
-  }
-  return Boolean(rec);
+  return Boolean(rec) || dbMigrated;
 }
 
 /** A career for an account, or 0 for an anonymous client. Reading counts as use, so a
@@ -303,16 +396,234 @@ export function badgesOf(id) {
 
 /** Private account profile. Copies every nested value before a Room can mutate it. */
 export function profileOf(id) {
-  if (!id) return { xp: 0, career: 0, badges: {}, stats: cleanStats(), history: [] };
+  if (!id) return {
+    xp: 0, career: 0, badges: {}, stats: cleanStats(), history: [],
+    inventory: sanitizeInventory(), equipped: {},
+  };
   touch(id);
   const rec = store.get(id);
+  const inventory = sanitizeInventory(rec?.i);
   return {
     xp: rec?.x ?? 0,
     career: rec?.k ?? 0,
     badges: { ...(rec?.b ?? {}) },
     stats: cleanStats(rec?.s),
     history: [...(rec?.h ?? [])],
+    inventory,
+    equipped: sanitizeOwnedCosmetics({ finish: rec?.e }, inventory),
   };
+}
+
+/** Refresh one account at admission/API time so two Render regions share grants immediately. */
+export async function profileFresh(id) {
+  if (!id || !pool) return profileOf(id);
+  const [account, grants] = await Promise.all([
+    pool.query(
+      `SELECT xp, career_kills, badges, stats, match_history, equipped_finish
+       FROM player_accounts WHERE id = $1`,
+      [id],
+    ),
+    pool.query('SELECT cosmetic_id FROM account_inventory WHERE account_id = $1', [id]),
+  ]);
+  const row = account.rows[0];
+  const rec = row ? readRecord({
+    k: Number(row.career_kills), b: row.badges, x: Number(row.xp), s: row.stats,
+    h: row.match_history, i: grants.rows.map((grant) => grant.cosmetic_id),
+    e: row.equipped_finish,
+  }) : freshRecord();
+  rec.i = sanitizeInventory([...rec.i, ...grants.rows.map((grant) => grant.cosmetic_id)]);
+  rec.e = cleanEquipped(rec.e, rec.i);
+  touch(id);
+  store.set(id, rec);
+  return profileOf(id);
+}
+
+/** Persist an owned selection. A locked, unknown or unapproved id is refused. */
+export async function equipFinish(id, finish) {
+  if (!id || typeof finish !== 'string' || !FINISHES[finish]?.approved) return null;
+  const profile = await profileFresh(id);
+  if (!profile.inventory.includes(finish)) return null;
+  const rec = store.get(id) ?? freshRecord();
+  rec.i = sanitizeInventory(profile.inventory);
+  rec.e = finish;
+  store.set(id, rec);
+  if (!pool) {
+    schedule();
+  } else {
+    await pool.query(
+      `INSERT INTO player_accounts (id, equipped_finish, updated_at)
+       VALUES ($1, $2, NOW())
+       ON CONFLICT (id) DO UPDATE SET equipped_finish = EXCLUDED.equipped_finish, updated_at = NOW()`,
+      [id, finish],
+    );
+  }
+  return profileOf(id);
+}
+
+/** Resolve HELLO cosmetics through the same ownership ledger the inventory API exposes. */
+export async function authorizeCosmetics(id, raw) {
+  if (!id) return { profile: profileOf(null), cosmetics: {} };
+  const requested = typeof raw?.finish === 'string' ? raw.finish : null;
+  let profile = await profileFresh(id);
+  const finish = requested && profile.inventory.includes(requested)
+    ? requested
+    : (profile.equipped.finish ?? DEFAULT_FINISH);
+  if ((profile.equipped.finish ?? DEFAULT_FINISH) !== finish) {
+    profile = await equipFinish(id, finish);
+  }
+  return { profile, cosmetics: sanitizeOwnedCosmetics({ finish }, profile.inventory) };
+}
+
+const URLISH = /(?:https?:\/\/|www\.|data:|file:|ftp:)/i;
+const COLOR = /^#[0-9a-f]{6}$/i;
+
+export function submissionManifest(raw) {
+  const title = typeof raw?.title === 'string' ? raw.title.trim().replace(/\s+/g, ' ') : '';
+  const description = typeof raw?.description === 'string'
+    ? raw.description.trim().replace(/\s+/g, ' ')
+    : '';
+  const palette = {
+    steel: String(raw?.steel ?? '').toLowerCase(),
+    dark: String(raw?.dark ?? '').toLowerCase(),
+    trim: String(raw?.trim ?? '').toLowerCase(),
+  };
+  if (title.length < 3 || title.length > 40 || description.length < 20 || description.length > 500) {
+    throw new Error('submission_length');
+  }
+  if (URLISH.test(`${title} ${description}`) || /[<>\u0000-\u001f]/.test(`${title}${description}`)) {
+    throw new Error('submission_content');
+  }
+  if (!Object.values(palette).every((value) => COLOR.test(value))
+      || new Set(Object.values(palette)).size !== 3) {
+    throw new Error('submission_palette');
+  }
+  return { title, description, ...palette, kind: 'procedural_palette_v1' };
+}
+
+const publicSubmission = (row) => ({
+  id: row.id,
+  account: row.account_id ?? row.account,
+  title: row.title,
+  description: row.description,
+  manifest: typeof row.manifest === 'string' ? JSON.parse(row.manifest) : row.manifest,
+  status: row.status,
+  note: row.reviewer_note ?? row.note ?? '',
+  createdAt: row.created_at ?? row.createdAt,
+  updatedAt: row.updated_at ?? row.updatedAt,
+});
+
+export async function submissionsOf(id) {
+  if (!id) return [];
+  if (pool) {
+    const result = await pool.query(
+      `SELECT id, account_id, title, description, manifest, status, reviewer_note,
+              created_at, updated_at
+       FROM community_submissions WHERE account_id = $1 ORDER BY created_at DESC LIMIT $2`,
+      [id, MAX_SUBMISSIONS_PER_ACCOUNT],
+    );
+    return result.rows.map(publicSubmission);
+  }
+  return [...submissions.values()].filter((entry) => entry.account === id)
+    .sort((a, b) => String(b.createdAt).localeCompare(String(a.createdAt)))
+    .slice(0, MAX_SUBMISSIONS_PER_ACCOUNT).map(publicSubmission);
+}
+
+/** Accept a bounded palette concept—not a file or URL—under a verified creator account. */
+export async function submitCosmetic(id, raw) {
+  if (!id) throw new Error('identity_required');
+  const manifest = submissionManifest(raw);
+  const mine = await submissionsOf(id);
+  if (mine.length >= MAX_SUBMISSIONS_PER_ACCOUNT
+      || mine.filter((item) => ['submitted', 'reviewing'].includes(item.status)).length
+        >= ACTIVE_SUBMISSION_LIMIT) {
+    throw new Error('submission_limit');
+  }
+  const entry = {
+    id: randomUUID(), account: id, title: manifest.title, description: manifest.description,
+    manifest, status: 'submitted', note: '', createdAt: new Date().toISOString(),
+    updatedAt: new Date().toISOString(),
+  };
+  if (pool) {
+    const result = await pool.query(
+      `INSERT INTO community_submissions
+         (id, account_id, title, description, manifest, status, reviewer_note)
+       VALUES ($1, $2, $3, $4, $5::jsonb, 'submitted', '')
+       RETURNING id, account_id, title, description, manifest, status, reviewer_note,
+                 created_at, updated_at`,
+      [entry.id, id, entry.title, entry.description, JSON.stringify(entry.manifest)],
+    );
+    return publicSubmission(result.rows[0]);
+  }
+  submissions.set(entry.id, entry);
+  return publicSubmission(entry);
+}
+
+export async function reviewSubmissions() {
+  if (pool) {
+    const result = await pool.query(
+      `SELECT id, account_id, title, description, manifest, status, reviewer_note,
+              created_at, updated_at
+       FROM community_submissions ORDER BY created_at DESC LIMIT 200`,
+    );
+    return result.rows.map(publicSubmission);
+  }
+  return [...submissions.values()].sort((a, b) =>
+    String(b.createdAt).localeCompare(String(a.createdAt))).map(publicSubmission);
+}
+
+export async function reviewSubmission(id, status, note = '') {
+  if (typeof id !== 'string' || !SUBMISSION_STATUSES.includes(status)) return null;
+  const cleanNote = typeof note === 'string' ? note.trim().slice(0, 300) : '';
+  if (URLISH.test(cleanNote) || /[<>\u0000-\u001f]/.test(cleanNote)) return null;
+  if (pool) {
+    const result = await pool.query(
+      `UPDATE community_submissions SET status = $2, reviewer_note = $3, updated_at = NOW()
+       WHERE id = $1
+       RETURNING id, account_id, title, description, manifest, status, reviewer_note,
+                 created_at, updated_at`,
+      [id, status, cleanNote],
+    );
+    return result.rows[0] ? publicSubmission(result.rows[0]) : null;
+  }
+  const entry = submissions.get(id);
+  if (!entry) return null;
+  Object.assign(entry, { status, note: cleanNote, updatedAt: new Date().toISOString() });
+  return publicSubmission(entry);
+}
+
+export async function grantFinish(account, finish, source = 'admin') {
+  if (typeof account !== 'string' || !/^device-[A-Za-z0-9_-]{32}$/.test(account)
+      || !FINISHES[finish]?.approved || FINISHES[finish].issued) return null;
+  if (pool) {
+    await pool.query(
+      `INSERT INTO account_inventory (account_id, cosmetic_id, source)
+       VALUES ($1, $2, $3) ON CONFLICT (account_id, cosmetic_id) DO NOTHING`,
+      [account, finish, String(source).slice(0, 32)],
+    );
+  }
+  const rec = store.get(account) ?? freshRecord();
+  rec.i = sanitizeInventory([...rec.i, finish]);
+  store.set(account, rec);
+  if (!pool) schedule();
+  return pool ? profileFresh(account) : profileOf(account);
+}
+
+export async function revokeFinish(account, finish) {
+  if (typeof account !== 'string' || !/^device-[A-Za-z0-9_-]{32}$/.test(account)
+      || !FINISHES[finish]?.approved || FINISHES[finish].issued) return null;
+  if (pool) await pool.query(
+    'DELETE FROM account_inventory WHERE account_id = $1 AND cosmetic_id = $2', [account, finish],
+  );
+  const rec = store.get(account) ?? freshRecord();
+  rec.i = sanitizeInventory(rec.i.filter((id) => id !== finish));
+  if (rec.e === finish) rec.e = DEFAULT_FINISH;
+  store.set(account, rec);
+  if (pool) await pool.query(
+    `UPDATE player_accounts SET equipped_finish = 'standard', updated_at = NOW()
+     WHERE id = $1 AND equipped_finish = $2`, [account, finish],
+  );
+  else schedule();
+  return pool ? profileFresh(account) : profileOf(account);
 }
 
 /** Record a career total. Called from the Room's `onCareer` hook, which only fires for a
@@ -320,7 +631,7 @@ export function profileOf(id) {
 export function setCareer(id, kills, badges) {
   if (!id || !Number.isFinite(kills)) return;
   touch(id);
-  const rec = store.get(id) ?? { k: 0, b: {}, x: 0, s: cleanStats(), h: [] };
+  const rec = store.get(id) ?? freshRecord();
   rec.k = Math.max(rec.k, Math.floor(kills));
   // Per key, and monotonic per key for the same reason the kill count is: this arrives from
   // a Room, and a Room that was handed a stale badge map — a second window on the same
@@ -339,7 +650,7 @@ export function setCareer(id, kills, badges) {
 export async function settleMatch(id, value = {}) {
   if (!id) return;
   touch(id);
-  const rec = store.get(id) ?? { k: 0, b: {}, x: 0, s: cleanStats(), h: [] };
+  const rec = store.get(id) ?? freshRecord();
   rec.k = Math.max(rec.k, Math.floor(Number(value.career) || 0));
   rec.x = Math.max(rec.x, Math.floor(Number(value.xp) || 0));
   rec.s = cleanStats(value.stats);

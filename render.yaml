@@ -82,6 +82,10 @@ services:
       # an external database URL through `fromDatabase`; connectionString is private-network.
       - key: DATABASE_URL
         sync: false
+      # Enables the private /review console. Keep this secret; when it is absent the review API
+      # stays locked instead of falling back to a default password.
+      - key: FPSBONE_ADMIN_TOKEN
+        sync: false
       # WHERE THE OTHER REGION IS, and why this is a literal rather than a `fromService`.
       #
       # A blueprint CAN inject a peer's hostname — and the one it injects is the PRIVATE network
@@ -123,6 +127,9 @@ services:
         fromDatabase:
           name: fpsbone-accounts
           property: connectionString
+      # Use the same private value in both regions so either service can review the shared queue.
+      - key: FPSBONE_ADMIN_TOKEN
+        sync: false
       # The same table as the other service, for the same reason — see the long note above it.
       - key: FPSBONE_REGIONS
         value: sea=https://fpsbone-sea.onrender.com,usw=https://fpsbone.onrender.com

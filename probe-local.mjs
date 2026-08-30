@@ -52,8 +52,13 @@ sock.send(encode({
   mode: 'dm',
 }));
 
+// Ownership authorization is deliberately async on the public host because it may read the
+// shared database. The local implementation returns immediately, but the common handshake
+// still crosses that promise boundary; give its microtask a turn just as a real socket would.
+await new Promise((r) => setTimeout(r, 20));
+
 const welcome = got.find((m) => m.t === MSG.WELCOME);
-ok(!!welcome, 'WELCOME came back synchronously on the handshake');
+ok(!!welcome, 'WELCOME came back after the authorized handshake');
 ok(welcome?.id >= 1, 'and seated us with a player id', `id=${welcome?.id}`);
 ok(Array.isArray(welcome?.avail) && welcome.avail.length > 0,
    'and reported the modes that have controllers', `avail=${welcome?.avail?.join(',')}`);

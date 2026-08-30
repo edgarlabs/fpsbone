@@ -1,0 +1,44 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>fpsbone review console</title>
+    <style>
+      :root { color-scheme: dark; font-family: ui-monospace, Consolas, monospace; --bg:#071019; --panel:#101c27; --line:#263744; --ink:#e8f1f5; --dim:#81919d; --ok:#35c49b; --bad:#ef6a58; }
+      * { box-sizing: border-box; } body { margin:0; color:var(--ink); background:linear-gradient(145deg,#08121c,#04090e); }
+      header { display:flex; justify-content:space-between; align-items:center; padding:20px 24px; border-bottom:1px solid var(--line); background:rgba(4,9,14,.8); }
+      header b { letter-spacing:3px; text-transform:uppercase; } header span { color:var(--dim); font-size:11px; }
+      main { width:min(1180px,94vw); margin:24px auto 60px; } section { margin-top:18px; padding:18px; border:1px solid var(--line); background:rgba(16,28,39,.88); }
+      h1,h2 { margin:0; text-transform:uppercase; letter-spacing:1px; } h1 { font-size:20px; } h2 { font-size:13px; } p { color:var(--dim); font-size:11px; line-height:1.55; }
+      form { display:flex; flex-wrap:wrap; gap:9px; } input,select,textarea,button { padding:9px 10px; color:var(--ink); border:1px solid var(--line); background:#071019; font:inherit; font-size:10px; }
+      input { flex:1; min-width:230px; } button { cursor:pointer; text-transform:uppercase; letter-spacing:.8px; } button:hover { border-color:var(--ok); } button.primary { color:#04110d; border:0; background:var(--ok); font-weight:700; }
+      #state { margin-left:auto; color:var(--dim); font-size:10px; } #submissions { display:grid; gap:10px; margin-top:14px; }
+      article { display:grid; grid-template-columns:1fr 160px; gap:16px; padding:14px; border:1px solid var(--line); background:rgba(255,255,255,.02); }
+      article h3 { margin:0; font-size:13px; } article small { display:block; margin-top:5px; color:var(--dim); } article p { white-space:pre-wrap; }
+      .palette { display:flex; gap:7px; margin-top:9px; } .swatch { width:54px; height:25px; border:1px solid rgba(255,255,255,.2); }
+      .actions { display:grid; align-content:start; gap:7px; } .actions textarea { min-height:60px; resize:vertical; }
+      .status { color:var(--ok); text-transform:uppercase; letter-spacing:1px; } .danger { color:var(--bad); }
+      @media(max-width:700px){ article{grid-template-columns:1fr;} header{align-items:flex-start;gap:10px;flex-direction:column;} }
+    </style>
+  </head>
+  <body>
+    <header><b>fpsbone · review console</b><span>Phase 9 administrative surface</span></header>
+    <main>
+      <h1>Community cosmetic review</h1>
+      <p>This console never publishes arbitrary assets. It reviews bounded procedural palette concepts and manages grants for finishes already compiled into the approved game catalog.</p>
+      <section>
+        <h2>Authentication</h2>
+        <p>Use the private FPSBONE_ADMIN_TOKEN configured on this Render service. It stays in this tab only.</p>
+        <form id="auth"><input id="token" type="password" autocomplete="off" placeholder="Admin review token" /><button class="primary" type="submit">open queue</button><span id="state">locked</span></form>
+      </section>
+      <section>
+        <h2>Catalog grant</h2>
+        <p>Issued finishes need no grant. Promotional finishes can be granted or revoked from one verified device account.</p>
+        <form id="grant"><input id="account" placeholder="device account id" /><select id="finish"><option value="ember">EMBER PROTOCOL</option><option value="nightshift">NIGHT SHIFT</option></select><select id="grant-action"><option value="grant">grant</option><option value="revoke">revoke</option></select><button type="submit">apply ownership</button></form>
+      </section>
+      <section><h2>Submission queue</h2><div id="submissions"><p>Authenticate to load submissions.</p></div></section>
+    </main>
+    <script type="module" src="/src/review.js"></script>
+  </body>
+</html>

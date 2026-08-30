@@ -55,6 +55,9 @@
 // Part S is account ownership: a fresh server challenge, a P-256 proof, a public-key-derived
 // storage id, one-way migration from the old browser id, and a recovery code the user can
 // carry without adding a password database or wallet dependency.
+// Part T is the inventory and creator pipeline: issued versus granted ownership, a second
+// admission check, one-use signed account actions, bounded palette-only submissions and a
+// review surface that stays locked until its private operator token is configured.
 //
 // Part I opens two real sockets and confirms each client sees the other — and each
 // other's bots, since the room is shared and the count is a live request.
@@ -119,10 +122,13 @@ import { Room, r3 } from './server/room.js';
 // Room on its own knows nothing about how many humans are connected to it.
 import { createHost } from './server/index.js';
 import { deviceAccountId, proofText, verifyDeviceIdentity } from './server/identity.js';
+import { createAccountGateway } from './server/account-api.js';
+import { accountOrigin } from './client/src/account-client.js';
 import { MSG, REJECT, encode, decode } from './shared/protocol.js';
 import { EV } from './shared/protocol.js';
 import {
-  DEFAULT_FINISH, FINISHES, FINISH_IDS, finishOf, sanitizeCosmetics,
+  DEFAULT_FINISH, FINISHES, FINISH_IDS, ISSUED_FINISH_IDS, finishOf, sanitizeCosmetics,
+  sanitizeInventory, sanitizeOwnedCosmetics,
 } from './shared/cosmetics.js';
 import { OPERATORS, OPERATOR_IDS, operatorIdFor, operatorFor } from './shared/operators.js';
 
@@ -7959,7 +7965,8 @@ async function challengeBrowser(sock, nonce) {
       'rank presentation must be driven by the owner-only snapshot rather than placeholder text');
   okM(lobbyHtml.includes('id="inventory-preview-name"') && lobbyHtml.includes('id="inventory-gun"')
       && menuSrc.includes('function renderInventoryPreview(id)')
-      && lobbyHtml.includes('<b>community skins</b>') && lobbyHtml.includes('marketplace offline'),
+      && lobbyHtml.includes('<b>authoritative ownership</b>')
+      && lobbyHtml.includes('Purchases and NFT claims remain disabled.'),
       'inventory has a working weapon preview and an explicit reviewed-skins boundary',
       'the marketplace remains offline while the loadout surface is ready for future cosmetics');
   okM(mainSrc.includes('menu.setPopulation(m.pop ?? {})')
@@ -9720,10 +9727,12 @@ const okR = (cond, label, detail = '') =>
   const htmlSrc = readFileSync('./client/index.html', 'utf8');
   const forbidden = ['damage', 'dmg', 'range', 'spread', 'speed', 'hp', 'armor'];
 
-  okR(FINISH_IDS.length >= 3 && FINISH_IDS[0] === DEFAULT_FINISH
-      && FINISH_IDS.every((id) => FINISHES[id].approved && FINISHES[id].source === 'base'),
-      'the launch catalog contains only reviewed base finishes, with standard issue first',
-      FINISH_IDS.join(', '));
+  okR(FINISH_IDS.length >= 5 && FINISH_IDS[0] === DEFAULT_FINISH
+      && FINISH_IDS.every((id) => FINISHES[id].approved)
+      && ISSUED_FINISH_IDS.every((id) => FINISHES[id].source === 'base')
+      && FINISH_IDS.some((id) => !FINISHES[id].issued),
+      'the reviewed catalog distinguishes standard-issue finishes from locked grants',
+      `issued ${ISSUED_FINISH_IDS.join(', ')} · catalog ${FINISH_IDS.join(', ')}`);
   okR(FINISH_IDS.every((id) => forbidden.every((key) => !(key in FINISHES[id]))),
       'no finish declares a gameplay stat',
       `${forbidden.join('/')} absent from every cosmetic`);
@@ -9772,7 +9781,7 @@ const okR = (cond, label, detail = '') =>
   okR(/setFinish\(id\)/.test(vmSrc) && /finishMats/.test(vmSrc),
       'the first-person weapon consumes the same approved finish channels');
   okR(menuSrc.includes('renderFinishes') && menuSrc.includes('cbs.onFinish?.(id)')
-      && htmlSrc.includes('id="finishes"') && htmlSrc.includes('marketplace offline'),
+      && htmlSrc.includes('id="finishes"') && menuSrc.includes('marketplace offline'),
       'inventory equips reviewed finishes while the future marketplace stays explicitly offline');
   okR(!/ethers|web3|walletconnect|solana|metamask/i.test(menuSrc),
       'the inventory adds no wallet or chain dependency before ownership verification exists');
@@ -9889,7 +9898,7 @@ const okS = (cond, label, detail = '') =>
     resolveIdentity: verifyDeviceIdentity,
   });
   const signed = openClient(signedHost);
-  signed.conn.message(encode(signedHello(signed.challenge)));
+  await signed.conn.message(encode(signedHello(signed.challenge)));
   const signedWelcome = signed.inbox.find((m) => m.t === MSG.WELCOME);
   okS(signedWelcome?.account?.type === 'device'
       && signedRanks.profiles[0] === account
@@ -9906,7 +9915,7 @@ const okS = (cond, label, detail = '') =>
     resolveIdentity: verifyDeviceIdentity,
   });
   const forged = openClient(forgedHost);
-  forged.conn.message(encode(signedHello('somebody-elses-challenge')));
+  await forged.conn.message(encode(signedHello('somebody-elses-challenge')));
   okS(forged.inbox.some((m) => m.t === MSG.REJECT && m.reason === REJECT.IDENTITY_INVALID)
       && forgedRanks.profiles.length === 0 && forgedHost.humans === 0,
       'a forged identity is refused before it can claim a seat or read a profile');
@@ -9920,7 +9929,7 @@ const okS = (cond, label, detail = '') =>
     resolveIdentity: verifyDeviceIdentity,
   });
   const guest = openClient(guestHost);
-  guest.conn.message(encode({
+  await guest.conn.message(encode({
     t: MSG.HELLO,
     name: 'guest',
     mode: DEFAULT_MODE,
@@ -9950,6 +9959,134 @@ const okS = (cond, label, detail = '') =>
       'account ownership adds no wallet SDK or password service dependency');
 }
 console.log([...pS, ...fS].join('\n'));
+// ─────────────────────────────────────────── Part T: authoritative inventory and creator queue
+console.log('\n=== Part T — authoritative inventory and creator queue ===\n');
+const pT = [], fT = [];
+const okT = (cond, label, detail = '') =>
+  (cond ? pT : fT).push(`${cond ? 'PASS' : 'FAIL'}  ${label}${detail ? `  — ${detail}` : ''}`);
+
+{
+  const promo = FINISH_IDS.find((id) => !FINISHES[id].issued);
+  const baseInventory = sanitizeInventory(['unknown', 3, null]);
+  const grantedInventory = sanitizeInventory([promo, promo, 'unknown']);
+  okT(baseInventory.length === ISSUED_FINISH_IDS.length
+      && ISSUED_FINISH_IDS.every((id) => baseInventory.includes(id)),
+      'every account receives only the issued set by default', baseInventory.join(', '));
+  okT(!sanitizeOwnedCosmetics({ finish: promo }, baseInventory).finish
+      && sanitizeOwnedCosmetics({ finish: promo }, grantedInventory).finish === promo,
+      'catalog approval alone cannot equip a locked finish; an account grant can');
+
+  let clock = 1_000;
+  let tokenNo = 0;
+  const claims = [];
+  const gateway = createAccountGateway({
+    ranks: { async claimLegacy(from, to) { claims.push([from, to]); } },
+    adminToken: 'private-review-token',
+    now: () => clock,
+    makeToken: () => `account-nonce-${++tokenNo}`,
+  });
+  const { publicKey, privateKey } = generateKeyPairSync('ec', { namedCurve: 'prime256v1' });
+  const publicDer = publicKey.export({ type: 'spki', format: 'der' }).toString('base64url');
+  const legacy = 'local-phase9test';
+  const accountBody = (challenge, withLegacy = true) => ({
+    challenge,
+    ...(withLegacy ? { legacy } : {}),
+    auth: {
+      v: 1,
+      alg: 'ES256',
+      key: publicDer,
+      sig: sign('sha256', Buffer.from(proofText(challenge, withLegacy ? legacy : '')),
+        { key: privateKey, dsaEncoding: 'ieee-p1363' }).toString('base64url'),
+    },
+  });
+  const issued = gateway.issue('profile');
+  const verified = await gateway.authenticate('profile', accountBody(issued.challenge));
+  let replayDenied = false;
+  try { await gateway.authenticate('profile', accountBody(issued.challenge)); } catch {
+    replayDenied = true;
+  }
+  okT(verified.id === deviceAccountId(publicDer) && claims.length === 1 && replayDenied,
+      'a signed account action consumes one purpose-bound challenge exactly once');
+  const wrongPurpose = gateway.issue('profile');
+  let purposeDenied = false;
+  try { await gateway.authenticate('equip', accountBody(wrongPurpose.challenge)); } catch {
+    purposeDenied = true;
+  }
+  okT(purposeDenied && gateway.pending === 0,
+      'a profile proof cannot be replayed as an equip or submission action');
+  const expiring = gateway.issue('submit');
+  clock = expiring.expires + 1;
+  let expiredDenied = false;
+  try { await gateway.authenticate('submit', accountBody(expiring.challenge)); } catch {
+    expiredDenied = true;
+  }
+  okT(expiredDenied && gateway.isAdmin('Bearer private-review-token')
+      && !gateway.isAdmin('Bearer private-review-token-x'),
+      'expired proofs fail and review access requires the exact configured bearer secret');
+
+  const granted = new Set();
+  const authorityRanks = {
+    claimLegacy: async () => {},
+    profileOf: () => ({ career: 0, badges: {}, xp: 0, stats: {},
+      inventory: sanitizeInventory([...granted]), equipped: {} }),
+    async authorizeCosmetics(id, raw) {
+      const inventory = sanitizeInventory([...granted]);
+      return {
+        profile: { career: 0, badges: {}, xp: 0, stats: {}, inventory, equipped: {} },
+        cosmetics: sanitizeOwnedCosmetics(raw, inventory),
+      };
+    },
+    setCareer: () => {}, settleMatch: () => {},
+    storageState: () => ({ kind: 'test', durable: true }),
+  };
+  let hostToken = 0;
+  const authorityHost = createHost({
+    nowNs: () => 0n, ranks: authorityRanks, makeToken: () => `phase9-host-${++hostToken}`,
+    resolveIdentity: () => ({ id: deviceAccountId(publicDer), type: 'device' }),
+  });
+  const connectWith = async (name) => {
+    const inbox = [];
+    const conn = authorityHost.connect({
+      send: (payload) => inbox.push(decode(payload)), isOpen: () => true, close: () => {},
+    });
+    conn.start();
+    await conn.message(encode({ t: MSG.HELLO, name, mode: DEFAULT_MODE,
+      cosmetics: { finish: promo } }));
+    return { inbox, welcome: inbox.find((m) => m.t === MSG.WELCOME) };
+  };
+  const refused = await connectWith('locked requester');
+  granted.add(promo);
+  const allowed = await connectWith('granted owner');
+  const roster = authorityHost.rooms.get(DEFAULT_MODE).room.rosterState();
+  okT(!roster.find((row) => row.i === refused.welcome.id)?.fn
+      && roster.find((row) => row.i === allowed.welcome.id)?.fn === promo
+      && !refused.welcome.inventory.owned.includes(promo)
+      && allowed.welcome.inventory.owned.includes(promo),
+      'the match host rechecks ownership and sends the same authoritative inventory in WELCOME');
+
+  const ranksSrc = readFileSync('./server/ranks.js', 'utf8');
+  const serveSrc = readFileSync('./server/serve.js', 'utf8');
+  const reviewSrc = readFileSync('./client/src/review.js', 'utf8');
+  const reviewHtml = readFileSync('./client/review.html', 'utf8');
+  const lobbyHtml = readFileSync('./client/index.html', 'utf8');
+  okT(ranksSrc.includes('procedural_palette_v1') && ranksSrc.includes('submission_palette')
+      && ranksSrc.includes('MAX_SUBMISSIONS_PER_ACCOUNT')
+      && !reviewHtml.includes('type="file"'),
+      'community concepts are bounded palettes and text, never executable files or remote URLs');
+  okT(serveSrc.includes("process.env.FPSBONE_ADMIN_TOKEN")
+      && serveSrc.includes("review_not_configured")
+      && reviewSrc.includes('authorization: `Bearer ${token}`')
+      && lobbyHtml.includes('it does not publish automatically'),
+      'review is private, disabled without a secret, and approval cannot publish by itself');
+  okT(lobbyHtml.includes('.inventory-grid { min-height: 430px')
+      && lobbyHtml.includes('.screen[data-screen="inventory"].on { display: block;'),
+      'the creator workbench flows below the inventory instead of covering the finish list');
+  okT(accountOrigin('wss://fpsbone-sea.onrender.com/socket', 'https://game.invalid')
+        === 'https://fpsbone-sea.onrender.com'
+      && accountOrigin('ws://localhost:8787', 'http://localhost:5173') === 'http://localhost:8787',
+      'lobby account calls follow the selected game region over HTTP without taking a seat');
+}
+console.log([...pT, ...fT].join('\n'));
 // ─────────────────────────────────────────── Part I: two live clients
 console.log('\n=== Part I — two live clients over the wire ===\n');
 
@@ -10146,9 +10283,9 @@ try {
 const total = fail.length + fB.length + fC.length + fD.length + fE.length + fF.length
   + fG.length + fH.length + fJ.length + fK.length + fL.length + fM.length + fN.length
   + fO.length + fP.length
-  + fQ.length + fR.length + fS.length
+  + fQ.length + fR.length + fS.length + fT.length
   + f2.length;
 console.log(
-  `\n${total === 0 ? 'ALL PASS' : `${total} FAILURE(S)`} — ${pass.length + pB.length + pC.length + pD.length + pE.length + pF.length + pG.length + pH.length + pJ.length + pK.length + pL.length + pM.length + pN.length + pO.length + pP.length + pQ.length + pR.length + pS.length + p2.length} checks passed`,
+  `\n${total === 0 ? 'ALL PASS' : `${total} FAILURE(S)`} — ${pass.length + pB.length + pC.length + pD.length + pE.length + pF.length + pG.length + pH.length + pJ.length + pK.length + pL.length + pM.length + pN.length + pO.length + pP.length + pQ.length + pR.length + pS.length + pT.length + p2.length} checks passed`,
 );
 process.exit(total === 0 ? 0 : 1);

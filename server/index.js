@@ -506,7 +506,9 @@ export function createHost({
     let resumeToken = null;
     let greeted = false;
     let started = false;
+    let dropped = false;
     let accountType = 'guest';
+    let accountProfile = null;
     const challenge = makeToken();
 
     const sendWelcome = (modeId) => {
@@ -528,6 +530,12 @@ export function createHost({
           avail: AVAILABLE,
           cap: C.REGION_HUMAN_CAP,
           account: { type: accountType, ...ranks.storageState?.() },
+          ...(accountProfile ? {
+            inventory: {
+              owned: accountProfile.inventory ?? [],
+              equipped: accountProfile.equipped ?? {},
+            },
+          } : {}),
           // How full every lobby is, right now. It rides on WELCOME rather than
           // arriving as the first MSG.LOBBY push so that the mode picker is never
           // briefly showing every room as empty; pushes carry every later change.
@@ -549,7 +557,7 @@ export function createHost({
       client.close?.(4003, reason);
     };
 
-    function message(raw) {
+    async function message(raw) {
       const m = decode(raw);
       if (!m) return;
 
@@ -567,6 +575,9 @@ export function createHost({
           clearTimer(held.timer);
           slot = held.slot;
           id = held.id;
+          const returning = slot.room.players.get(id);
+          accountType = returning?.account ? 'device' : 'guest';
+          accountProfile = returning?.account ? ranks.profileOf?.(returning.account) ?? null : null;
           slot.clients.set(id, client);
           slot.rosterSent = -1; // the returning socket has not seen the current roster
           totals.resumes++;
@@ -607,16 +618,38 @@ export function createHost({
         // play as a guest, but its self-reported id has no authority over a career row.
         const account = sanitizeAccount(identity?.id);
         accountType = identity?.type === 'device' ? 'device' : 'guest';
-        if (account && identity?.legacy) ranks.claimLegacy?.(identity.legacy, account);
-        id = slot.room.add(sanitizeName(m.name), m.cosmetics ?? {}, account);
+        if (account && identity?.legacy) await ranks.claimLegacy?.(identity.legacy, account);
+        let grantedCosmetics = m.cosmetics ?? {};
+        let profile;
+        if (account && ranks.authorizeCosmetics) {
+          const authorized = await ranks.authorizeCosmetics(account, grantedCosmetics);
+          if (dropped || !client.isOpen()) return;
+          profile = authorized.profile;
+          grantedCosmetics = authorized.cosmetics;
+        } else {
+          profile = ranks.profileOf?.(account) ?? {
+            career: ranks.careerOf(account), badges: ranks.badgesOf(account), xp: 0, stats: {},
+          };
+        }
+        // Database-backed ownership checks yield. Recheck both limits after that yield so two
+        // simultaneous handshakes cannot both observe the final free seat and overfill it.
+        if (dropped || !client.isOpen()) return;
+        if (humansTotal() >= C.REGION_HUMAN_CAP) {
+          totals.serverFull++;
+          reject(REJECT.SERVER_FULL, modeId);
+          slot = null;
+          return;
+        }
+        if (seatsOf(slot) >= slot.room.mode.slots) {
+          totals.modeFull++;
+          reject(REJECT.MODE_FULL, modeId);
+          slot = null;
+          return;
+        }
+        accountProfile = account ? profile : null;
+        id = slot.room.add(sanitizeName(m.name), grantedCosmetics, account);
         // One private profile read at admission. Combat and snapshots stay in memory; the
         // next database operation is the authoritative match-end settlement.
-        const profile = ranks.profileOf?.(account) ?? {
-          career: ranks.careerOf(account),
-          badges: ranks.badgesOf(account),
-          xp: 0,
-          stats: {},
-        };
         const player = slot.room.players.get(id);
         player.career = profile.career ?? 0;
         player.badges = profile.badges ?? {};
@@ -647,6 +680,7 @@ export function createHost({
     }
 
     const drop = ({ reserve = false } = {}) => {
+      dropped = true;
       if (id === null) return;
       totals.disconnects++;
       const name = slot.room.players.get(id)?.name ?? '?';

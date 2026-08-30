@@ -18,7 +18,9 @@ import { XP_TIERS, rankOfXp, toNextRankXp } from '../../shared/progression.js';
 import { CH_COLORS } from './settings.js';
 import { ACTIONS, keyLabel, refuseReason, rebind } from './binds.js';
 import { insigniaPng } from './insignia.js';
-import { DEFAULT_FINISH, FINISHES, FINISH_IDS, finishOf } from '../../shared/cosmetics.js';
+import {
+  DEFAULT_FINISH, FINISHES, FINISH_IDS, finishOf, sanitizeInventory,
+} from '../../shared/cosmetics.js';
 
 const $ = (id) => document.getElementById(id);
 
@@ -106,6 +108,16 @@ export function createMenu(settings, cbs) {
     recoveryImport: $('recovery-import'),
     recoveryClear: $('recovery-clear'),
     recoveryState: $('recovery-state'),
+    inventoryState: $('inventory-state'),
+    submissionForm: $('submission-form'),
+    submissionTitle: $('submission-title'),
+    submissionDescription: $('submission-description'),
+    submissionSteel: $('submission-steel'),
+    submissionDark: $('submission-dark'),
+    submissionTrim: $('submission-trim'),
+    submissionSend: $('submission-send'),
+    submissionState: $('submission-state'),
+    submissionHistory: $('submission-history'),
   };
   const panes = [...document.querySelectorAll('.pane')];
   const screens = [...document.querySelectorAll('.screen')];
@@ -134,6 +146,9 @@ export function createMenu(settings, cbs) {
    *  (a `?server=` override). Not read from `settings` because the setting is a request. */
   let activeRegion = null;
   let playerStats = { career: 0, xp: 0, stats: {}, kills: 0, deaths: 0 };
+  let inventoryState = {
+    state: 'loading', owned: new Set(sanitizeInventory()), submissions: [],
+  };
   let matchState = 'lobby';
   /** The action waiting for a key, or null. */
   let arming = null;
@@ -372,19 +387,88 @@ export function createMenu(settings, cbs) {
     const selected = cbs.identity?.cosmetics?.finish ?? DEFAULT_FINISH;
     els.finishes.replaceChildren(...FINISH_IDS.map((id) => {
       const finish = FINISHES[id];
+      const owned = inventoryState.owned.has(id);
       const item = document.createElement('button');
       item.type = 'button';
-      item.className = `finish-item${selected === id ? ' on' : ''}`;
+      item.disabled = !owned;
+      item.className = `finish-item${selected === id ? ' on' : ''}${owned ? '' : ' locked'}`;
       item.innerHTML = `<i style="--finish:${`#${finish.trim.toString(16).padStart(6, '0')}`}"></i>`
-        + `<span><b>${finish.label}</b><small>${finish.rarity} · approved</small></span>`;
-      item.addEventListener('click', () => {
-        cbs.onFinish?.(id);
-        renderFinishes();
-        renderInventoryPreview(MODES[settings.mode].randomLoadout ? null : settings.wep);
+        + `<span><b>${finish.label}</b><small>${finish.rarity} · ${owned ? 'owned' : 'locked'}</small></span>`;
+      item.addEventListener('click', async () => {
+        if (!owned) return;
+        els.inventoryState.textContent = 'saving equipped finish…';
+        try {
+          await cbs.onFinish?.(id);
+          els.inventoryState.textContent = `${inventoryState.owned.size}/${FINISH_IDS.length} owned · marketplace offline`;
+          renderFinishes();
+          renderInventoryPreview(MODES[settings.mode].randomLoadout ? null : settings.wep);
+        } catch {
+          els.inventoryState.textContent = 'equip failed · account server unavailable';
+        }
       });
       return item;
     }));
   }
+
+  function renderSubmissions() {
+    els.submissionSend.disabled = inventoryState.state !== 'ready' || !cbs.identity?.verified;
+    const list = Array.isArray(inventoryState.submissions) ? inventoryState.submissions : [];
+    if (!list.length) {
+      const empty = document.createElement('div');
+      empty.className = 'note';
+      empty.textContent = inventoryState.state === 'loading'
+        ? 'Loading your review trail…'
+        : 'No finish concepts submitted yet.';
+      els.submissionHistory.replaceChildren(empty);
+      return;
+    }
+    els.submissionHistory.replaceChildren(...list.map((submission) => {
+      const row = document.createElement('div');
+      row.className = 'submission-row';
+      const copy = document.createElement('span');
+      const title = document.createElement('b');
+      title.textContent = submission.title ?? 'Untitled concept';
+      const note = document.createElement('small');
+      note.textContent = submission.note || 'Awaiting reviewer note.';
+      copy.append(title, note);
+      const status = document.createElement('em');
+      status.textContent = submission.status ?? 'submitted';
+      row.append(copy, status);
+      return row;
+    }));
+  }
+
+  els.submissionForm.addEventListener('submit', async (event) => {
+    event.preventDefault();
+    if (inventoryState.state !== 'ready' || !cbs.identity?.verified) return;
+    const submission = {
+      title: els.submissionTitle.value,
+      description: els.submissionDescription.value,
+      steel: els.submissionSteel.value,
+      dark: els.submissionDark.value,
+      trim: els.submissionTrim.value,
+    };
+    els.submissionSend.disabled = true;
+    els.submissionState.textContent = 'Signing and submitting concept…';
+    try {
+      const result = await cbs.onCommunitySubmit?.(submission);
+      inventoryState.submissions = result?.submissions ?? inventoryState.submissions;
+      els.submissionTitle.value = '';
+      els.submissionDescription.value = '';
+      els.submissionState.textContent = 'Submitted. It cannot enter the catalog until reviewed.';
+      renderSubmissions();
+    } catch (err) {
+      const messages = {
+        submission_length: 'Use a 3–40 character name and a 20–500 character description.',
+        submission_content: 'Links, markup and control characters are not accepted.',
+        submission_palette: 'Choose three different six-digit colours.',
+        submission_limit: 'Submission limit reached; wait for the current review batch.',
+      };
+      els.submissionState.textContent = messages[err?.message]
+        ?? 'Submission failed. Check the account connection and try again.';
+      renderSubmissions();
+    }
+  });
 
   function renderWeapons() {
     const mode = MODES[settings.mode];
@@ -838,6 +922,28 @@ export function createMenu(settings, cbs) {
         ? durable ? 'verified device · progress synced' : 'verified device · local practice'
         : durable ? 'unsigned guest · progress disabled' : 'guest account · local progress only';
       els.profileAccount.classList.toggle('durable', durable);
+    },
+    setInventoryState(next = {}) {
+      if (next.state) inventoryState.state = next.state;
+      if (Array.isArray(next.owned)) inventoryState.owned = new Set(sanitizeInventory(next.owned));
+      if (Array.isArray(next.submissions)) inventoryState.submissions = next.submissions;
+      if (next.equipped) cbs.identity.cosmetics = next.equipped;
+      const labels = {
+        loading: 'checking ownership…',
+        ready: `${inventoryState.owned.size}/${FINISH_IDS.length} owned · marketplace offline`,
+        offline: 'ownership service unavailable · marketplace offline',
+        local: 'local practice inventory · marketplace offline',
+        guest: 'unsigned guest · inventory saving disabled',
+      };
+      els.inventoryState.textContent = labels[inventoryState.state] ?? labels.offline;
+      els.submissionState.textContent = inventoryState.state === 'ready'
+        ? 'Signed creator submissions are open.'
+        : inventoryState.state === 'loading'
+          ? 'Checking verified account…'
+          : 'A verified online account is required.';
+      renderFinishes();
+      renderInventoryPreview(MODES[settings.mode].randomLoadout ? null : settings.wep);
+      renderSubmissions();
     },
     /** The career is private owner data; current kills/deaths come from this match's snapshot. */
     setPlayerStats(next) {

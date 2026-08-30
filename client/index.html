@@ -759,7 +759,7 @@
       .lobby-body { flex: 1; min-height: 0; overflow: auto; }
       .screen { display: none; box-sizing: border-box; height: 100%; padding: 24px; }
       .screen.on { display: block; }
-      .screen[data-screen="inventory"].on { display: flex; flex-direction: column; }
+      .screen[data-screen="inventory"].on { display: block; height: auto; min-height: 100%; }
       .lobby-grid { display: grid; grid-template-columns: 310px minmax(0, 1fr); gap: 24px; height: 100%; min-height: 0; }
       .player-panel, .match-browser, .inventory-list, .inventory-preview {
         border: 1px solid var(--line); background: rgba(13, 22, 31, 0.82);
@@ -810,7 +810,7 @@
       .match-browser #keys { justify-content: flex-start; padding-top: 17px; margin-top: 20px; border-top: 1px solid var(--line); }
       .screen-heading { max-width: 720px; margin-bottom: 22px; }
       .screen-heading p { margin-top: 7px; font-size: 11px; }
-      .inventory-grid { flex: 1; min-height: 0; display: grid; grid-template-columns: minmax(260px, .85fr) minmax(340px, 1.4fr); gap: 20px; }
+      .inventory-grid { min-height: 430px; display: grid; grid-template-columns: minmax(260px, .85fr) minmax(340px, 1.4fr); gap: 20px; }
       .inventory-list, .inventory-preview { padding: 20px; }
       .inventory-list > label { display: block; margin-bottom: 10px; color: var(--dim); font-size: 9px; letter-spacing: 1.4px; text-transform: uppercase; }
       #weps { display: grid; gap: 7px; }
@@ -823,6 +823,8 @@
       .inventory-item i { color: var(--dim); font-style: normal; font-size: 9px; }
       .finish-item { display: grid; grid-template-columns: 30px 1fr; align-items: center; gap: 10px; padding: 9px 10px; border: 1px solid var(--line); background: rgba(255,255,255,.02); color: var(--ink); cursor: pointer; text-align: left; }
       .finish-item:hover, .finish-item.on { border-color: var(--self); background: rgba(53,196,155,.065); }
+      .finish-item.locked { cursor: not-allowed; opacity: .48; filter: saturate(.35); }
+      .finish-item.locked:hover { border-color: var(--line); background: rgba(255,255,255,.02); }
       .finish-item > i { width: 25px; height: 25px; background: linear-gradient(135deg, var(--finish), #16222c); border: 1px solid rgba(255,255,255,.16); transform: skewX(-8deg); }
       .finish-item b, .finish-item small { display: block; }
       .finish-item b { font-size: 9px; letter-spacing: .9px; }
@@ -840,6 +842,10 @@
       #inventory-gun[data-finish="foundry"] i:nth-child(2) { background: linear-gradient(180deg, #dd8735, #713713); }
       #inventory-gun[data-finish="arctic"] i { background: linear-gradient(180deg, #89a9b8, #273943); border-color: rgba(130,214,220,.6); }
       #inventory-gun[data-finish="arctic"] i:nth-child(2) { background: linear-gradient(180deg, #94e3e6, #34616e); }
+      #inventory-gun[data-finish="ember"] i { background: linear-gradient(180deg, #68463e, #211919); border-color: rgba(255,117,79,.6); }
+      #inventory-gun[data-finish="ember"] i:nth-child(2) { background: linear-gradient(180deg, #ff8563, #6b2b20); }
+      #inventory-gun[data-finish="nightshift"] i { background: linear-gradient(180deg, #414c70, #121725); border-color: rgba(149,121,255,.6); }
+      #inventory-gun[data-finish="nightshift"] i:nth-child(2) { background: linear-gradient(180deg, #a58cff, #3d306d); }
       .inventory-preview h2 { margin-top: 20px; color: #fff; font-size: 23px; letter-spacing: 3px; }
       .inventory-preview > p { margin-top: 4px; font-size: 9px; letter-spacing: 1px; text-transform: uppercase; }
       .market-note { width: min(440px, 90%); margin-top: 30px; padding: 14px; text-align: left; border: 1px solid var(--line); background: rgba(5,10,16,.56); }
@@ -847,6 +853,24 @@
       .market-note b { text-transform: uppercase; font-size: 10px; letter-spacing: 1.2px; }
       .market-note span { margin-top: 5px; color: var(--dim); font-size: 9px; }
       .market-note em { display: inline-block; margin-top: 9px; padding: 2px 5px; color: var(--dim); border: 1px solid var(--line); font-size: 8px; font-style: normal; letter-spacing: 1px; text-transform: uppercase; }
+      .community-workbench { display: grid; grid-template-columns: minmax(280px,.9fr) minmax(340px,1.1fr); gap: 20px; margin-top: 20px; }
+      .submission-form, .submission-list { padding: 18px; border: 1px solid var(--line); background: rgba(13,22,31,.82); }
+      .community-workbench h3 { margin: 3px 0 6px; color: #fff; font-size: 13px; letter-spacing: 1px; text-transform: uppercase; }
+      .community-workbench p { font-size: 9px; line-height: 1.55; }
+      .submission-form input[type="text"], .submission-form textarea { box-sizing: border-box; width: 100%; margin-top: 9px; padding: 9px 10px; color: var(--ink); border: 1px solid var(--line); background: #070d13; font: inherit; font-size: 10px; }
+      .submission-form textarea { min-height: 72px; resize: vertical; }
+      .palette-row { display: grid; grid-template-columns: repeat(3,1fr); gap: 8px; margin-top: 9px; }
+      .palette-row label { display: grid; grid-template-columns: 30px 1fr; align-items: center; gap: 6px; color: var(--dim); font-size: 8px; text-transform: uppercase; }
+      .palette-row input { width: 28px; height: 28px; padding: 0; border: 1px solid var(--line); background: transparent; }
+      #submission-send { margin-top: 11px; padding: 9px 13px; color: #06130f; border: 0; background: var(--self); cursor: pointer; font: inherit; font-size: 9px; font-weight: 700; letter-spacing: 1px; text-transform: uppercase; }
+      #submission-send:disabled { cursor: not-allowed; opacity: .45; }
+      #submission-state { min-height: 14px; margin-top: 8px; color: var(--dim); font-size: 8px; }
+      #submission-history { display: grid; gap: 7px; margin-top: 10px; }
+      .submission-row { display: grid; grid-template-columns: 1fr auto; gap: 8px; padding: 10px; border: 1px solid var(--line); background: rgba(255,255,255,.02); text-align: left; }
+      .submission-row b, .submission-row small { display: block; }
+      .submission-row b { font-size: 9px; letter-spacing: .7px; }
+      .submission-row small { margin-top: 4px; color: var(--dim); font-size: 8px; }
+      .submission-row em { align-self: start; padding: 2px 5px; color: var(--self); border: 1px solid currentColor; font-size: 7px; font-style: normal; letter-spacing: .8px; text-transform: uppercase; }
       .settings-screen { max-width: 900px; margin: 0 auto; }
       .account-card { padding: 20px; border: 1px solid var(--line); background: rgba(13,22,31,.75); }
       .account-card h3 { margin: 4px 0 8px; color: #fff; font-size: 15px; letter-spacing: 1px; text-transform: uppercase; }
@@ -1048,7 +1072,7 @@
         .screen-tab { min-width: 0; padding: 0 9px; font-size: 9px; }
         .screen { height: auto; min-height: 100%; padding: 14px; }
         .screen[data-screen="inventory"].on { display: block; }
-        .lobby-grid, .inventory-grid { height: auto; grid-template-columns: 1fr; }
+        .lobby-grid, .inventory-grid, .community-workbench { height: auto; grid-template-columns: 1fr; }
         .operator-stage { height: 210px; }
         .player-panel { min-height: 420px; }
         .lobby-footer { position: sticky; bottom: 0; padding: 10px 14px; }
@@ -1532,7 +1556,7 @@
 
           <section class="screen" data-screen="inventory">
             <div class="screen-heading"><span class="panel-kicker">arsenal</span><h1>Inventory</h1>
-              <p>Choose the base weapon you spawn with when the mode allows it. Cosmetic ownership will attach here later without changing weapon power.</p>
+              <p>Choose your loadout and equip only finishes owned by this verified account. Cosmetic ownership never changes weapon power.</p>
             </div>
             <div class="inventory-grid">
               <div class="inventory-list">
@@ -1546,8 +1570,28 @@
                 <div id="inventory-gun"><i></i><i></i><i></i></div>
                 <h2 id="inventory-preview-name">RIFLE</h2>
                 <p id="inventory-preview-meta">base finish · gameplay stats locked</p>
-                <div class="market-note"><b>community skins</b><span>Creator submissions and NFT-backed cosmetics arrive only after review. No pay-to-win stats.</span><em>marketplace offline</em></div>
+                <div class="market-note"><b>authoritative ownership</b><span>Locked finishes cannot be equipped by editing browser storage. Purchases and NFT claims remain disabled.</span><em id="inventory-state">checking account…</em></div>
               </div>
+            </div>
+            <div class="community-workbench">
+              <form class="submission-form" id="submission-form">
+                <span class="panel-kicker">creator intake</span><h3>Submit a finish concept</h3>
+                <p>Phase 9 accepts a safe procedural palette and written concept only—no files, links or executable assets. Approval sends it to production review; it does not publish automatically.</p>
+                <input id="submission-title" type="text" maxlength="40" placeholder="Concept name" autocomplete="off" />
+                <textarea id="submission-description" maxlength="500" placeholder="Describe the visual idea and why it fits fpsbone (20–500 characters)"></textarea>
+                <div class="palette-row">
+                  <label><input id="submission-steel" type="color" value="#4c5a64" />steel</label>
+                  <label><input id="submission-dark" type="color" value="#18212a" />dark</label>
+                  <label><input id="submission-trim" type="color" value="#35c49b" />trim</label>
+                </div>
+                <button id="submission-send" type="submit">submit for review</button>
+                <div id="submission-state">A verified online account is required.</div>
+              </form>
+              <section class="submission-list">
+                <span class="panel-kicker">review trail</span><h3>Your submissions</h3>
+                <p>Status and reviewer notes are server records, not editable browser labels.</p>
+                <div id="submission-history"><div class="note">No submissions loaded.</div></div>
+              </section>
             </div>
           </section>
 

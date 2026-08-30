@@ -40,6 +40,7 @@ import { MSG, REJECT, decode, encode } from '../shared/protocol.js';
 import { REGIONS, regionsFromEnv } from '../shared/regions.js';
 import { createHost } from './index.js';
 import { verifyDeviceIdentity } from './identity.js';
+import { createAccountGateway } from './account-api.js';
 // The only filesystem-touching module under server/, and imported here and nowhere
 // else — see the header of ranks.js for why room.js must not reach it.
 import * as ranks from './ranks.js';
@@ -86,6 +87,11 @@ const { region: REGION, regions: PEERS, dropped: BAD_PEERS } = regionsFromEnv(pr
  * preflight is needed — an OPTIONS round trip would double the measured ping.
  */
 const CORS = { 'access-control-allow-origin': '*' };
+const API_CORS = {
+  ...CORS,
+  'access-control-allow-methods': 'GET, POST, OPTIONS',
+  'access-control-allow-headers': 'content-type, authorization',
+};
 
 const MIME = {
   '.html': 'text/html; charset=utf-8',
@@ -111,6 +117,10 @@ const host = createHost({
   region: REGION,
   log: (line) => console.log(line),
 });
+const accountGateway = createAccountGateway({
+  ranks,
+  adminToken: process.env.FPSBONE_ADMIN_TOKEN?.trim() ?? '',
+});
 let rateLimitedTotal = 0;
 let handshakeTimeoutTotal = 0;
 let socketAcceptedTotal = 0;
@@ -125,13 +135,139 @@ let socketAcceptedTotal = 0;
  */
 function resolveFile(urlPath) {
   const clean = decodeURIComponent(urlPath.split('?')[0].split('#')[0]);
-  const rel = normalize(clean === '/' ? 'index.html' : clean.replace(/^\/+/, ''));
+  const rel = normalize(clean === '/' ? 'index.html'
+    : clean === '/review' ? 'review.html'
+    : clean.replace(/^\/+/, ''));
   const abs = join(WEB_ROOT, rel);
   if (abs !== WEB_ROOT && !abs.startsWith(WEB_ROOT + sep)) return null;
   return abs;
 }
 
+function json(res, status, value, headers = API_CORS) {
+  res.writeHead(status, {
+    ...headers,
+    'content-type': 'application/json; charset=utf-8',
+    'cache-control': 'no-store',
+  });
+  res.end(JSON.stringify(value));
+}
+
+async function readJson(req, maxBytes = 16 * 1024) {
+  const chunks = [];
+  let size = 0;
+  for await (const chunk of req) {
+    size += chunk.length;
+    if (size > maxBytes) throw new Error('body_too_large');
+    chunks.push(chunk);
+  }
+  try { return JSON.parse(Buffer.concat(chunks).toString('utf8') || '{}'); } catch {
+    throw new Error('body_invalid');
+  }
+}
+
+/** Signed account APIs do not occupy a game seat; review APIs require a private bearer key. */
+async function serveApi(req, res, url) {
+  if (!url.pathname.startsWith('/api/')) return false;
+  if (req.method === 'OPTIONS') {
+    res.writeHead(204, API_CORS);
+    res.end();
+    return true;
+  }
+
+  if (req.method === 'GET' && url.pathname === '/api/account/challenge') {
+    if (!allowAttempt(remoteIp(req))) {
+      json(res, 429, { error: 'rate_limited' });
+      return true;
+    }
+    const issued = accountGateway.issue(url.searchParams.get('purpose'));
+    json(res, issued ? 200 : 400, issued ?? { error: 'purpose_invalid' });
+    return true;
+  }
+
+  if (url.pathname.startsWith('/api/review/')) {
+    if (!accountGateway.reviewEnabled) {
+      json(res, 503, { error: 'review_not_configured' });
+      return true;
+    }
+    if (!accountGateway.isAdmin(req.headers.authorization)) {
+      json(res, 401, { error: 'admin_required' });
+      return true;
+    }
+    try {
+      if (req.method === 'GET' && url.pathname === '/api/review/submissions') {
+        json(res, 200, { submissions: await ranks.reviewSubmissions() });
+        return true;
+      }
+      if (req.method === 'POST' && url.pathname === '/api/review/decision') {
+        const body = await readJson(req);
+        const submission = await ranks.reviewSubmission(body.id, body.status, body.note);
+        json(res, submission ? 200 : 400, submission ? { submission } : { error: 'decision_invalid' });
+        return true;
+      }
+      if (req.method === 'POST' && url.pathname === '/api/review/grant') {
+        const body = await readJson(req);
+        const profile = body.action === 'revoke'
+          ? await ranks.revokeFinish(body.account, body.finish)
+          : await ranks.grantFinish(body.account, body.finish, 'review');
+        json(res, profile ? 200 : 400, profile ? { profile } : { error: 'grant_invalid' });
+        return true;
+      }
+    } catch (err) {
+      const inputError = ['body_too_large', 'body_invalid'].includes(err?.message);
+      json(res, inputError ? 400 : 500, { error: inputError ? err.message : 'review_failed' });
+      return true;
+    }
+    json(res, 404, { error: 'not_found' });
+    return true;
+  }
+
+  if (req.method !== 'POST') {
+    json(res, 405, { error: 'method_not_allowed' });
+    return true;
+  }
+  const purpose = url.pathname === '/api/account/profile' ? 'profile'
+    : url.pathname === '/api/account/equip' ? 'equip'
+    : url.pathname === '/api/account/submissions' ? 'submit'
+    : null;
+  if (!purpose) {
+    json(res, 404, { error: 'not_found' });
+    return true;
+  }
+
+  try {
+    const body = await readJson(req);
+    const identity = await accountGateway.authenticate(purpose, body);
+    if (purpose === 'profile') {
+      const profile = await ranks.profileFresh(identity.id);
+      const submissions = await ranks.submissionsOf(identity.id);
+      json(res, 200, { account: identity.id, profile, submissions });
+    } else if (purpose === 'equip') {
+      const profile = await ranks.equipFinish(identity.id, body.finish);
+      json(res, profile ? 200 : 403, profile ? { profile } : { error: 'finish_not_owned' });
+    } else {
+      const submission = await ranks.submitCosmetic(identity.id, body.submission);
+      const submissions = await ranks.submissionsOf(identity.id);
+      json(res, 201, { submission, submissions });
+    }
+  } catch (err) {
+    const known = new Set([
+      'body_too_large', 'body_invalid', 'challenge_invalid', 'identity_required',
+      'bad_identity_shape', 'bad_identity_signature', 'bad_identity_key',
+      'submission_length', 'submission_content', 'submission_palette', 'submission_limit',
+    ]);
+    const error = known.has(err?.message) ? err.message : 'request_failed';
+    const status = error === 'submission_limit' ? 429
+      : error === 'request_failed' ? 500
+      : error.startsWith('bad_identity') || error.includes('identity') || error === 'challenge_invalid'
+        ? 401 : 400;
+    json(res, status, { error });
+  }
+  return true;
+}
+
 async function serveStatic(req, res) {
+  const url = new URL(req.url ?? '/', 'http://fpsbone.local');
+  if (await serveApi(req, res, url)) return;
   // A health path, because most hosts want one and every one of them wants it to be cheap.
   // It answers before the filesystem is touched, so it stays up even with no dist/ built.
   if (req.url === '/healthz') {
@@ -240,7 +376,7 @@ async function serveStatic(req, res) {
       'content-type': MIME[extname(abs).toLowerCase()] ?? 'application/octet-stream',
       // The bundle's name carries its own hash, so it can be cached hard; index.html names
       // it and must not be, or a deploy would keep handing out the previous build.
-      'cache-control': abs.endsWith('index.html') ? 'no-cache' : 'public, max-age=31536000, immutable',
+      'cache-control': abs.endsWith('.html') ? 'no-cache' : 'public, max-age=31536000, immutable',
     });
     res.end(body);
   } catch {
@@ -274,7 +410,7 @@ const PING_MS = 1000;
 /** A lost request may not stop measurement for the rest of the match. */
 const PING_STALE_MS = 5000;
 /** A socket that never says HELLO is not a player and may not occupy memory indefinitely. */
-const HANDSHAKE_MS = 5000;
+const HANDSHAKE_MS = 10000;
 /** Coarse abuse brake. Sixty attempts still permits the whole planned alpha to reconnect
  *  through one NAT, while a tight connection loop is stopped before it becomes the load. */
 const RATE_WINDOW_MS = 10000;

@@ -20,6 +20,9 @@
 // the same career plus per-badge counts. Both parse; only the second is written.
 
 import { TRACK_KEYS } from '../../shared/badges.js';
+import {
+  DEFAULT_FINISH, FINISHES, sanitizeInventory, sanitizeOwnedCosmetics,
+} from '../../shared/cosmetics.js';
 import { XP_PER_LEGACY_KILL, cleanStats } from '../../shared/progression.js';
 
 const KEY = 'fpsbone.careers.v1';
@@ -30,6 +33,9 @@ const KEY = 'fpsbone.careers.v1';
  *  order in a Map is the LRU order for free, so eviction is the first key. */
 const MAX_ACCOUNTS = 5000;
 const MAX_HISTORY = 20;
+const freshRecord = () => ({
+  k: 0, b: {}, x: 0, s: cleanStats(), h: [], i: sanitizeInventory(), e: DEFAULT_FINISH,
+});
 
 /** accountId -> `{ k: career kills, b: { track: count } }`. */
 const store = new Map();
@@ -49,7 +55,7 @@ const store = new Map();
 function readRecord(v) {
   if (Number.isFinite(v) && v >= 0) {
     const k = Math.floor(v);
-    return { k, b: {}, x: k * XP_PER_LEGACY_KILL, s: cleanStats(), h: [] };
+    return { ...freshRecord(), k, x: k * XP_PER_LEGACY_KILL };
   }
   if (!v || typeof v !== 'object' || Array.isArray(v)) return null;
   if (!(Number.isFinite(v.k) && v.k >= 0)) return null;
@@ -63,7 +69,9 @@ function readRecord(v) {
   const k = Math.floor(v.k);
   const x = Number.isFinite(v.x) && v.x >= 0 ? Math.floor(v.x) : k * XP_PER_LEGACY_KILL;
   const h = Array.isArray(v.h) ? v.h.filter((entry) => entry && typeof entry === 'object').slice(-MAX_HISTORY) : [];
-  return { k, b, x, s: cleanStats(v.s), h };
+  const i = sanitizeInventory(v.i);
+  const e = sanitizeOwnedCosmetics({ finish: v.e }, i).finish ?? DEFAULT_FINISH;
+  return { k, b, x, s: cleanStats(v.s), h, i, e };
 }
 
 let dirty = false;
@@ -117,6 +125,9 @@ export function flush() {
       if (hasStats) row.s = r.s;
       if (Object.keys(r.b).length) row.b = r.b;
       if (r.h.length) row.h = r.h;
+      const grants = sanitizeInventory(r.i).filter((finish) => !FINISHES[finish].issued);
+      if (grants.length) row.i = grants;
+      if (r.e && r.e !== DEFAULT_FINISH) row.e = r.e;
       out[id] = row;
     }
     localStorage.setItem(KEY, JSON.stringify(out));
@@ -163,16 +174,36 @@ export function badgesOf(id) {
 }
 
 export function profileOf(id) {
-  if (!id) return { xp: 0, career: 0, badges: {}, stats: cleanStats(), history: [] };
+  if (!id) return {
+    xp: 0, career: 0, badges: {}, stats: cleanStats(), history: [],
+    inventory: sanitizeInventory(), equipped: {},
+  };
   touch(id);
   const rec = store.get(id);
+  const inventory = sanitizeInventory(rec?.i);
   return {
     xp: rec?.x ?? 0,
     career: rec?.k ?? 0,
     badges: { ...(rec?.b ?? {}) },
     stats: cleanStats(rec?.s),
     history: [...(rec?.h ?? [])],
+    inventory,
+    equipped: sanitizeOwnedCosmetics({ finish: rec?.e }, inventory),
   };
+}
+
+export function authorizeCosmetics(id, raw) {
+  const profile = profileOf(id);
+  const requested = typeof raw?.finish === 'string' ? raw.finish : null;
+  const finish = requested && profile.inventory.includes(requested)
+    ? requested
+    : (profile.equipped.finish ?? DEFAULT_FINISH);
+  const rec = store.get(id) ?? freshRecord();
+  rec.i = sanitizeInventory(profile.inventory);
+  rec.e = finish;
+  store.set(id, rec);
+  schedule();
+  return { profile: profileOf(id), cosmetics: sanitizeOwnedCosmetics({ finish }, rec.i) };
 }
 
 /** Record a career total. Called from the Room's `onCareer` hook, which only fires for a
@@ -180,7 +211,7 @@ export function profileOf(id) {
 export function setCareer(id, kills, badges) {
   if (!id || !Number.isFinite(kills)) return;
   touch(id);
-  const rec = store.get(id) ?? { k: 0, b: {}, x: 0, s: cleanStats(), h: [] };
+  const rec = store.get(id) ?? freshRecord();
   rec.k = Math.max(rec.k, Math.floor(kills));
   // Per key, and monotonic per key for the same reason the kill count is: this arrives from
   // a Room, and a Room that was handed a stale badge map — a second tab on the same
@@ -198,7 +229,7 @@ export function setCareer(id, kills, badges) {
 export function settleMatch(id, value = {}) {
   if (!id) return;
   touch(id);
-  const rec = store.get(id) ?? { k: 0, b: {}, x: 0, s: cleanStats(), h: [] };
+  const rec = store.get(id) ?? freshRecord();
   rec.k = Math.max(rec.k, Math.floor(Number(value.career) || 0));
   rec.x = Math.max(rec.x, Math.floor(Number(value.xp) || 0));
   rec.s = cleanStats(value.stats);

@@ -10,31 +10,36 @@
 
 import { readFileSync, readdirSync } from 'node:fs';
 
-const html = readFileSync('client/index.html', 'utf8');
-const ids = new Set([...html.matchAll(/\bid="([^"]+)"/g)].map((m) => m[1]));
-const dataAttrs = new Set([...html.matchAll(/\bdata-([a-z-]+)=/g)].map((m) => m[1]));
-const classes = new Set(
-  [...html.matchAll(/\bclass="([^"]+)"/g)].flatMap((m) => m[1].split(/\s+/)).filter(Boolean),
-);
+const markup = Object.fromEntries(['index', 'review'].map((page) => {
+  const html = readFileSync(`client/${page}.html`, 'utf8');
+  return [page, {
+    ids: new Set([...html.matchAll(/\bid="([^"]+)"/g)].map((m) => m[1])),
+    dataAttrs: new Set([...html.matchAll(/\bdata-([a-z-]+)=/g)].map((m) => m[1])),
+    classes: new Set(
+      [...html.matchAll(/\bclass="([^"]+)"/g)].flatMap((m) => m[1].split(/\s+/)).filter(Boolean),
+    ),
+  }];
+}));
 
 const problems = [];
 const checked = [];
 
 for (const file of readdirSync('client/src').filter((f) => f.endsWith('.js'))) {
   const src = readFileSync(`client/src/${file}`, 'utf8');
+  const page = file === 'review.js' ? markup.review : markup.index;
   const wanted = new Set(
     [...src.matchAll(/(?:getElementById|\$)\(\s*'([^']+)'\s*\)/g)].map((m) => m[1]),
   );
   for (const id of wanted) {
     checked.push(id);
-    if (!ids.has(id)) problems.push(`${file} looks up #${id}, which the markup does not define`);
+    if (!page.ids.has(id)) problems.push(`${file} looks up #${id}, which its markup does not define`);
   }
 
   // The selectors and dataset keys the panel drives its groups with. A typo here is
   // the same class of silent nothing as a missing id.
   for (const [, sel] of src.matchAll(/querySelectorAll\(\s*'\.([a-z-]+)'\s*\)/g)) {
     checked.push(`.${sel}`);
-    if (!classes.has(sel)) problems.push(`${file} queries .${sel}, which nothing in the markup wears`);
+    if (!page.classes.has(sel)) problems.push(`${file} queries .${sel}, which nothing in its markup wears`);
   }
   // A dataset key only has to be in the markup if nothing in JS writes it: `hud.js`
   // builds its own slot nodes and stamps `data-wep` on them, so the static document
@@ -44,11 +49,12 @@ for (const file of readdirSync('client/src').filter((f) => f.endsWith('.js'))) {
     if (written.has(key)) continue;
     const attr = key.replace(/[A-Z]/g, (c) => `-${c.toLowerCase()}`);
     checked.push(`data-${attr}`);
-    if (!dataAttrs.has(attr)) problems.push(`${file} reads dataset.${key}, but no data-${attr} exists`);
+    if (!page.dataAttrs.has(attr)) problems.push(`${file} reads dataset.${key}, but no data-${attr} exists`);
   }
 }
 
-console.log(`${new Set(checked).size} distinct lookups checked against ${ids.size} ids in the markup`);
+const markupIdCount = markup.index.ids.size + markup.review.ids.size;
+console.log(`${new Set(checked).size} distinct lookups checked against ${markupIdCount} ids across both pages`);
 if (problems.length) {
   for (const p of problems) console.log(`FAIL  ${p}`);
   process.exit(1);

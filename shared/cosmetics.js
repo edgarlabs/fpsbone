@@ -13,6 +13,7 @@ export const FINISHES = Object.freeze({
     blurb: 'Factory gunmetal with unit-green furniture.',
     rarity: 'issued',
     source: 'base',
+    issued: true,
     approved: true,
     steel: 0x3a4351,
     dark: 0x252c38,
@@ -23,6 +24,7 @@ export const FINISHES = Object.freeze({
     blurb: 'Heat-darkened steel with hazard-orange controls.',
     rarity: 'field',
     source: 'base',
+    issued: true,
     approved: true,
     steel: 0x35434a,
     dark: 0x171f24,
@@ -33,14 +35,40 @@ export const FINISHES = Object.freeze({
     blurb: 'Cold ceramic panels over a graphite frame.',
     rarity: 'field',
     source: 'base',
+    issued: true,
     approved: true,
     steel: 0x7793a2,
     dark: 0x273943,
     trim: 0x82d6dc,
   }),
+  ember: Object.freeze({
+    label: 'EMBER PROTOCOL',
+    blurb: 'Charred alloy with a hot rescue-orange signal line.',
+    rarity: 'promotional',
+    source: 'promo',
+    issued: false,
+    approved: true,
+    steel: 0x563832,
+    dark: 0x211919,
+    trim: 0xff754f,
+  }),
+  nightshift: Object.freeze({
+    label: 'NIGHT SHIFT',
+    blurb: 'Deep indigo plates with a restrained violet identification strip.',
+    rarity: 'promotional',
+    source: 'promo',
+    issued: false,
+    approved: true,
+    steel: 0x303955,
+    dark: 0x121725,
+    trim: 0x9579ff,
+  }),
 });
 
 export const FINISH_IDS = Object.freeze(Object.keys(FINISHES));
+export const ISSUED_FINISH_IDS = Object.freeze(
+  FINISH_IDS.filter((id) => FINISHES[id].approved && FINISHES[id].issued),
+);
 
 export function finishOf(id) {
   return typeof id === 'string' && Object.hasOwn(FINISHES, id)
@@ -56,3 +84,21 @@ export function sanitizeCosmetics(raw) {
   return { finish: id };
 }
 
+/** Approved ids an account owns. Issued finishes are always present; grants only add. */
+export function sanitizeInventory(raw) {
+  const owned = new Set(ISSUED_FINISH_IDS);
+  if (Array.isArray(raw)) {
+    for (const id of raw) {
+      if (typeof id === 'string' && FINISHES[id]?.approved) owned.add(id);
+    }
+  }
+  return FINISH_IDS.filter((id) => owned.has(id));
+}
+
+/** Apply catalog approval and account ownership together. Standard issue stays `{}`. */
+export function sanitizeOwnedCosmetics(raw, inventory) {
+  const clean = sanitizeCosmetics(raw);
+  const id = clean.finish ?? DEFAULT_FINISH;
+  const owned = new Set(sanitizeInventory(inventory));
+  return id !== DEFAULT_FINISH && owned.has(id) ? { finish: id } : {};
+}
