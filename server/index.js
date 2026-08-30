@@ -40,10 +40,10 @@ const sanitizeName = (n) =>
  * reason: this one becomes a KEY IN PERSISTENT STORAGE.
  *
  * A name is display data that a client can make ugly. An id is a path into persistent
- * storage, so the charset is a whitelist and not a blacklist — word characters, dash and
- * colon, which covers today's `local-xxxxxxxx` and tomorrow's `eip155:1:0x...` when
- * identity.js starts returning a wallet address. Anything outside it is dropped rather
- * than rejected, and an id that sanitizes down to nothing means anonymous.
+ * storage, so the charset is a whitelist and not a blacklist. The signed-identity verifier
+ * is the only public-host source for this value; sanitizing remains a second boundary for
+ * injected local hosts and future identity providers. Anything outside the whitelist is
+ * dropped rather than rejected, and an id that sanitizes to nothing means anonymous.
  *
  * Null, not 'anonymous', for the empty case: a shared fallback key would file every
  * id-less client's kills into one growing career that they would all then be shown.
@@ -92,6 +92,7 @@ function defaultToken() {
  * @param {function} [opts.makeToken] reconnect-token source; injected by deterministic tests
  * @param {function} [opts.setTimer] timer source; injected by deterministic tests
  * @param {function} [opts.clearTimer] timer cancellation; injected by deterministic tests
+ * @param {function} [opts.resolveIdentity] verify one signed HELLO against its challenge
  */
 export function createHost({
   nowNs,
@@ -101,6 +102,7 @@ export function createHost({
   makeToken = defaultToken,
   setTimer = (fn, ms) => globalThis.setTimeout(fn, ms),
   clearTimer = (timer) => globalThis.clearTimeout(timer),
+  resolveIdentity = null,
 } = {}) {
   // modeId -> { room, clients: Map<playerId, client>, reserved: Map<playerId, reservation> }
   //
@@ -503,6 +505,9 @@ export function createHost({
     let slot = null;
     let resumeToken = null;
     let greeted = false;
+    let started = false;
+    let accountType = 'guest';
+    const challenge = makeToken();
 
     const sendWelcome = (modeId) => {
       resumeToken = makeToken();
@@ -521,8 +526,8 @@ export function createHost({
           // A stale saved address must not let the menu claim the match is elsewhere.
           r: region,
           avail: AVAILABLE,
-            cap: C.REGION_HUMAN_CAP,
-            account: { type: 'guest', ...ranks.storageState?.() },
+          cap: C.REGION_HUMAN_CAP,
+          account: { type: accountType, ...ranks.storageState?.() },
           // How full every lobby is, right now. It rides on WELCOME rather than
           // arriving as the first MSG.LOBBY push so that the mode picker is never
           // briefly showing every room as empty; pushes carry every later change.
@@ -570,6 +575,14 @@ export function createHost({
           return;
         }
 
+        let identity = null;
+        try {
+          identity = resolveIdentity?.(m, challenge) ?? null;
+        } catch {
+          reject(REJECT.IDENTITY_INVALID, pickRoom(m.mode));
+          return;
+        }
+
         const modeId = pickRoom(m.mode);
         slot = rooms.get(modeId);
 
@@ -590,7 +603,11 @@ export function createHost({
           return;
         }
 
-        const account = sanitizeAccount(m.id);
+        // Only the verifier may name durable storage. An old/modified client can still
+        // play as a guest, but its self-reported id has no authority over a career row.
+        const account = sanitizeAccount(identity?.id);
+        accountType = identity?.type === 'device' ? 'device' : 'guest';
+        if (account && identity?.legacy) ranks.claimLegacy?.(identity.legacy, account);
         id = slot.room.add(sanitizeName(m.name), m.cosmetics ?? {}, account);
         // One private profile read at admission. Combat and snapshots stay in memory; the
         // next database operation is the authoritative match-end settlement.
@@ -692,6 +709,11 @@ export function createHost({
     };
 
     return {
+      start() {
+        if (started) return;
+        started = true;
+        sendPayload(client, encode({ t: MSG.CHALLENGE, n: challenge }));
+      },
       message,
       drop,
       get seated() { return id !== null; },

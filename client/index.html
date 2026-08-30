@@ -848,6 +848,15 @@
       .market-note span { margin-top: 5px; color: var(--dim); font-size: 9px; }
       .market-note em { display: inline-block; margin-top: 9px; padding: 2px 5px; color: var(--dim); border: 1px solid var(--line); font-size: 8px; font-style: normal; letter-spacing: 1px; text-transform: uppercase; }
       .settings-screen { max-width: 900px; margin: 0 auto; }
+      .account-card { padding: 20px; border: 1px solid var(--line); background: rgba(13,22,31,.75); }
+      .account-card h3 { margin: 4px 0 8px; color: #fff; font-size: 15px; letter-spacing: 1px; text-transform: uppercase; }
+      .account-card > p { max-width: 680px; font-size: 10px; line-height: 1.6; }
+      .identity-fingerprint { margin: 16px 0; padding: 11px 12px; color: var(--self); border: 1px solid var(--line); background: rgba(0,0,0,.25); font-size: 9px; letter-spacing: .8px; overflow-wrap: anywhere; }
+      #recovery-code { box-sizing: border-box; width: 100%; min-height: 92px; margin-top: 12px; padding: 11px; resize: vertical; color: #c8d6df; border: 1px solid var(--line); background: #070d13; font: 9px/1.5 monospace; }
+      .recovery-actions { display: flex; gap: 8px; margin-top: 10px; }
+      .recovery-actions button { padding: 9px 13px; color: var(--ink); border: 1px solid var(--line); background: rgba(255,255,255,.035); cursor: pointer; font: inherit; font-size: 9px; letter-spacing: 1px; text-transform: uppercase; }
+      .recovery-actions button:hover { border-color: var(--self); color: var(--self); }
+      #recovery-state { min-height: 15px; margin-top: 10px; color: var(--dim); font-size: 9px; }
       #results {
         --ink: #eef4f8; --dim: #8291a2; --panel: rgba(16, 25, 35, 0.96);
         --line: rgba(190, 216, 230, 0.14); --self: #35c49b; --accent: #f05d49;
@@ -1551,6 +1560,7 @@
               <button class="tab" type="button" data-tab="controls">controls</button>
               <button class="tab" type="button" data-tab="crosshair">crosshair</button>
               <button class="tab" type="button" data-tab="audio">audio</button>
+              <button class="tab" type="button" data-tab="account">account</button>
             </div>
 
             <section class="pane on" data-pane="graphics">
@@ -1670,6 +1680,23 @@
               load, so this is the only volume there is to set.
             </p>
           </div>
+            </section>
+
+            <section class="pane" data-pane="account">
+              <div class="account-card">
+                <span class="panel-kicker" id="identity-state">signed device identity</span>
+                <h3>Account ownership</h3>
+                <p>Your browser signs a fresh server challenge whenever you join. This protects your XP, statistics and inventory without a password or a paid login service.</p>
+                <div class="identity-fingerprint" id="identity-fingerprint">preparing device key…</div>
+                <p><b>Recovery code:</b> generate it only when you are ready to save it somewhere private. Anyone holding this code owns the account. Importing a code reloads the game under that account.</p>
+                <textarea id="recovery-code" autocomplete="off" spellcheck="false" placeholder="Recovery code appears here, or paste one from another device"></textarea>
+                <div class="recovery-actions">
+                  <button type="button" id="recovery-export">generate code</button>
+                  <button type="button" id="recovery-import">import and reload</button>
+                  <button type="button" id="recovery-clear">clear</button>
+                </div>
+                <div id="recovery-state">The private key never leaves this device unless you generate the code.</div>
+              </div>
             </section>
           </section>
         </div>

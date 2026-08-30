@@ -52,6 +52,9 @@
 // Part R is operator and cosmetic identity: two faction-readable bodies, a fixed approved
 // finish catalog, authoritative sanitizing and a static roster wire that never bloats the
 // movement snapshot or lets a cosmetic become a gameplay stat.
+// Part S is account ownership: a fresh server challenge, a P-256 proof, a public-key-derived
+// storage id, one-way migration from the old browser id, and a recovery code the user can
+// carry without adding a password database or wallet dependency.
 //
 // Part I opens two real sockets and confirms each client sees the other — and each
 // other's bots, since the room is shared and the count is a live request.
@@ -63,6 +66,7 @@
 // career file are the two things here that outlive the process.
 
 import { WebSocket } from 'ws';
+import { generateKeyPairSync, sign } from 'node:crypto';
 import { readFileSync, writeFileSync, existsSync, unlinkSync, mkdirSync, rmdirSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -114,6 +118,7 @@ import { Room, r3 } from './server/room.js';
 // The host, not just a Room: the backfill rule and the lobby pushes live in there, and a
 // Room on its own knows nothing about how many humans are connected to it.
 import { createHost } from './server/index.js';
+import { deviceAccountId, proofText, verifyDeviceIdentity } from './server/identity.js';
 import { MSG, REJECT, encode, decode } from './shared/protocol.js';
 import { EV } from './shared/protocol.js';
 import {
@@ -7707,6 +7712,7 @@ function fakeClient(host, mode, name, hello = {}) {
     isOpen: () => true,
     close: (code, reason) => closed.push({ code, reason }),
   });
+  conn.start();
   conn.message(encode({ t: MSG.HELLO, name, cosmetics: {}, id: null, mode, ...hello }));
   return {
     conn,
@@ -7715,6 +7721,12 @@ function fakeClient(host, mode, name, hello = {}) {
     welcome: inbox.find((m) => m.t === MSG.WELCOME),
     reject: inbox.find((m) => m.t === MSG.REJECT),
   };
+}
+
+/** Deliver the host challenge to a browser-net test and drain the proof microtask. */
+async function challengeBrowser(sock, nonce) {
+  sock.onmessage?.({ data: encode({ t: MSG.CHALLENGE, n: nonce }) });
+  await Promise.resolve();
 }
 
 {
@@ -8093,6 +8105,7 @@ function fakeClient(host, mode, name, hello = {}) {
   net.connect();
   sockets[0].readyState = sockets[0].OPEN;
   sockets[0].onopen?.({});
+  await challengeBrowser(sockets[0], 'phase-one-challenge-1');
   const firstHello = sockets[0].sent.find((m) => m.t === MSG.HELLO);
   sockets[0].onmessage?.({ data: encode({
     t: MSG.WELCOME, id: 7, mode: DEFAULT_MODE, resume: 'seat-token', lob: {},
@@ -8108,6 +8121,7 @@ function fakeClient(host, mode, name, hello = {}) {
   retries[0].fn();
   sockets[1].readyState = sockets[1].OPEN;
   sockets[1].onopen?.({});
+  await challengeBrowser(sockets[1], 'phase-one-challenge-2');
   const resumedHello = sockets[1].sent.find((m) => m.t === MSG.HELLO);
   okM(resumedHello?.resume === 'seat-token',
       'the next browser handshake returns the server-issued resume token',
@@ -8159,6 +8173,7 @@ function fakeClient(host, mode, name, hello = {}) {
   net.connect();
   sockets[0].readyState = sockets[0].OPEN;
   sockets[0].onopen?.({});
+  await challengeBrowser(sockets[0], 'phase-four-challenge-1');
   const hello = sockets[0].sent.find((m) => m.t === MSG.HELLO);
   okM(hello?.mode === 'sniper' && net.active === true,
       'Join sends the room selected in the lobby and marks the connection active',
@@ -8174,6 +8189,7 @@ function fakeClient(host, mode, name, hello = {}) {
   net.connect();
   sockets[1].readyState = sockets[1].OPEN;
   sockets[1].onopen?.({});
+  await challengeBrowser(sockets[1], 'phase-four-challenge-2');
   const replayHello = sockets[1].sent.find((m) => m.t === MSG.HELLO);
   okM(replayHello?.mode === 'snow' && sockets.length === 2,
       'the same page can Join again after Leave without carrying the old room or resume token',
@@ -9762,6 +9778,178 @@ const okR = (cond, label, detail = '') =>
       'the inventory adds no wallet or chain dependency before ownership verification exists');
 }
 console.log([...pR, ...fR].join('\n'));
+// ─────────────────────────────────────────── Part S: signed device accounts
+console.log('\n=== Part S — signed device accounts and recovery ===\n');
+const pS = [], fS = [];
+const okS = (cond, label, detail = '') =>
+  (cond ? pS : fS).push(`${cond ? 'PASS' : 'FAIL'}  ${label}${detail ? `  — ${detail}` : ''}`);
+
+{
+  const { publicKey, privateKey } = generateKeyPairSync('ec', { namedCurve: 'prime256v1' });
+  const publicDer = publicKey.export({ type: 'spki', format: 'der' }).toString('base64url');
+  const account = deviceAccountId(publicDer);
+  const legacy = 'local-abc12345';
+  const signedHello = (challenge, migrate = legacy) => ({
+    t: MSG.HELLO,
+    name: 'signed tester',
+    mode: DEFAULT_MODE,
+    id: 'device-client-cannot-choose-this',
+    cosmetics: {},
+    ...(migrate ? { legacy: migrate } : {}),
+    auth: {
+      v: 1,
+      alg: 'ES256',
+      key: publicDer,
+      sig: sign(
+        'sha256',
+        Buffer.from(proofText(challenge, migrate ?? '')),
+        { key: privateKey, dsaEncoding: 'ieee-p1363' },
+      ).toString('base64url'),
+    },
+  });
+
+  const valid = verifyDeviceIdentity(signedHello('fresh-challenge'), 'fresh-challenge');
+  okS(valid?.id === account && valid?.type === 'device' && valid?.legacy === legacy,
+      'a valid P-256 proof derives the storage account from its public key',
+      account);
+  const webPair = await globalThis.crypto.subtle.generateKey(
+    { name: 'ECDSA', namedCurve: 'P-256' }, true, ['sign', 'verify'],
+  );
+  const webKey = Buffer.from(
+    await globalThis.crypto.subtle.exportKey('spki', webPair.publicKey),
+  ).toString('base64url');
+  const webChallenge = 'browser-webcrypto-challenge';
+  const webSignature = Buffer.from(await globalThis.crypto.subtle.sign(
+    { name: 'ECDSA', hash: 'SHA-256' },
+    webPair.privateKey,
+    Buffer.from(proofText(webChallenge)),
+  )).toString('base64url');
+  const webIdentity = verifyDeviceIdentity({
+    auth: { v: 1, alg: 'ES256', key: webKey, sig: webSignature },
+  }, webChallenge);
+  okS(webIdentity?.id === deviceAccountId(webKey),
+      'a real browser-format WebCrypto signature verifies on the Node host');
+  let replayRefused = false;
+  try { verifyDeviceIdentity(signedHello('first-challenge'), 'different-challenge'); } catch {
+    replayRefused = true;
+  }
+  okS(replayRefused,
+      'a captured proof cannot be replayed on the next socket challenge');
+  const changedLegacy = signedHello('migration-challenge');
+  changedLegacy.legacy = 'local-other123';
+  let migrationTamperRefused = false;
+  try { verifyDeviceIdentity(changedLegacy, 'migration-challenge'); } catch {
+    migrationTamperRefused = true;
+  }
+  okS(migrationTamperRefused,
+      'the legacy account being migrated is covered by the signature');
+  okS(verifyDeviceIdentity({ t: MSG.HELLO }, 'guest-challenge') === null,
+      'an unsigned browser is explicitly a guest rather than a fake account');
+  let malformedRefused = false;
+  try {
+    verifyDeviceIdentity({ auth: { v: 1, alg: 'ES256', key: 'x'.repeat(500), sig: 'bad' } }, 'x');
+  } catch { malformedRefused = true; }
+  okS(malformedRefused,
+      'oversized or malformed identity material is rejected before crypto parsing');
+
+  const makeRanks = () => {
+    const profiles = [];
+    const claims = [];
+    return {
+      profiles,
+      claims,
+      profileOf(id) {
+        profiles.push(id);
+        return { xp: 0, career: 0, badges: {}, stats: {} };
+      },
+      claimLegacy(from, to) { claims.push([from, to]); },
+      setCareer: () => {},
+      settleMatch: () => {},
+      storageState: () => ({ kind: 'test', durable: true }),
+    };
+  };
+  const openClient = (host) => {
+    const inbox = [];
+    const closed = [];
+    const conn = host.connect({
+      send: (payload) => inbox.push(decode(payload)),
+      isOpen: () => true,
+      close: (code, reason) => closed.push({ code, reason }),
+    });
+    conn.start();
+    return { conn, inbox, closed, challenge: inbox.find((m) => m.t === MSG.CHALLENGE)?.n };
+  };
+
+  const signedRanks = makeRanks();
+  let signedToken = 0;
+  const signedHost = createHost({
+    nowNs: () => 0n,
+    ranks: signedRanks,
+    makeToken: () => `signed-token-${++signedToken}`,
+    resolveIdentity: verifyDeviceIdentity,
+  });
+  const signed = openClient(signedHost);
+  signed.conn.message(encode(signedHello(signed.challenge)));
+  const signedWelcome = signed.inbox.find((m) => m.t === MSG.WELCOME);
+  okS(signedWelcome?.account?.type === 'device'
+      && signedRanks.profiles[0] === account
+      && JSON.stringify(signedRanks.claims[0]) === JSON.stringify([legacy, account]),
+      'the host files progression only under the verified account and migrates its old row',
+      `account=${signedRanks.profiles[0]}, type=${signedWelcome?.account?.type}`);
+
+  const forgedRanks = makeRanks();
+  let forgedToken = 0;
+  const forgedHost = createHost({
+    nowNs: () => 0n,
+    ranks: forgedRanks,
+    makeToken: () => `forged-token-${++forgedToken}`,
+    resolveIdentity: verifyDeviceIdentity,
+  });
+  const forged = openClient(forgedHost);
+  forged.conn.message(encode(signedHello('somebody-elses-challenge')));
+  okS(forged.inbox.some((m) => m.t === MSG.REJECT && m.reason === REJECT.IDENTITY_INVALID)
+      && forgedRanks.profiles.length === 0 && forgedHost.humans === 0,
+      'a forged identity is refused before it can claim a seat or read a profile');
+
+  const guestRanks = makeRanks();
+  let guestToken = 0;
+  const guestHost = createHost({
+    nowNs: () => 0n,
+    ranks: guestRanks,
+    makeToken: () => `guest-token-${++guestToken}`,
+    resolveIdentity: verifyDeviceIdentity,
+  });
+  const guest = openClient(guestHost);
+  guest.conn.message(encode({
+    t: MSG.HELLO,
+    name: 'guest',
+    mode: DEFAULT_MODE,
+    id: 'device-forged-storage-key',
+    legacy,
+    cosmetics: {},
+  }));
+  const guestWelcome = guest.inbox.find((m) => m.t === MSG.WELCOME);
+  okS(guestWelcome?.account?.type === 'guest' && guestRanks.profiles[0] === null
+      && guestRanks.claims.length === 0 && guestHost.humans === 1,
+      'unsigned clients may play, but cannot select or migrate a durable progression row');
+
+  const identitySrc = readFileSync('./client/src/identity.js', 'utf8');
+  const netSrc = readFileSync('./client/src/net.js', 'utf8');
+  const menuSrc = readFileSync('./client/src/menu.js', 'utf8');
+  const htmlSrc = readFileSync('./client/index.html', 'utf8');
+  okS(netSrc.includes('MSG.CHALLENGE') && netSrc.includes('identity.prove?.(m.n)')
+      && !/onopen\s*=\s*\(\)\s*=>\s*rawSend\(\{\s*t:\s*MSG\.HELLO/.test(netSrc),
+      'the browser waits for a fresh challenge before sending its HELLO');
+  okS(identitySrc.includes("generateKey(CURVE") && identitySrc.includes("crypto.subtle.sign")
+      && identitySrc.includes('exportRecoveryCode') && identitySrc.includes('importRecoveryCode'),
+      'the browser mints a non-password signing key and supports portable recovery');
+  okS(htmlSrc.includes('data-pane="account"') && htmlSrc.includes('id="recovery-code"')
+      && htmlSrc.includes('Anyone holding this code owns the account.'),
+      'Account settings explain recovery and keep the private code hidden until requested');
+  okS(!/from\s+['"][^'"]*(ethers|web3|walletconnect|metamask)/i.test(identitySrc),
+      'account ownership adds no wallet SDK or password service dependency');
+}
+console.log([...pS, ...fS].join('\n'));
 // ─────────────────────────────────────────── Part I: two live clients
 console.log('\n=== Part I — two live clients over the wire ===\n');
 
@@ -9813,13 +10001,15 @@ function client(name) {
     let seq = 0;
     const t = setTimeout(() => reject(new Error(`${name} timed out`)), 12000);
 
-    ws.on('open', () => ws.send(encode({
-      t: MSG.HELLO, name, cosmetics: {}, mode: DEFAULT_MODE,
-    })));
+    ws.on('open', () => {});
     ws.on('error', reject);
     ws.on('message', (raw) => {
       const m = decode(raw);
       if (!m) return;
+      if (m.t === MSG.CHALLENGE) {
+        ws.send(encode({ t: MSG.HELLO, name, cosmetics: {}, mode: DEFAULT_MODE }));
+        return;
+      }
       if (m.t === MSG.WELCOME) {
         rec.id = m.id;
         rec.mode = m.mode;
@@ -9956,9 +10146,9 @@ try {
 const total = fail.length + fB.length + fC.length + fD.length + fE.length + fF.length
   + fG.length + fH.length + fJ.length + fK.length + fL.length + fM.length + fN.length
   + fO.length + fP.length
-  + fQ.length + fR.length
+  + fQ.length + fR.length + fS.length
   + f2.length;
 console.log(
-  `\n${total === 0 ? 'ALL PASS' : `${total} FAILURE(S)`} — ${pass.length + pB.length + pC.length + pD.length + pE.length + pF.length + pG.length + pH.length + pJ.length + pK.length + pL.length + pM.length + pN.length + pO.length + pP.length + pQ.length + pR.length + p2.length} checks passed`,
+  `\n${total === 0 ? 'ALL PASS' : `${total} FAILURE(S)`} — ${pass.length + pB.length + pC.length + pD.length + pE.length + pF.length + pG.length + pH.length + pJ.length + pK.length + pL.length + pM.length + pN.length + pO.length + pP.length + pQ.length + pR.length + pS.length + p2.length} checks passed`,
 );
 process.exit(total === 0 ? 0 : 1);

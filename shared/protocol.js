@@ -3,6 +3,7 @@
 // DataView encoding if player counts ever make that matter.
 
 export const MSG = {
+  CHALLENGE: 'challenge', // S→C  fresh nonce that a persistent identity must sign
   HELLO: 'hello', // C→S  identity handshake
   WELCOME: 'welcome', // S→C  assigned id + tick offset
   /**
@@ -78,6 +79,7 @@ export const REJECT = Object.freeze({
   SERVER_FULL: 'server_full',
   MODE_FULL: 'mode_full',
   RATE_LIMITED: 'rate_limited',
+  IDENTITY_INVALID: 'identity_invalid',
 });
 
 export const EV = {

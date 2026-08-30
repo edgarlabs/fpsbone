@@ -11,14 +11,10 @@
 // hands changes back through the `onCareer` callback that index.js installs; the wiring
 // runs one way, from here outward.
 //
-// A career keyed on a client-supplied id is SPOOFABLE, and it is worth being plain about
-// which half of that matters. Accumulation is server-authoritative — you cannot invent
-// kills, only claim someone else's ledger — and client/src/identity.js already names the
-// seam where that stops being true ("later this returns a wallet address plus a signature
-// the server can verify"). Until that seam gains signature checking, treat a rank as a
-// display of a claim rather than proof of one. What the spoofability DOES demand today is
-// the account cap below: an unverified id is an unbounded map key, and a map key that
-// reaches the disk is a way to fill it.
+// Public-host careers are keyed only after server/identity.js verifies a fresh signature
+// and derives the id from its public key. Unsigned clients still play, but account=null means
+// they never become a map key here. The cap below remains defense in depth and keeps old
+// file stores bounded while their unsigned browser ids are migrated exactly once.
 //
 // THE FILE HAS TWO LEGAL SHAPES, and will for as long as any ranks.json in the world still
 // holds the first one. `{"id": 93}` is the original schema, a career and nothing else;
@@ -45,8 +41,8 @@ import { XP_PER_LEGACY_KILL, cleanStats } from '../shared/progression.js';
 const FILE = process.env.FPSBONE_RANKS || fileURLToPath(new URL('../ranks.json', import.meta.url));
 const TMP = `${FILE}.tmp`;
 
-/** Bounded, because the keys arrive unverified from clients. Insertion order in a Map is
- *  the LRU order for free, so eviction is the first key and a touch is delete-then-set. */
+/** Bounded even though public keys are verified. Insertion order in a Map is the LRU order
+ *  for free, so eviction is the first key and a touch is delete-then-set. */
 const MAX_ACCOUNTS = 5000;
 const MAX_HISTORY = 20;
 let pool = null;
@@ -254,6 +250,33 @@ export function flush() {
   // turn a scanner blinking into a career that never lands, since nothing else retries —
   // the next attempt would wait for a kill that a player who just quit will never score.
   schedule();
+}
+
+/**
+ * One-time bridge from the old unsigned browser id to a signed device account.
+ *
+ * A destination that already exists always wins and cannot absorb arbitrary legacy rows.
+ * The old id was itself the bearer credential in Phase 5, so accepting it once from the
+ * freshly signed HELLO is no weaker than the system being retired; deleting it closes that
+ * path permanently after the first successful upgrade.
+ */
+export function claimLegacy(from, to) {
+  if (!from || !to || from === to || store.has(to)) return false;
+  const rec = store.get(from);
+  if (rec) {
+    store.delete(from);
+    store.set(to, rec);
+    if (!pool) schedule();
+  }
+  if (pool) {
+    pool.query(
+      `UPDATE player_accounts SET id = $2, updated_at = NOW()
+       WHERE id = $1
+         AND NOT EXISTS (SELECT 1 FROM player_accounts WHERE id = $2)`,
+      [from, to],
+    ).catch((err) => console.warn(`  accounts: identity migration failed (${err.code ?? err.message})`));
+  }
+  return Boolean(rec);
 }
 
 /** A career for an account, or 0 for an anonymous client. Reading counts as use, so a

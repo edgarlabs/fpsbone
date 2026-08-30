@@ -39,6 +39,7 @@ import * as C from '../shared/constants.js';
 import { MSG, REJECT, decode, encode } from '../shared/protocol.js';
 import { REGIONS, regionsFromEnv } from '../shared/regions.js';
 import { createHost } from './index.js';
+import { verifyDeviceIdentity } from './identity.js';
 // The only filesystem-touching module under server/, and imported here and nowhere
 // else — see the header of ranks.js for why room.js must not reach it.
 import * as ranks from './ranks.js';
@@ -106,6 +107,7 @@ const MIME = {
 const host = createHost({
   nowNs: process.hrtime.bigint,
   ranks,
+  resolveIdentity: verifyDeviceIdentity,
   region: REGION,
   log: (line) => console.log(line),
 });
@@ -344,6 +346,7 @@ wss.on('connection', (ws, req) => {
     rtt: () => rtt,
     close: (code, reason) => ws.close(code, reason),
   });
+  conn.start();
 
   const handshake = setTimeout(() => {
     if (!conn.seated && ws.readyState === ws.OPEN) {

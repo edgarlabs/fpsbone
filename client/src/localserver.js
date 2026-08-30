@@ -54,6 +54,11 @@ function ensureHost() {
     // something is wrong and pure noise when it is not, so they go to console.debug, which
     // a browser hides until you ask for verbose output.
     log: (line) => console.debug(`[local host] ${line}`),
+    // Private in-page host: there is no other client to impersonate this browser, but it
+    // still uses the derived device id so a recovery import opens the same local career.
+    resolveIdentity: (m) => (typeof m.id === 'string'
+      ? { id: m.id, legacy: m.legacy ?? null, type: 'device' }
+      : null),
   });
   return host;
 }
@@ -130,6 +135,7 @@ export function createLocalSocket() {
     sock.readyState = OPEN;
     startLoop();
     sock.onopen?.({});
+    conn.start();
   }, 0);
 
   return sock;

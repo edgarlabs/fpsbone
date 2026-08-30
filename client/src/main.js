@@ -22,7 +22,9 @@ import { WEAPON_IDS, WEAPONS, idAt, indexOf, spreadMul, weaponAt } from '../../s
 import { TRACK_KEYS, badgeOf, levelOf, stepOf, tierOf } from '../../shared/badges.js';
 import { SPREE_MS, wingsOf } from '../../shared/spree.js';
 import { cleanStats } from '../../shared/progression.js';
-import { getIdentity, setIdentityCosmetics } from './identity.js';
+import {
+  exportRecoveryCode, getIdentity, importRecoveryCode, setIdentityCosmetics,
+} from './identity.js';
 import { getSettings } from './settings.js';
 import { HERE, loadRegions, probeAll, socketFor } from './regions.js';
 import { createMenu } from './menu.js';
@@ -125,7 +127,7 @@ const UNREACHABLE_MSG = useLocalHost
 }
 
 const canvas = document.getElementById('game');
-const identity = getIdentity();
+const identity = await getIdentity();
 /** What we asked for, kept because the server may seat us somewhere else. */
 let requestedMode = settings.mode;
 
@@ -367,6 +369,11 @@ const menu = createMenu(settings, {
     setIdentityCosmetics(identity, { finish: id });
     viewmodel.setFinish(identity.cosmetics.finish);
   },
+  onRecoveryExport: () => exportRecoveryCode(identity),
+  onRecoveryImport: async (code) => {
+    await importRecoveryCode(code, identity);
+    location.reload();
+  },
   onHand: (h) => viewmodel.setHand(h),
   onSens: (v) => input.setSens(v),
   onZoomSens: (v) => input.setZoomSens(v),
@@ -600,6 +607,7 @@ input.onLockChange((locked) => {
 
 net.on('status', (s) => {
   if (s === 'connected') hud.setStatus(`securing seat as ${identity.displayName}…`);
+  else if (s === 'identity_error') hud.setStatus('DEVICE SIGNATURE FAILED — OPEN ACCOUNT SETTINGS');
   else if (s === 'idle') return;
   else if (s === 'disconnected' || s === 'reconnecting') hud.showStart(DOWN_MSG);
   else if (s === 'rejected') return;
@@ -617,6 +625,8 @@ net.on('reject', (m) => {
       ? `${label} FULL — SELECT ANOTHER MODE`
       : m.reason === REJECT.RATE_LIMITED
         ? 'TOO MANY CONNECTION ATTEMPTS — WAIT A MOMENT'
+        : m.reason === REJECT.IDENTITY_INVALID
+          ? 'ACCOUNT PROOF INVALID — RECOVER OR RESET THIS DEVICE IDENTITY'
         : 'JOIN REFUSED — PLEASE TRY AGAIN';
   hud.setStatus(text);
   lifecycle = 'lobby';

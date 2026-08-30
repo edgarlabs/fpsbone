@@ -74,7 +74,30 @@ export function createNet({
     });
   }
 
-  function handle(m) {
+  function handle(m, serial = connectionSerial) {
+    if (m.t === MSG.CHALLENGE && typeof m.n === 'string') {
+      // Persistent identity is challenge-response, never a reusable id string. An older
+      // browser without WebCrypto may still enter as a guest, but receives no durable row.
+      Promise.resolve(identity.prove?.(m.n) ?? null).then((auth) => {
+        if (serial !== connectionSerial || !open) return;
+        rawSend({
+          t: MSG.HELLO,
+          name: identity.displayName,
+          cosmetics: identity.cosmetics,
+          id: identity.id,
+          ...(identity.legacy ? { legacy: identity.legacy } : {}),
+          ...(auth ? { auth } : {}),
+          mode: requestedMode,
+          ...(resumeToken ? { resume: resumeToken } : {}),
+        });
+      }).catch(() => {
+        if (serial === connectionSerial) {
+          emit('status', 'identity_error');
+          ws?.close?.(4003, 'identity_error');
+        }
+      });
+      return;
+    }
     // This reaches browser JavaScript before returning, so it measures the player's route
     // through the proxy rather than Render edge↔server or snapshot↔next-input scheduling.
     // `rawSend` also keeps the artificial-latency path honest in both directions.
@@ -144,60 +167,40 @@ export function createNet({
     const socket = openSocket(url);
     ws = socket;
     socket.onopen = () => {
+      if (serial !== connectionSerial) return;
+      open = true;
+      emit('status', 'connected');
+      // HELLO waits for the host's fresh challenge. The requested mode, identity proof
+      // and resume token travel together in that response.
+    };
+    socket.onclose = () => {
+      if (serial !== connectionSerial) return;
+      open = false;
+      if (rejected) {
+        emit('status', 'rejected');
+        return;
+      }
+      if (!wanted) {
+        emit('status', 'idle');
+        return;
+      }
+      emit('status', 'reconnecting');
+      const wait = Math.min(5000, 750 * (2 ** Math.min(retryCount++, 3)));
+      cancelRetry(retryTimer);
+      retryTimer = scheduleRetry(dial, wait);
+    };
+    socket.onerror = () => {
+      if (serial === connectionSerial) emit('status', 'error');
+    };
+    socket.onmessage = (e) => {
+      if (serial !== connectionSerial) return;
+      const raw = e.data;
+      delay(() => {
         if (serial !== connectionSerial) return;
-        open = true;
-        emit('status', 'connected');
-        // The requested mode decides which room the server puts us in, so it has to
-        // travel with the handshake. It is a request, not a fact: WELCOME reports
-        // the mode actually granted, which differs when the one asked for has no
-        // controller registered yet.
-        //
-        // NO BOT COUNT GOES OUT HERE. It used to, and the server used to reconcile the
-        // requests of everyone in the room; bots are now whatever is left over once the
-        // humans are seated in a fixed number of slots, so there is nothing for a client
-        // to ask for. The room fills itself in on the handshake, before the first snapshot.
-        rawSend({
-          t: MSG.HELLO,
-          name: identity.displayName,
-          cosmetics: identity.cosmetics,
-          // The account the server files this player's career under. First time anything
-          // from identity.js beyond the display name has crossed the wire, and the seam's
-          // own comment is the caveat: today it is a localStorage string the server takes
-          // on trust, so a rank is a claim rather than a proof until that string comes
-          // with a signature. Kills are counted server-side either way.
-          id: identity.id,
-          mode: requestedMode,
-          ...(resumeToken ? { resume: resumeToken } : {}),
-        });
-      };
-      socket.onclose = () => {
-        if (serial !== connectionSerial) return;
-        open = false;
-        if (rejected) {
-          emit('status', 'rejected');
-          return;
-        }
-        if (!wanted) {
-          emit('status', 'idle');
-          return;
-        }
-        emit('status', 'reconnecting');
-        const wait = Math.min(5000, 750 * (2 ** Math.min(retryCount++, 3)));
-        cancelRetry(retryTimer);
-        retryTimer = scheduleRetry(dial, wait);
-      };
-      socket.onerror = () => {
-        if (serial === connectionSerial) emit('status', 'error');
-      };
-      socket.onmessage = (e) => {
-        if (serial !== connectionSerial) return;
-        const raw = e.data;
-        delay(() => {
-          if (serial !== connectionSerial) return;
-          const m = decode(raw);
-          if (m) handle(m);
-        });
-      };
+        const m = decode(raw);
+        if (m) handle(m, serial);
+      });
+    };
   }
 
   return {

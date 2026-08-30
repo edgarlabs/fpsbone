@@ -99,6 +99,13 @@ export function createMenu(settings, cbs) {
     inventoryGun: $('inventory-gun'),
     inventoryName: $('inventory-preview-name'),
     inventoryMeta: $('inventory-preview-meta'),
+    identityState: $('identity-state'),
+    identityFingerprint: $('identity-fingerprint'),
+    recoveryCode: $('recovery-code'),
+    recoveryExport: $('recovery-export'),
+    recoveryImport: $('recovery-import'),
+    recoveryClear: $('recovery-clear'),
+    recoveryState: $('recovery-state'),
   };
   const panes = [...document.querySelectorAll('.pane')];
   const screens = [...document.querySelectorAll('.screen')];
@@ -658,6 +665,40 @@ export function createMenu(settings, cbs) {
     e.stopPropagation();
     cbs.onResultReplay?.();
   });
+  els.identityFingerprint.textContent = cbs.identity?.verified
+    ? cbs.identity.id
+    : 'unsigned guest · persistent progression unavailable';
+  els.identityState.textContent = cbs.identity?.verified ? 'signed device identity' : 'unsigned guest';
+  els.recoveryExport.addEventListener('click', () => {
+    const code = cbs.onRecoveryExport?.();
+    if (!code) {
+      els.recoveryState.textContent = 'This browser could not create a signed recovery key.';
+      return;
+    }
+    els.recoveryCode.value = code;
+    els.recoveryCode.focus();
+    els.recoveryCode.select();
+    els.recoveryState.textContent = 'Recovery code generated. Save it privately; never post or send it.';
+  });
+  els.recoveryImport.addEventListener('click', async () => {
+    const code = els.recoveryCode.value.trim();
+    if (!code) {
+      els.recoveryState.textContent = 'Paste a recovery code first.';
+      return;
+    }
+    els.recoveryImport.disabled = true;
+    els.recoveryState.textContent = 'Checking recovery key…';
+    try {
+      await cbs.onRecoveryImport?.(code);
+    } catch {
+      els.recoveryImport.disabled = false;
+      els.recoveryState.textContent = 'That recovery code is invalid or incomplete.';
+    }
+  });
+  els.recoveryClear.addEventListener('click', () => {
+    els.recoveryCode.value = '';
+    els.recoveryState.textContent = 'Recovery field cleared.';
+  });
 
   note(BIND_HELP);
   buildBinds();
@@ -789,12 +830,13 @@ export function createMenu(settings, cbs) {
       renderModes();
       renderRegionSummary();
     },
-    /** Guest is today's identity type; durability says whether this region shares Postgres. */
+    /** Identity proof and storage durability are separate truths. */
     setAccount(account) {
       const durable = account?.durable === true;
-      els.profileAccount.textContent = durable
-        ? 'guest account · progress synced'
-        : 'guest account · local progress only';
+      const device = account?.type === 'device';
+      els.profileAccount.textContent = device
+        ? durable ? 'verified device · progress synced' : 'verified device · local practice'
+        : durable ? 'unsigned guest · progress disabled' : 'guest account · local progress only';
       els.profileAccount.classList.toggle('durable', durable);
     },
     /** The career is private owner data; current kills/deaths come from this match's snapshot. */

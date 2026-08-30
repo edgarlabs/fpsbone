@@ -8,5 +8,12 @@ export default defineConfig({
     port: 5173,
     fs: { allow: ['..'] },
   },
-  build: { outDir: '../dist', emptyOutDir: true },
+  build: {
+    outDir: '../dist',
+    emptyOutDir: true,
+    // Signed identity is prepared before the network and menu are constructed. The game
+    // already requires WebCrypto, WebGL2 and modern modules, so keeping top-level await is
+    // more honest than shipping a legacy bundle that cannot provide its account proof.
+    target: 'es2022',
+  },
 });

@@ -131,6 +131,16 @@ function schedule() {
   timer = setTimeout(flush, WRITE_DELAY_MS);
 }
 
+/** Move an old unsigned browser career under the signed device id exactly once. */
+export function claimLegacy(from, to) {
+  if (!from || !to || from === to || store.has(to) || !store.has(from)) return false;
+  const rec = store.get(from);
+  store.delete(from);
+  store.set(to, rec);
+  schedule();
+  return true;
+}
+
 /** A career for an account, or 0 for an anonymous client. Reading counts as use, so a
  *  returning player who has not scored yet does not age out of a full store. */
 export function careerOf(id) {
