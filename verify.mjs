@@ -3319,6 +3319,19 @@ const okD = (cond, label, detail = '') => {
     okD(L.apex > F.apex, `and goes over the top on the way there`,
         `apex ${L.apex.toFixed(2)}u vs ${F.apex.toFixed(2)}u`);
   }
+
+  const room = new Room(DEFAULT_MODE);
+  room.projectiles = [thrown('grenade', false)];
+  const wire = room.snapshotBase().proj?.[0];
+  okD([wire?.vx, wire?.vy, wire?.vz].every(Number.isFinite)
+      && Math.hypot(wire.vx, wire.vy, wire.vz) > 1,
+      'the first projectile snapshot carries its authoritative velocity',
+      `v=(${wire?.vx},${wire?.vy},${wire?.vz}) — the browser need not wait for two positions before moving it`);
+  const renderSrc = readFileSync(new URL('./client/src/render.js', import.meta.url), 'utf8');
+  okD(renderSrc.includes('vx: Number.isFinite(q.vx) ? q.vx : 0')
+      && renderSrc.includes('s.vx = Number.isFinite(q.vx) ? q.vx'),
+      'and the renderer starts and reconciles flight from that velocity',
+      'a newly released grenade advances on its first drawn frame instead of freezing until the next snapshot');
 }
 
 // The other thing right-click must not mean: a scope, while the action is stuck.
@@ -4752,9 +4765,13 @@ const okG = (cond, label, detail = '') => {
       for (const sx of [-1, 1]) {
         for (const sy of [-1, 1]) {
           for (const sz of [-1, 1]) {
+            const local = rotateXYZ(
+              p[7] ?? 0, p[8] ?? 0, p[9] ?? 0,
+              sx * p[0] * 0.5, sy * p[1] * 0.5, sz * p[2] * 0.5,
+            );
             const r = rotateXYZ(
               DEAD_GUN.rot[0], DEAD_GUN.rot[1], DEAD_GUN.rot[2],
-              p[3] + sx * p[0] * 0.5, p[4] + sy * p[1] * 0.5, p[5] + sz * p[2] * 0.5,
+              p[3] + local.x, p[4] + local.y, p[5] + local.z,
             );
             low = Math.max(low, z + r.z);
           }
@@ -4847,6 +4864,35 @@ const okG = (cond, label, detail = '') => {
   const RIGS = liftObj(vmSrc, 'RIGS');
   const boxOf = liftFn(vmSrc, 'boxOf', 'spec');
   const rearOf = liftFn(vmSrc, 'rearOf', 'spec');
+
+  // A different stat line with the same outline is not a different weapon in the hand.
+  // Fingerprint authored geometry (including rotations) independently of material so a
+  // recolour cannot satisfy this test.
+  const silhouette = (parts, firstPerson = false) => JSON.stringify(parts.map((p) =>
+    firstPerson
+      ? p[1] === 'sphere' ? ['sphere', ...p.slice(2)] : p.slice(1)
+      : [p[0], p[1], p[2], p[3], p[4], p[5], ...(p.slice(7))]));
+  for (const ids of [
+    ['rifle', 'rifle_havoc', 'rifle_falcon'],
+    ['smg', 'smg_kite', 'smg_banshee'],
+    ['pistol', 'pistol_wisp', 'pistol_rook'],
+    ['lmg', 'lmg_atlas', 'lmg_colossus'],
+  ]) {
+    okG(new Set(ids.map((id) => silhouette(RIGS[id].parts, true))).size === ids.length,
+        `${ids.map((id) => WEAPONS[id].label).join(', ')} have independently authored first-person silhouettes`,
+        ids.map((id) => `${id}:${RIGS[id].parts.length} parts`).join(' · '));
+    okG(new Set(ids.map((id) => silhouette(holdOf(id).parts))).size === ids.length,
+        `and the ${WEAPONS[ids[0]].family} variants stay distinct in other players' hands`,
+        ids.map((id) => `${id}:${holdOf(id).parts.length} parts`).join(' · '));
+  }
+  const knifeIds = ['knife', 'knife_karambit', 'knife_tanto', 'knife_bowie', 'knife_kukri'];
+  okG(new Set(knifeIds.map((id) => RIGS[id].anim)).size === knifeIds.length,
+      'all five knives select their own attack choreography',
+      knifeIds.map((id) => `${id}:${RIGS[id].anim}`).join(' · '));
+  okG(knifeIds.every((id) => vmSrc.includes(`current.spec.anim === '${RIGS[id].anim}'`)
+      || id === 'knife'),
+      'the viewmodel contains a deliberate motion branch for every special knife',
+      'karambit hook · tanto thrust · bowie sweep/chop · kukri diagonal cleave · combat alternating cut');
   const REAR_CLEAR = num(vmSrc, 'REAR_CLEAR');
   const POSE_ROOM = num(vmSrc, 'POSE_ROOM');
   const INSPECT_TURN = num(vmSrc, 'INSPECT_TURN');
@@ -4884,7 +4930,10 @@ const okG = (cond, label, detail = '') => {
       for (const sx of [-1, 1]) {
         for (const sy of [-1, 1]) {
           for (const sz of [-1, 1]) {
-            corners.push([o[0] + sx * h[0], o[1] + sy * h[1], o[2] + sz * h[2]]);
+            const c = sph
+              ? { x: sx * h[0], y: sy * h[1], z: sz * h[2] }
+              : rotateXYZ(p[7] ?? 0, p[8] ?? 0, p[9] ?? 0, sx * h[0], sy * h[1], sz * h[2]);
+            corners.push([o[0] + c.x, o[1] + c.y, o[2] + c.z]);
           }
         }
       }

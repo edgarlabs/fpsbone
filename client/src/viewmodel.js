@@ -397,8 +397,11 @@ const MATS = {
 // every model in this game its shape.
 const RIGS = {
   rifle: {
+    // VANGUARD R7 — bullpup. The magazine and action sit behind the trigger hand,
+    // leaving a long barrel inside a compact overall outline. This is intentionally
+    // nothing like HAVOC's conventional rifle or FALCON's skeletal carbine.
     rest: [0.105, -0.088, -0.2],
-    muzzle: [0, 0.012, -0.49],
+    muzzle: [0, 0.012, -0.57],
     kick: 5.4,
     mag: 2,
     grips: [
@@ -406,10 +409,12 @@ const RIGS = {
       [-0.012, -0.05, -0.21, 1],
     ],
     parts: [
-      ['steel', 0.075, 0.09, 0.44, 0, 0, 0],
-      ['steel', 0.036, 0.036, 0.3, 0, 0.012, -0.34],
-      ['trim', 0.055, 0.15, 0.075, 0, -0.1, 0.03],
-      ['steel', 0.05, 0.075, 0.16, 0, -0.015, 0.28],
+      ['steel', 0.08, 0.105, 0.34, 0, 0, -0.05],
+      ['steel', 0.032, 0.032, 0.42, 0, 0.012, -0.39],
+      ['trim', 0.058, 0.15, 0.075, 0, -0.1, 0.2, -0.24, 0, 0],
+      ['dark', 0.07, 0.12, 0.24, 0, -0.015, 0.23],
+      ['dark', 0.055, 0.08, 0.13, 0, -0.075, -0.14],
+      ['trim', 0.025, 0.06, 0.19, 0, 0.085, -0.12],
     ],
   },
   pistol: {
@@ -454,7 +459,7 @@ const RIGS = {
     muzzle: [0, 0.055, -0.43],
     kick: 2.8,
     melee: true,
-    anim: 'slash',
+    anim: 'knife_combat',
     grips: [[0.012, -0.006, 0.022, 0]],
     parts: [
       // Full combat-knife silhouette: thick spine, tapered point, guard, wrapped grip
@@ -513,13 +518,16 @@ const RIGS = {
       [-0.01, -0.05, -0.14, 1],
     ],
     parts: [
-      ['steel', 0.07, 0.085, 0.3, 0, 0, 0],
-      ['dark', 0.032, 0.032, 0.18, 0, 0.014, -0.23],
+      // VIPER-9 — closed tubular receiver, long suppressor, curved forward magazine.
+      ['steel', 0.068, 0.09, 0.28, 0, 0, -0.015],
+      ['dark', 0.042, 0.042, 0.29, 0, 0.014, -0.29],
       // Magazine forward of the grip, in front of the trigger hand. That is the one
       // detail that reads as "submachine gun" rather than "short rifle" at a glance.
-      ['trim', 0.05, 0.13, 0.058, 0, -0.088, -0.05],
+      ['trim', 0.05, 0.15, 0.058, 0, -0.09, -0.055, -0.2, 0, 0],
       ['dark', 0.046, 0.1, 0.06, 0, -0.07, 0.06],
-      ['steel', 0.042, 0.055, 0.1, 0, 0.005, 0.2],
+      ['steel', 0.02, 0.025, 0.24, 0.026, 0.005, 0.2],
+      ['steel', 0.02, 0.025, 0.24, -0.026, 0.005, 0.2],
+      ['dark', 0.07, 0.025, 0.04, 0, 0.055, -0.05],
     ],
   },
   lmg: {
@@ -658,103 +666,126 @@ const RIGS = {
     rest: [0.108, -0.09, -0.18], muzzle: [0, 0.018, -0.57], kick: 6.3, mag: 3,
     grips: [[0.015, -0.064, 0.055, 0], [-0.013, -0.052, -0.23, 1]],
     parts: [
-      ['steel', 0.086, 0.105, 0.42, 0, 0, 0],
-      ['dark', 0.074, 0.06, 0.2, 0, -0.002, -0.29],
-      ['steel', 0.04, 0.04, 0.28, 0, 0.018, -0.43],
-      ['trim', 0.06, 0.17, 0.085, 0, -0.11, 0.005],
-      ['dark', 0.052, 0.11, 0.08, 0, -0.075, 0.095],
-      ['steel', 0.064, 0.09, 0.21, 0, -0.008, 0.31],
-      ['dark', 0.026, 0.026, 0.15, 0, 0.074, -0.1],
+      // HAVOC R4 — old-school long-stroke rifle: exposed gas tube, raked magazine,
+      // separate wooden fore-end and a solid triangular stock.
+      ['steel', 0.086, 0.105, 0.34, 0, 0, 0.015],
+      ['trim', 0.078, 0.075, 0.23, 0, -0.006, -0.27],
+      ['steel', 0.038, 0.038, 0.34, 0, 0.018, -0.46],
+      ['dark', 0.064, 0.19, 0.08, 0, -0.115, 0.015, -0.33, 0, 0],
+      ['dark', 0.026, 0.026, 0.3, 0, 0.075, -0.33],
+      ['trim', 0.072, 0.105, 0.25, 0, -0.005, 0.31, 0.12, 0, 0],
+      ['dark', 0.045, 0.11, 0.055, 0, -0.07, 0.12, 0.18, 0, 0],
+      ['steel', 0.052, 0.025, 0.045, 0, 0.068, 0.05],
     ],
   },
   rifle_falcon: {
     rest: [0.1, -0.086, -0.215], muzzle: [0, 0.012, -0.43], kick: 4.7, mag: 2,
     grips: [[0.014, -0.058, 0.03, 0], [-0.012, -0.048, -0.18, 1]],
     parts: [
-      ['steel', 0.066, 0.082, 0.34, 0, 0, 0],
-      ['dark', 0.052, 0.05, 0.19, 0, -0.006, -0.25],
-      ['trim', 0.048, 0.135, 0.065, 0, -0.092, 0.015],
-      ['steel', 0.03, 0.03, 0.22, 0, 0.012, -0.34],
-      ['dark', 0.044, 0.09, 0.06, 0, -0.065, 0.075],
-      ['steel', 0.038, 0.065, 0.18, 0, -0.008, 0.245],
-      ['dark', 0.038, 0.032, 0.11, 0, 0.068, -0.08],
+      // FALCON C4 — very short carbine with a raised carry handle and twin-rail stock.
+      ['steel', 0.064, 0.082, 0.29, 0, 0, -0.015],
+      ['dark', 0.058, 0.066, 0.18, 0, -0.005, -0.235],
+      ['trim', 0.047, 0.14, 0.06, 0, -0.095, 0.01, -0.12, 0, 0],
+      ['steel', 0.034, 0.034, 0.16, 0, 0.012, -0.36],
+      ['dark', 0.02, 0.025, 0.3, 0.026, 0.006, 0.21],
+      ['dark', 0.02, 0.025, 0.3, -0.026, 0.006, 0.21],
+      ['steel', 0.074, 0.032, 0.055, 0, 0.006, 0.36],
+      ['trim', 0.022, 0.095, 0.18, 0, 0.095, -0.06],
+      ['dark', 0.052, 0.022, 0.11, 0, 0.145, -0.06],
     ],
   },
   smg_kite: {
     rest: [0.105, -0.094, -0.25], muzzle: [0, 0.012, -0.28], kick: 2.9, mag: 2,
     grips: [[0.014, -0.055, 0.02, 0], [-0.012, -0.048, -0.11, 1]],
     parts: [
-      ['steel', 0.058, 0.078, 0.25, 0, 0, 0],
-      ['dark', 0.028, 0.028, 0.12, 0, 0.012, -0.185],
-      ['trim', 0.042, 0.15, 0.055, 0, -0.1, -0.015],
-      ['dark', 0.042, 0.085, 0.05, 0, -0.058, 0.065],
-      ['steel', 0.025, 0.035, 0.17, 0, 0.012, 0.18],
-      ['dark', 0.046, 0.025, 0.09, 0, 0.062, -0.04],
+      // KITE-9 — Uzi-like machine pistol: magazine through the grip and folding wire stock.
+      ['steel', 0.058, 0.12, 0.22, 0, 0, -0.015],
+      ['dark', 0.03, 0.03, 0.11, 0, 0.012, -0.18],
+      ['trim', 0.043, 0.2, 0.052, 0, -0.135, 0.055, 0.06, 0, 0],
+      ['dark', 0.056, 0.11, 0.065, 0, -0.075, 0.045],
+      ['steel', 0.016, 0.02, 0.27, 0.026, 0.018, 0.2],
+      ['steel', 0.016, 0.02, 0.27, -0.026, 0.018, 0.2],
+      ['dark', 0.068, 0.026, 0.045, 0, 0.018, 0.33],
+      ['trim', 0.05, 0.02, 0.07, 0, 0.082, -0.05],
     ],
   },
   smg_banshee: {
     rest: [0.104, -0.092, -0.215], muzzle: [0, 0.015, -0.38], kick: 4.2, mag: 3,
     grips: [[0.015, -0.06, 0.045, 0], [-0.012, -0.05, -0.16, 1]],
     parts: [
-      ['steel', 0.08, 0.098, 0.32, 0, 0, 0],
-      ['dark', 0.064, 0.06, 0.16, 0, -0.004, -0.235],
-      ['steel', 0.035, 0.035, 0.14, 0, 0.014, -0.31],
-      ['trim', 0.056, 0.13, 0.07, 0, -0.09, -0.025],
-      ['dark', 0.05, 0.105, 0.06, 0, -0.072, 0.07],
-      ['steel', 0.048, 0.065, 0.12, 0, -0.002, 0.205],
+      // BANSHEE .45 — blocky top-fed SMG with a long suppressor and side battery housing.
+      ['steel', 0.082, 0.11, 0.3, 0, 0, -0.02],
+      ['dark', 0.06, 0.065, 0.14, 0, -0.002, -0.225],
+      ['dark', 0.052, 0.052, 0.31, 0, 0.014, -0.42],
+      ['trim', 0.052, 0.17, 0.07, 0, 0.13, -0.045, 0.12, 0, 0],
+      ['dark', 0.052, 0.11, 0.065, 0, -0.075, 0.055],
+      ['trim', 0.035, 0.075, 0.16, 0.055, -0.01, -0.02],
+      ['steel', 0.06, 0.075, 0.16, 0, -0.004, 0.22],
+      ['dark', 0.025, 0.025, 0.1, 0, 0.095, 0.12],
+      ['trim', 0.045, 0.02, 0.09, 0, 0.105, -0.2],
     ],
   },
   pistol_wisp: {
     rest: [0.102, -0.104, -0.29], muzzle: [0, 0.014, -0.145], kick: 3.1, mag: 2,
     grips: [[0.016, -0.058, 0.048, 0], [-0.026, -0.078, 0.032, 1]],
     parts: [
-      ['steel', 0.046, 0.062, 0.17, 0, 0, 0],
-      ['dark', 0.042, 0.026, 0.185, 0, 0.044, -0.008],
-      ['trim', 0.042, 0.105, 0.06, 0, -0.078, 0.045],
-      ['steel', 0.02, 0.02, 0.045, 0, 0.012, -0.115],
-      ['dark', 0.03, 0.018, 0.045, 0, 0.075, 0.02],
+      // WISP-9 — machine pistol: vented slide, compensator and unmistakable extended mag.
+      ['steel', 0.046, 0.062, 0.16, 0, 0, 0.005],
+      ['dark', 0.042, 0.027, 0.19, 0, 0.045, -0.01],
+      ['trim', 0.04, 0.18, 0.052, 0, -0.11, 0.045, 0.05, 0, 0],
+      ['steel', 0.052, 0.052, 0.055, 0, 0.008, -0.13],
+      ['dark', 0.018, 0.035, 0.035, 0, 0.087, -0.015],
+      ['dark', 0.014, 0.012, 0.025, 0.017, 0.072, -0.065],
+      ['dark', 0.014, 0.012, 0.025, -0.017, 0.072, -0.065],
     ],
   },
   pistol_rook: {
     rest: [0.1, -0.098, -0.235], muzzle: [0, 0.018, -0.22], kick: 5.2, mag: 2,
     grips: [[0.016, -0.062, 0.06, 0], [-0.028, -0.082, 0.042, 1]],
     parts: [
-      ['steel', 0.068, 0.088, 0.255, 0, 0, 0],
-      ['dark', 0.06, 0.04, 0.275, 0, 0.06, -0.012],
-      ['trim', 0.058, 0.14, 0.082, 0, -0.105, 0.062],
-      ['steel', 0.032, 0.032, 0.075, 0, 0.018, -0.175],
-      ['dark', 0.046, 0.024, 0.06, 0, 0.09, 0.05],
+      // ROOK .45 — revolver. The faceted cylinder, exposed barrel and hooked grip make
+      // it categorically different from the two magazine-fed pistols.
+      ['steel', 0.07, 0.075, 0.11, 0, 0.012, -0.02],
+      ['steel', 0.036, 0.036, 0.25, 0, 0.028, -0.2],
+      ['dark', 'sphere', 0.058, 0, 0.01, -0.035],
+      ['trim', 0.06, 0.15, 0.075, 0, -0.105, 0.06, 0.22, 0, 0],
+      ['dark', 0.025, 0.06, 0.07, 0, 0.088, 0.035],
+      ['steel', 0.05, 0.022, 0.14, 0, 0.075, -0.16],
     ],
   },
   lmg_atlas: {
     rest: [0.112, -0.096, -0.18], muzzle: [0, 0.02, -0.59], kick: 6.2, mag: 3,
     grips: [[0.018, -0.062, 0.07, 0], [-0.014, -0.046, -0.27, 1]],
     parts: [
-      ['steel', 0.082, 0.105, 0.45, 0, 0, 0],
-      ['dark', 0.07, 0.045, 0.25, 0, 0.07, -0.05],
-      ['steel', 0.038, 0.038, 0.34, 0, 0.018, -0.395],
-      ['trim', 0.078, 0.14, 0.16, 0, -0.105, -0.055],
+      // ATLAS SAW — squad automatic rifle: top carry handle and a side-mounted soft box.
+      ['steel', 0.082, 0.105, 0.42, 0, 0, -0.015],
+      ['dark', 0.06, 0.045, 0.24, 0, 0.07, -0.08],
+      ['steel', 0.038, 0.038, 0.36, 0, 0.018, -0.4],
+      ['trim', 0.14, 0.13, 0.15, 0.052, -0.105, -0.045],
       ['brass', 0.065, 0.022, 0.045, 0.042, -0.035, -0.045],
       ['dark', 0.062, 0.06, 0.16, 0, -0.018, -0.28],
       ['dark', 0.044, 0.1, 0.065, 0, -0.072, 0.08],
       ['steel', 0.052, 0.082, 0.19, 0, -0.004, 0.31],
-      ['dark', 0.02, 0.02, 0.13, 0, 0.115, -0.16],
+      ['dark', 0.018, 0.11, 0.2, 0, 0.13, -0.12, 0, 0, -0.28],
+      ['dark', 0.06, 0.018, 0.1, 0, 0.175, -0.18],
     ],
   },
   lmg_colossus: {
     rest: [0.12, -0.102, -0.145], muzzle: [0, 0.022, -0.72], kick: 8.1, mag: 4,
     grips: [[0.02, -0.066, 0.09, 0], [-0.016, -0.048, -0.32, 1]],
     parts: [
-      ['steel', 0.102, 0.132, 0.56, 0, 0, 0],
-      ['dark', 0.09, 0.046, 0.34, 0, 0.09, -0.06],
-      ['dark', 0.024, 0.02, 0.18, 0, 0.15, -0.23],
-      ['dark', 0.024, 0.04, 0.024, 0, 0.125, -0.15],
+      // COLOSSUS 120 — rotary support gun: central motor, three separated barrels and
+      // a huge under-slung ammunition drum. No other gun has this front silhouette.
+      ['steel', 0.11, 0.14, 0.38, 0, 0, 0.02],
+      ['dark', 0.1, 0.1, 0.28, 0, 0.055, -0.19],
+      ['dark', 0.024, 0.024, 0.58, 0.045, 0.045, -0.55],
+      ['dark', 0.024, 0.024, 0.58, -0.045, 0.045, -0.55],
       ['trim', 0.126, 0.18, 0.24, 0, -0.135, -0.075],
       ['brass', 0.09, 0.028, 0.06, 0.062, -0.04, -0.06],
-      ['steel', 0.046, 0.046, 0.46, 0, 0.022, -0.49],
-      ['dark', 0.076, 0.066, 0.2, 0, -0.018, -0.34],
-      ['dark', 0.064, 0.064, 0.018, 0, 0.022, -0.5],
-      ['dark', 0.064, 0.064, 0.018, 0, 0.022, -0.6],
+      ['steel', 0.024, 0.024, 0.58, 0, -0.025, -0.55],
+      ['dark', 0.12, 0.11, 0.16, 0, 0.01, -0.34],
+      ['dark', 0.14, 0.14, 0.025, 0, 0.01, -0.48],
+      ['dark', 0.14, 0.14, 0.025, 0, 0.01, -0.67],
       ['dark', 0.016, 0.13, 0.016, 0.048, -0.085, -0.65],
       ['dark', 0.016, 0.13, 0.016, -0.048, -0.085, -0.65],
       ['dark', 0.058, 0.14, 0.078, 0, -0.102, 0.12],
@@ -763,11 +794,11 @@ const RIGS = {
   },
   knife_karambit: {
     rest: [0.13, -0.128, -0.285], muzzle: [0, 0.085, -0.34], kick: 2.3,
-    melee: true, anim: 'slash', grips: [[0.012, -0.005, 0.02, 0]],
+    melee: true, anim: 'knife_karambit', grips: [[0.012, -0.005, 0.02, 0]],
     parts: [
-      ['blade', 0.018, 0.07, 0.12, 0, 0.035, -0.15],
-      ['blade', 0.018, 0.06, 0.1, 0, 0.07, -0.25],
-      ['blade', 0.016, 0.04, 0.07, 0, 0.105, -0.325],
+      ['blade', 0.018, 0.07, 0.12, 0, 0.035, -0.15, -0.2, 0, 0],
+      ['blade', 0.018, 0.06, 0.1, 0, 0.07, -0.25, -0.5, 0, 0],
+      ['blade', 0.016, 0.04, 0.07, 0, 0.105, -0.325, -0.85, 0, 0],
       ['dark', 0.046, 0.054, 0.15, 0, -0.008, 0.005],
       ['trim', 0.052, 0.014, 0.024, 0, -0.002, -0.025],
       // Four bars leave a visible finger ring instead of the solid ball the old shape used.
@@ -779,7 +810,7 @@ const RIGS = {
   },
   knife_tanto: {
     rest: [0.128, -0.126, -0.27], muzzle: [0, 0.045, -0.44], kick: 2.7,
-    melee: true, anim: 'slash', grips: [[0.012, -0.006, 0.022, 0]],
+    melee: true, anim: 'knife_tanto', grips: [[0.012, -0.006, 0.022, 0]],
     parts: [
       ['blade', 0.026, 0.096, 0.27, 0, 0.038, -0.23],
       ['blade', 0.022, 0.062, 0.1, 0, 0.055, -0.405],
@@ -792,7 +823,7 @@ const RIGS = {
   },
   knife_bowie: {
     rest: [0.132, -0.128, -0.245], muzzle: [0, 0.058, -0.51], kick: 3.3,
-    melee: true, anim: 'slash', grips: [[0.013, -0.007, 0.026, 0]],
+    melee: true, anim: 'knife_bowie', grips: [[0.013, -0.007, 0.026, 0]],
     parts: [
       ['blade', 0.03, 0.125, 0.31, 0, 0.052, -0.27],
       ['blade', 0.024, 0.072, 0.11, 0, 0.075, -0.48],
@@ -805,11 +836,11 @@ const RIGS = {
   },
   knife_kukri: {
     rest: [0.13, -0.125, -0.255], muzzle: [0, 0.1, -0.46], kick: 3.1,
-    melee: true, anim: 'slash', grips: [[0.012, -0.006, 0.024, 0]],
+    melee: true, anim: 'knife_kukri', grips: [[0.012, -0.006, 0.024, 0]],
     parts: [
-      ['blade', 0.026, 0.09, 0.16, 0, 0.035, -0.18],
-      ['blade', 0.03, 0.125, 0.16, 0, 0.07, -0.33],
-      ['blade', 0.024, 0.085, 0.1, 0, 0.11, -0.455],
+      ['blade', 0.026, 0.09, 0.16, 0, 0.035, -0.18, 0.18, 0, 0],
+      ['blade', 0.03, 0.125, 0.16, 0, 0.07, -0.33, 0.38, 0, 0],
+      ['blade', 0.024, 0.085, 0.1, 0, 0.11, -0.455, 0.58, 0, 0],
       ['dark', 0.078, 0.028, 0.04, 0, 0.01, -0.075],
       ['dark', 0.05, 0.06, 0.17, 0, -0.006, 0.025],
       ['trim', 0.054, 0.014, 0.026, 0, -0.002, 0.015],
@@ -917,11 +948,25 @@ function buildArms(spec, side, dz) {
  * of is not sellable.
  */
 function rearOf(spec) {
+  const rot = (rx, ry, rz, x, y, z) => {
+    const cx = Math.cos(rx), sx = Math.sin(rx);
+    const cy = Math.cos(ry), sy = Math.sin(ry);
+    const cz = Math.cos(rz), sz = Math.sin(rz);
+    const y1 = y * cx - z * sx, z1 = y * sx + z * cx;
+    const x2 = x * cy + z1 * sy, z2 = -x * sy + z1 * cy;
+    return { x: x2 * cz - y1 * sz, y: x2 * sz + y1 * cz, z: z2 };
+  };
   let back = 0;
   for (const p of spec.parts) {
     const sphere = p[1] === 'sphere';
     const z = sphere ? p[5] : p[6];
-    const hz = sphere ? p[2] : p[3] * 0.5;
+    let hz = sphere ? p[2] : p[3] * 0.5;
+    if (!sphere && (p[7] || p[8] || p[9])) {
+      const a = rot(p[7] || 0, p[8] || 0, p[9] || 0, p[1] * 0.5, 0, 0);
+      const b = rot(p[7] || 0, p[8] || 0, p[9] || 0, 0, p[2] * 0.5, 0);
+      const c = rot(p[7] || 0, p[8] || 0, p[9] || 0, 0, 0, p[3] * 0.5);
+      hz = Math.abs(a.z) + Math.abs(b.z) + Math.abs(c.z);
+    }
     back = Math.max(back, z + hz);
   }
   return back;
@@ -940,6 +985,14 @@ function rearOf(spec) {
  * line would swing a rifle's own box out of frame as it turned.
  */
 function boxOf(spec) {
+  const rot = (rx, ry, rz, x, y, z) => {
+    const cx = Math.cos(rx), sx = Math.sin(rx);
+    const cy = Math.cos(ry), sy = Math.sin(ry);
+    const cz = Math.cos(rz), sz = Math.sin(rz);
+    const y1 = y * cx - z * sx, z1 = y * sx + z * cx;
+    const x2 = x * cy + z1 * sy, z2 = -x * sy + z1 * cy;
+    return { x: x2 * cz - y1 * sz, y: x2 * sz + y1 * cz, z: z2 };
+  };
   let x0 = Infinity;
   let x1 = -Infinity;
   let y0 = Infinity;
@@ -949,7 +1002,17 @@ function boxOf(spec) {
   for (const p of spec.parts) {
     const sphere = p[1] === 'sphere';
     const o = sphere ? [p[3], p[4], p[5]] : [p[4], p[5], p[6]];
-    const h = sphere ? [p[2], p[2], p[2]] : [p[1] * 0.5, p[2] * 0.5, p[3] * 0.5];
+    let h = sphere ? [p[2], p[2], p[2]] : [p[1] * 0.5, p[2] * 0.5, p[3] * 0.5];
+    if (!sphere && (p[7] || p[8] || p[9])) {
+      const a = rot(p[7] || 0, p[8] || 0, p[9] || 0, h[0], 0, 0);
+      const b = rot(p[7] || 0, p[8] || 0, p[9] || 0, 0, h[1], 0);
+      const c = rot(p[7] || 0, p[8] || 0, p[9] || 0, 0, 0, h[2]);
+      h = [
+        Math.abs(a.x) + Math.abs(b.x) + Math.abs(c.x),
+        Math.abs(a.y) + Math.abs(b.y) + Math.abs(c.y),
+        Math.abs(a.z) + Math.abs(b.z) + Math.abs(c.z),
+      ];
+    }
     x0 = Math.min(x0, o[0] - h[0]);
     x1 = Math.max(x1, o[0] + h[0]);
     y0 = Math.min(y0, o[1] - h[1]);
@@ -1079,6 +1142,7 @@ function buildRig(spec) {
     const mesh = new THREE.Mesh(geo, mat);
     const off = part[1] === 'sphere' ? part.slice(3) : part.slice(4);
     mesh.position.set(off[0], off[1], off[2] + dz);
+    if (part[1] !== 'sphere') mesh.rotation.set(part[7] || 0, part[8] || 0, part[9] || 0);
     g.add(mesh);
   }
   if (spec.mag !== undefined) {
@@ -1619,7 +1683,7 @@ export function createViewmodel(camera, scene, vmRoot, hooks = {}) {
       if (current.spec.anim) {
         // Flipped before the swing rather than after it, so the first cut of a fresh
         // knife is not always the same one.
-        if (current.spec.anim === 'slash' && !heavy) slashDir = -slashDir;
+        if (current.spec.anim.startsWith('knife_') && !heavy) slashDir = -slashDir;
         swing = 0;
         swingHeavy = heavy && hasHeavy(currentId);
       } else {
@@ -2376,51 +2440,57 @@ export function createViewmodel(camera, scene, vmRoot, hooks = {}) {
             // Wrist cocked back over the shoulder, then snapped over the top.
             g.rotation.set(-1.15 * windup + 1.75 * fwd, 0, 0);
           } else if (swingHeavy) {
-            // ---- heavy stab ----------------------------------------------------
-            // A different motion, not a bigger version of the slash. The light attack
-            // is a lateral cut; this pulls back past the shoulder and drives straight
-            // down the aim line, which is what makes the two read as distinct attacks
-            // rather than one animation played at two speeds. `sq` holds the wind-up:
-            // the first 40% is spent drawing back, then it commits.
-            const draw = 1 - smooth(seg(swing, 0.35, 0.62));
-            const thrust = smooth(seg(swing, 0.35, 0.68)) - smooth(seg(swing, 0.72, 1));
-            place(
-              x + bobX + (0.075 * draw - 0.02 * thrust) * side,
-              y - bobY + 0.05 * draw - 0.02 * thrust,
-              z + 0.05 * draw - 0.2 * thrust,
-            );
-            g.rotation.set(
-              -0.9 * draw + 0.35 * thrust,
-              (0.55 * draw - 0.12 * thrust) * side,
-              (0.7 * draw - 0.15 * thrust) * side,
-            );
+            // ---- knife-specific heavy attacks ---------------------------------
+            // The server deliberately keeps every base knife statistically equal. The
+            // hands do not have to be equal: blade geometry decides the committed move.
+            const draw = 1 - smooth(seg(swing, 0.34, 0.6));
+            const hit = smooth(seg(swing, 0.34, 0.67)) - smooth(seg(swing, 0.73, 1));
+            if (current.spec.anim === 'knife_karambit') {
+              // Reverse-grip hook: reach past, roll the wrist, rip back inward.
+              place(x + bobX + (0.1 * draw - 0.19 * hit) * side, y - bobY + 0.1 * hit, z + 0.035 * draw - 0.1 * hit);
+              g.rotation.set(-0.45 * draw - 0.35 * hit, (0.35 * draw + 1.05 * hit) * side, (-1.05 * draw + 1.55 * hit) * side);
+            } else if (current.spec.anim === 'knife_bowie') {
+              // The long heavy blade comes from overhead in one readable axe-like chop.
+              place(x + bobX, y - bobY + 0.17 * draw - 0.2 * hit, z + 0.04 * draw - 0.08 * hit);
+              g.rotation.set(-1.25 * draw + 1.15 * hit, 0.2 * side, (0.32 * draw - 0.22 * hit) * side);
+            } else if (current.spec.anim === 'knife_kukri') {
+              // Forward-weighted diagonal cleave, led by the hooked nose.
+              place(x + bobX + (0.1 * draw - 0.17 * hit) * side, y - bobY + 0.13 * draw - 0.16 * hit, z + 0.035 * draw - 0.09 * hit);
+              g.rotation.set(-0.85 * draw + 0.9 * hit, (0.45 * draw - 0.55 * hit) * side, (0.8 * draw - 1.15 * hit) * side);
+            } else {
+              // Combat knife and tanto: point-first thrust, the tanto straighter and deeper.
+              const deep = current.spec.anim === 'knife_tanto' ? 0.25 : 0.2;
+              place(x + bobX + (0.07 * draw - 0.015 * hit) * side, y - bobY + 0.045 * draw - 0.02 * hit, z + 0.05 * draw - deep * hit);
+              g.rotation.set(-0.82 * draw + 0.28 * hit, (0.5 * draw - 0.1 * hit) * side, (0.58 * draw - 0.12 * hit) * side);
+            }
           } else {
-            // ---- light slash ---------------------------------------------------
-            // Three beats: wind up, cut, recover — and consecutive slashes alternate
-            // direction. The old one had none of that. It started at full speed from
-            // rest, always cut the same way, and eased out symmetrically, so mashing the
-            // button looked like the knife vibrating in place. A cut reads as a cut
-            // because of what happens *before* it: the blade has to visibly go
-            // somewhere first, and then the crossing has to be faster than the return.
-            //
-            // `d` folds the alternation into the hand mirror, so a left-handed player
-            // gets the same pair of cuts reflected rather than a different pair.
+            // ---- knife-specific light attacks ---------------------------------
+            // Consecutive cuts still alternate, but the path now follows the blade:
+            // point-first tanto, hooked karambit, sweeping bowie, chopping kukri.
             const d = slashDir * side;
-            // Drawn back over the first fifth, gone by the time the blade is moving.
             const wind = smooth(seg(swing, 0, 0.18)) - smooth(seg(swing, 0.18, 0.34));
-            // The crossing, then the recovery. Peaks at the end of the cut, not the
-            // middle of the animation — the follow-through is the extreme of the pose.
             const cut = smooth(seg(swing, 0.16, 0.46)) - smooth(seg(swing, 0.5, 1));
-            place(
-              x + bobX + (0.085 * wind - 0.26 * cut) * d,
-              y - bobY + 0.075 * wind - 0.13 * cut,
-              z + 0.03 * wind - 0.05 * cut,
-            );
-            g.rotation.set(
-              -0.5 * wind + 0.55 * cut,
-              (0.7 * wind - 1 * cut) * d,
-              (0.85 * wind - 1.45 * cut) * d,
-            );
+            if (current.spec.anim === 'knife_karambit') {
+              // Compact inward hook with a visible reverse-grip wrist roll.
+              place(x + bobX + (0.06 * wind - 0.14 * cut) * d, y - bobY + 0.045 * wind + 0.055 * cut, z + 0.025 * wind - 0.075 * cut);
+              g.rotation.set(-0.35 * wind - 0.22 * cut, (0.45 * wind + 0.8 * cut) * d, (-0.95 * wind + 1.15 * cut) * d);
+            } else if (current.spec.anim === 'knife_tanto') {
+              // Fast fencing thrust; alternate only adds a small parry angle.
+              place(x + bobX + 0.035 * wind * d, y - bobY + 0.035 * wind - 0.018 * cut, z + 0.055 * wind - 0.21 * cut);
+              g.rotation.set(-0.6 * wind + 0.2 * cut, (0.32 * wind - 0.08 * cut) * d, 0.22 * wind * d);
+            } else if (current.spec.anim === 'knife_bowie') {
+              // Long, slower shoulder-to-shoulder sweep with restrained wrist rotation.
+              place(x + bobX + (0.11 * wind - 0.24 * cut) * d, y - bobY + 0.09 * wind - 0.06 * cut, z + 0.03 * wind - 0.065 * cut);
+              g.rotation.set(-0.38 * wind + 0.35 * cut, (0.5 * wind - 0.72 * cut) * d, (0.5 * wind - 0.82 * cut) * d);
+            } else if (current.spec.anim === 'knife_kukri') {
+              // Short diagonal hack: the forward-heavy blade drops through the target.
+              place(x + bobX + (0.08 * wind - 0.17 * cut) * d, y - bobY + 0.13 * wind - 0.18 * cut, z + 0.025 * wind - 0.055 * cut);
+              g.rotation.set(-0.75 * wind + 0.78 * cut, (0.42 * wind - 0.5 * cut) * d, (0.68 * wind - 0.92 * cut) * d);
+            } else {
+              // Combat knife: clean alternating diagonal cuts, no exaggerated 80° flail.
+              place(x + bobX + (0.075 * wind - 0.19 * cut) * d, y - bobY + 0.07 * wind - 0.1 * cut, z + 0.025 * wind - 0.055 * cut);
+              g.rotation.set(-0.42 * wind + 0.42 * cut, (0.55 * wind - 0.7 * cut) * d, (0.62 * wind - 0.88 * cut) * d);
+            }
           }
         } else if (current.spec.anim) {
           // Thrown and melee weapons have no recoil spring. Right-click gives the

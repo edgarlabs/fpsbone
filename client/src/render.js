@@ -279,10 +279,11 @@ const SNOW_COLOR = 0xeef3f9;
  */
 function buildWeapon(a, id) {
   const g = new THREE.Group();
-  for (const [i, [w, h, d, x, y, z, tag]] of holdOf(id).parts.entries()) {
+  for (const [i, [w, h, d, x, y, z, tag, rx = 0, ry = 0, rz = 0]] of holdOf(id).parts.entries()) {
     const weaponMat = i === 0 ? a.weaponMat : i % 3 === 0 ? a.weaponTrimMat : a.weaponDarkMat;
     const mesh = new THREE.Mesh(new THREE.BoxGeometry(w, h, d), tag === 'snow' ? a.snowMat : weaponMat);
     mesh.position.set(x, y, z);
+    mesh.rotation.set(rx, ry, rz);
     // Only the receiver-sized boxes cast. A shadow pass over the slivers — barrels, sights
     // — draws a silhouette indistinguishable from the one the big box draws by itself.
     mesh.castShadow = w * h * d > 0.0006;
@@ -1640,10 +1641,9 @@ export function createScene(canvas, baseFov = 85) {
     /**
      * Reconcile the locally simulated projectiles against the latest snapshot.
      *
-     * Snapshots carry position only, so a projectile the client has never seen starts
-     * with zero velocity and picks up its arc within a couple of snapshots — visible
-     * for the first 50 ms of a throw, and invisible in practice because the thing has
-     * only just left the hand. Everything already in the air is corrected: authority
+     * Snapshots carry position and velocity, so a projectile the client has never seen
+     * continues its arc on the very first frame rather than freezing at release while
+     * it waits for a second position sample. Everything already in the air is corrected: authority
      * goes into the simulation, and the visible difference is parked in `ex/ey/ez` so
      * it decays instead of popping.
      *
@@ -1670,7 +1670,13 @@ export function createScene(canvas, baseFov = 85) {
             // because the fuse is the server's business: the client stops drawing when
             // the projectile leaves the snapshot, and guessing at a deadline would make
             // it vanish early.
-            sim: { kind: q.k, x: q.x, y: q.y, z: q.z, vx: 0, vy: 0, vz: 0, diesAt: Infinity, done: false },
+            sim: {
+              kind: q.k, x: q.x, y: q.y, z: q.z,
+              vx: Number.isFinite(q.vx) ? q.vx : 0,
+              vy: Number.isFinite(q.vy) ? q.vy : 0,
+              vz: Number.isFinite(q.vz) ? q.vz : 0,
+              diesAt: Infinity, done: false,
+            },
             ex: 0, ey: 0, ez: 0,
             // Where authority put this projectile on the PREVIOUS snapshot. Velocity
             // has to be inferred from two authoritative positions, and this is the only
@@ -1687,8 +1693,9 @@ export function createScene(canvas, baseFov = 85) {
         const dy = q.y - s.y;
         const dz = q.z - s.z;
 
-        // Velocity from the two authoritative positions, which is the only pair of
-        // numbers that actually describes how the projectile is moving.
+        // New servers send velocity directly. Keep the position-pair fallback so a
+        // client refreshing during a rolling deploy remains playable against an older
+        // host for the few minutes before Render replaces it.
         //
         // This used to read `(q.x - (s.x - p.ex)) / dt`, using the local sim's current
         // position as the older sample. That is the one position guaranteed to be wrong
@@ -1699,9 +1706,9 @@ export function createScene(canvas, baseFov = 85) {
         // alternating 0, v, 0, v at 20 Hz. That was the "grenade ticks like it is
         // lagging" report: not the network, an arithmetic error in the estimator.
         const dt = C.TICKS_PER_SNAPSHOT * C.TICK_DT;
-        s.vx = (q.x - p.px) / dt;
-        s.vy = (q.y - p.py) / dt;
-        s.vz = (q.z - p.pz) / dt;
+        s.vx = Number.isFinite(q.vx) ? q.vx : (q.x - p.px) / dt;
+        s.vy = Number.isFinite(q.vy) ? q.vy : (q.y - p.py) / dt;
+        s.vz = Number.isFinite(q.vz) ? q.vz : (q.z - p.pz) / dt;
         p.px = q.x;
         p.py = q.y;
         p.pz = q.z;
