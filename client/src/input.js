@@ -68,14 +68,14 @@ export function createInput(canvas, settings) {
    * `firing` is the button's CURRENT state, and sampling it alone quietly loses clicks:
    * sample() runs on the 16.7ms simulation step, so a click whose press and release both
    * land between two steps reads as false at both of them and never becomes a shot. On a
-   * held weapon that does not matter, but the pistol's rate is meant to be "the speed how
-   * fast you click", and a rate that silently drops the fastest clicks is not that.
+   * held firearm that does not matter, but quick taps on any attack still must not vanish
+   * just because they landed between simulation samples.
    *
    * So a press is remembered until exactly one sample has carried it. That cannot fire
    * faster than the weapon allows — the server still owns `nextFireAt` — and it cannot
-   * turn a semi-automatic into an automatic either, because the latch lasts one sample
-   * and the tick after it reports the button as the up button it is, which is the release
-   * the server's edge trigger is waiting for.
+   * turn an edge-triggered knife swing or throw into a repeating action either, because
+   * the latch lasts one sample and the tick after it reports the released button that
+   * the server is waiting for.
    */
   let clickLatch = false;
   /** Right mouse held. What it MEANS is the weapon's business, not this module's. */
@@ -621,7 +621,7 @@ export function createInput(canvas, settings) {
       if (down('jump')) buttons |= C.BTN_JUMP;
       // The button as it is now, OR a press since the last sample that nothing has
       // carried yet. Consumed here so it rides exactly one input: the sample after this
-      // one sees a released trigger, which is the edge a semi-automatic weapon needs.
+      // one sees a released trigger, which edge-triggered melee and throwables need.
       if (firing || clickLatch) buttons |= C.BTN_FIRE;
       clickLatch = false;
       if (alt) buttons |= C.BTN_ALT;

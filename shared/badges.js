@@ -96,6 +96,18 @@ export const BADGES = {
   shotgun: { top: 3000 },
   grenade: { top: 1500 },
   snowball: { top: 900 },
+  rifle_havoc: { top: 6000 },
+  rifle_falcon: { top: 6000 },
+  smg_kite: { top: 6000 },
+  smg_banshee: { top: 6000 },
+  pistol_wisp: { top: 3600 },
+  pistol_rook: { top: 3600 },
+  lmg_atlas: { top: 4500 },
+  lmg_colossus: { top: 4500 },
+  knife_karambit: { top: 900 },
+  knife_tanto: { top: 900 },
+  knife_bowie: { top: 900 },
+  knife_kukri: { top: 900 },
 };
 
 /**

@@ -25,6 +25,19 @@ export const WEAPON_IDS = [
   'shotgun',
   'flash',
   'smoke',
+  // Weapon overhaul. Append-only: these indices shipped after the original twelve.
+  'rifle_havoc',
+  'rifle_falcon',
+  'smg_kite',
+  'smg_banshee',
+  'pistol_wisp',
+  'pistol_rook',
+  'lmg_atlas',
+  'lmg_colossus',
+  'knife_karambit',
+  'knife_tanto',
+  'knife_bowie',
+  'knife_kukri',
 ];
 
 /**
@@ -258,12 +271,11 @@ export function spreadMul(s, wepId = null) {
  *          because it is the top of that gun's pattern, and a pattern with no top is
  *          a gun that ends up aimed at the sky.
  *
- * `auto` is whether HOLDING the trigger keeps firing. False means one round per click,
- * enforced on the server off an edge-triggered latch (`fireHeld` in server/room.js) for
- * the same reason jumping is: the client holds the button down for as long as the mouse
- * is down and cannot be the thing that decides a click ended. Every weapon declares it
- * — there is no default — because "which guns are automatic" is the single question
- * that separates a pistol from a rifle and it should be answerable by reading the table.
+ * `auto` is whether HOLDING the attack button repeats the weapon at its own legal
+ * `intervalMs`. All firearms opt in: holding a pistol, DMR, pump shotgun or bolt rifle
+ * does not bypass its action or cadence, it only saves the player from having to release
+ * and click again. Melee and thrown weapons remain edge-triggered because one press is
+ * one deliberate swing or throw. The server still owns the cadence in every case.
  *
  * `pellets` fires one shot as N independent traces from the same eye through the same
  * cone, each doing `dmg`. Only the shotgun has it; everything else fires a single
@@ -316,7 +328,8 @@ export function spreadMul(s, wepId = null) {
  */
 export const WEAPONS = {
   knife: {
-    label: 'KNIFE',
+    label: 'COMBAT KNIFE',
+    family: 'knife',
     kind: 'melee',
     dmg: 55,
     intervalMs: 480,
@@ -334,7 +347,8 @@ export const WEAPONS = {
     heavy: { dmg: 90, intervalMs: 1000, range: 2.6 },
   },
   pistol: {
-    label: 'PISTOL',
+    label: 'PX-9',
+    family: 'pistol',
     kind: 'hitscan',
     // Was 34, which is a three-shot kill: 220ms against the rifle's 390ms, the fastest
     // time-to-kill in the table by a wide margin and on the weapon with the second
@@ -369,10 +383,10 @@ export const WEAPONS = {
     mag: 12,
     reloadMs: 1200,
     slot: 2,
-    // One round per click. This is a CS2 pistol and it was firing like an SMG when
-    // you held the button — the report was "pistol should not fire when you hold
-    // left it is one bullet per click since it is not automatic like rifle".
-    auto: false,
+    // Hold-to-repeat at the pistol's own 135ms ceiling. This does not turn it into an
+    // SMG: cadence, recoil, magazine and damage remain the pistol's, and the server
+    // rejects every request that arrives before the next legal shot.
+    auto: true,
     pellets: 1,
     alt: null,
     // Snappier than the rifle per shot, and it settles between them at any paced
@@ -385,7 +399,8 @@ export const WEAPONS = {
     jam: 0.008,
   },
   rifle: {
-    label: 'RIFLE',
+    label: 'VANGUARD R7',
+    family: 'rifle',
     kind: 'hitscan',
     dmg: 25,
     intervalMs: 130,
@@ -412,7 +427,8 @@ export const WEAPONS = {
     // 100 is a one-shot body kill. That is the intended feel for sniper match, and
     // it is the most aggressive number in this table — the first dial to turn if
     // the mode plays too harshly.
-    label: 'SNIPER',
+    label: 'LONGBOW',
+    family: 'sniper',
     kind: 'hitscan',
     dmg: 100,
     intervalMs: 1200,
@@ -426,8 +442,9 @@ export const WEAPONS = {
     mag: 5,
     reloadMs: 2600,
     slot: 1,
-    // Bolt-action in everything but name: one round per click, no exceptions.
-    auto: false,
+    // Holding queues the next shot after the bolt cycle and the full 1200ms interval.
+    // The action still plays between every round; the player simply need not click again.
+    auto: true,
     // ...and now bolt-action in name too. `cycleMs` is how long the hand spends working
     // the action after a shot: it is what the 1200ms interval has always been *made of*
     // and never showed. "you dont reload each time it shots but you cocking the gun thats
@@ -480,7 +497,8 @@ export const WEAPONS = {
   // All four sit in slot 1 alongside the rifle and the sniper, so pressing 1 cycles
   // whatever primaries you happen to be carrying.
   smg: {
-    label: 'SMG',
+    label: 'VIPER-9',
+    family: 'smg',
     kind: 'hitscan',
     dmg: 18,
     intervalMs: 80,
@@ -503,7 +521,8 @@ export const WEAPONS = {
     jam: 0.012,
   },
   lmg: {
-    label: 'MACHINE GUN',
+    label: 'TITAN-100',
+    family: 'lmg',
     kind: 'hitscan',
     // Capacity and sustained pressure are the advantage. At 22 damage it needs five body
     // hits, so the hundred-round belt no longer also wins the opening duel against a rifle.
@@ -529,7 +548,8 @@ export const WEAPONS = {
     jam: 0.014,
   },
   semi: {
-    label: 'SEMI',
+    label: 'SENTINEL DMR',
+    family: 'dmr',
     kind: 'hitscan',
     // Three body hits, or one precise headshot. The old 58 made two body clicks kill in
     // 250ms, faster than every general-purpose automatic with none of their exposure.
@@ -544,7 +564,8 @@ export const WEAPONS = {
     mag: 10,
     reloadMs: 2100,
     slot: 1,
-    auto: false,
+    // Hold-to-repeat, rate-limited to one precision shot every 270ms.
+    auto: true,
     pellets: 1,
     alt: null,
     // A hard shove per round that has mostly recovered by the time the next click is
@@ -555,7 +576,8 @@ export const WEAPONS = {
     jam: 0.008,
   },
   shotgun: {
-    label: 'SHOTGUN',
+    label: 'BREACHER 12',
+    family: 'shotgun',
     kind: 'hitscan',
     // Per PELLET, not per shot. Eight of these is 136 at point-blank, and the spread
     // means a target at 20u eats two or three of them — the falloff is the geometry
@@ -568,7 +590,8 @@ export const WEAPONS = {
     mag: 8,
     reloadMs: 2900,
     slot: 1,
-    auto: false,
+    // Holding fires again only after the pump and the full 850ms cadence have elapsed.
+    auto: true,
     // Pump. Same contract as the sniper's bolt: cosmetic, and comfortably inside the
     // 850ms interval it is a part of. A pump gun that fires and then just sits there
     // between shots reads as a jam, which is the one thing it must not read as.
@@ -586,6 +609,7 @@ export const WEAPONS = {
   // rather than 0 so nothing reads a number here and believes it.
   grenade: {
     label: 'GRENADE',
+    family: 'grenade',
     kind: 'projectile',
     proj: 'grenade',
     dmg: null,
@@ -601,6 +625,7 @@ export const WEAPONS = {
   },
   snowball: {
     label: 'SNOWBALL',
+    family: 'snowball',
     kind: 'projectile',
     proj: 'snowball',
     dmg: null,
@@ -619,6 +644,7 @@ export const WEAPONS = {
   // weapon scoring above all — knows not to treat them as a way of killing someone.
   flash: {
     label: 'FLASHBANG',
+    family: 'utility',
     kind: 'projectile',
     proj: 'flash',
     dmg: null,
@@ -635,6 +661,7 @@ export const WEAPONS = {
   },
   smoke: {
     label: 'SMOKE',
+    family: 'utility',
     kind: 'projectile',
     proj: 'smoke',
     dmg: null,
@@ -648,6 +675,91 @@ export const WEAPONS = {
     pellets: 1,
     util: true,
     alt: 'lob',
+  },
+
+  // ── named arsenal variants ------------------------------------------------------
+  // These are separate gameplay weapons rather than finishes. Their family is stable
+  // metadata for the inventory and the future Creator Studio; their wire identity is the
+  // append-only key in WEAPON_IDS above.
+  rifle_havoc: {
+    label: 'HAVOC R4', family: 'rifle', kind: 'hitscan',
+    dmg: 30, intervalMs: 155, range: 210,
+    falloff: { start: 45, min: 0.78 }, spread: 0.0075,
+    mag: 30, reloadMs: 2100, slot: 1, auto: true, pellets: 1, alt: null,
+    recoil: { up: 0.04, side: 0.018, ramp: 6, max: 0.34 }, jam: 0.011,
+  },
+  rifle_falcon: {
+    label: 'FALCON C4', family: 'rifle', kind: 'hitscan',
+    dmg: 22, intervalMs: 105, range: 160,
+    falloff: { start: 35, min: 0.65 }, spread: 0.005,
+    mag: 35, reloadMs: 1700, slot: 1, auto: true, pellets: 1, alt: null,
+    recoil: { up: 0.024, side: 0.012, ramp: 10, max: 0.24 }, jam: 0.009,
+  },
+  smg_kite: {
+    label: 'KITE-9', family: 'smg', kind: 'hitscan',
+    dmg: 15, intervalMs: 72, range: 90,
+    falloff: { start: 12, min: 0.35 }, spread: 0.013,
+    mag: 36, reloadMs: 1450, slot: 1, auto: true, pellets: 1, alt: null,
+    recoil: { up: 0.014, side: 0.018, ramp: 14, max: 0.2 }, jam: 0.013,
+  },
+  smg_banshee: {
+    label: 'BANSHEE .45', family: 'smg', kind: 'hitscan',
+    dmg: 24, intervalMs: 120, range: 125,
+    falloff: { start: 18, min: 0.5 }, spread: 0.009,
+    mag: 25, reloadMs: 1700, slot: 1, auto: true, pellets: 1, alt: null,
+    recoil: { up: 0.026, side: 0.02, ramp: 7, max: 0.28 }, jam: 0.011,
+  },
+  pistol_wisp: {
+    label: 'WISP-9', family: 'pistol', kind: 'hitscan',
+    dmg: 20, intervalMs: 115, range: 90,
+    falloff: { start: 10, min: 0.4 }, spread: 0.0065,
+    mag: 18, reloadMs: 1100, slot: 2, auto: true, pellets: 1, alt: null,
+    recoil: { up: 0.022, side: 0.012, ramp: 4, max: 0.08 }, jam: 0.009,
+  },
+  pistol_rook: {
+    label: 'ROOK .45', family: 'pistol', kind: 'hitscan',
+    dmg: 40, intervalMs: 260, range: 140,
+    falloff: { start: 20, min: 0.55 }, spread: 0.0045,
+    mag: 8, reloadMs: 1450, slot: 2, auto: true, pellets: 1, alt: null,
+    recoil: { up: 0.048, side: 0.016, ramp: 2, max: 0.13 }, jam: 0.007,
+  },
+  lmg_atlas: {
+    label: 'ATLAS SAW', family: 'lmg', kind: 'hitscan',
+    dmg: 20, intervalMs: 90, range: 190,
+    falloff: { start: 35, min: 0.65 }, spread: 0.012,
+    mag: 60, reloadMs: 3200, slot: 1, auto: true, pellets: 1, alt: null,
+    recoil: { up: 0.022, side: 0.019, ramp: 12, max: 0.3 }, jam: 0.012,
+  },
+  lmg_colossus: {
+    label: 'COLOSSUS 120', family: 'lmg', kind: 'hitscan',
+    dmg: 28, intervalMs: 150, range: 240,
+    falloff: { start: 50, min: 0.78 }, spread: 0.016,
+    mag: 120, reloadMs: 5200, slot: 1, auto: true, pellets: 1, alt: null,
+    recoil: { up: 0.035, side: 0.025, ramp: 10, max: 0.38 }, jam: 0.016,
+  },
+  knife_karambit: {
+    label: 'KARAMBIT', family: 'knife', kind: 'melee',
+    dmg: 55, intervalMs: 480, range: 2.2, spread: 0,
+    mag: null, reloadMs: 0, slot: 3, auto: false, pellets: 1,
+    alt: 'heavy', heavy: { dmg: 90, intervalMs: 1000, range: 2.6 },
+  },
+  knife_tanto: {
+    label: 'TANTO', family: 'knife', kind: 'melee',
+    dmg: 55, intervalMs: 480, range: 2.2, spread: 0,
+    mag: null, reloadMs: 0, slot: 3, auto: false, pellets: 1,
+    alt: 'heavy', heavy: { dmg: 90, intervalMs: 1000, range: 2.6 },
+  },
+  knife_bowie: {
+    label: 'BOWIE', family: 'knife', kind: 'melee',
+    dmg: 55, intervalMs: 480, range: 2.2, spread: 0,
+    mag: null, reloadMs: 0, slot: 3, auto: false, pellets: 1,
+    alt: 'heavy', heavy: { dmg: 90, intervalMs: 1000, range: 2.6 },
+  },
+  knife_kukri: {
+    label: 'KUKRI', family: 'knife', kind: 'melee',
+    dmg: 55, intervalMs: 480, range: 2.2, spread: 0,
+    mag: null, reloadMs: 0, slot: 3, auto: false, pellets: 1,
+    alt: 'heavy', heavy: { dmg: 90, intervalMs: 1000, range: 2.6 },
   },
 };
 
@@ -820,16 +932,13 @@ export const RECOIL_RECOVER = 7;
  * 170ms very nearly sorts the table by itself, which is why it is one number rather than
  * a per-weapon one: the rifle (130), smg (80) and lmg (105) all fire faster than this and
  * so accumulate, while the semi (250), shotgun (850) and sniper (1200) all fire slower
- * and so recover between rounds. That split is almost exactly the automatic /
- * semi-automatic split, and it falls out rather than being declared twice.
+ * and so recover between rounds. That split is about cadence, independent of whether a
+ * player taps or holds the attack button.
  *
  * The pistol is the one weapon that sits on BOTH sides of the line, and deliberately so.
- * Its interval is 110ms, but it is semi-automatic, so what decides the side is the
- * player's own clicking rather than the gun: spam it and the rounds land inside this
- * window and the punch stacks, pace it past 170ms and every shot is placed from a
- * settled aim. That is the whole reason the interval was allowed below this number when
- * the pistol was sped up — the cadence became the player's to choose, so the recoil
- * follows what they chose.
+ * Its interval is below this window, so holding it stacks recoil. A player can still
+ * tap more slowly than 170ms to place every shot from settled aim; hold-to-repeat is a
+ * convenience, not a ban on pacing shots.
  */
 export const RECOIL_HOLD_MS = 170;
 
@@ -985,7 +1094,13 @@ export function rollLoadout(pool, rand = Math.random) {
 export const SWITCH_MS = 550;
 const SWITCH_OVERRIDES = {
   knife: 300,
+  knife_karambit: 290,
+  knife_tanto: 310,
+  knife_bowie: 340,
+  knife_kukri: 330,
   pistol: 420,
+  pistol_wisp: 390,
+  pistol_rook: 470,
   grenade: 420,
   snowball: 400,
   // `flash`, not `flashbang` — the id in WEAPON_IDS. A key that matches no weapon is
@@ -995,11 +1110,17 @@ const SWITCH_OVERRIDES = {
   flash: 420,
   smoke: 420,
   smg: 520,
+  smg_kite: 490,
+  smg_banshee: 560,
   semi: 620,
   rifle: 650,
+  rifle_havoc: 700,
+  rifle_falcon: 600,
   shotgun: 720,
   sniper: 820,
   lmg: 900,
+  lmg_atlas: 790,
+  lmg_colossus: 980,
 };
 export const switchMsOf = (id) => SWITCH_OVERRIDES[id] ?? SWITCH_MS;
 
@@ -1035,6 +1156,8 @@ export const heftOf = (id) =>
 
 export const weaponAt = (i) => WEAPONS[WEAPON_IDS[i]] ?? WEAPONS.rifle;
 export const idAt = (i) => WEAPON_IDS[i] ?? 'rifle';
+/** Stable category for inventory grouping and future Creator Studio templates. */
+export const familyOf = (id) => WEAPONS[id]?.family ?? 'unknown';
 
 export function indexOf(id) {
   const i = WEAPON_IDS.indexOf(id);

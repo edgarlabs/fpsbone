@@ -372,10 +372,11 @@ export class Room {
       /**
        * Was the trigger down on the last input we consumed?
        *
-       * This is what makes a semi-automatic weapon semi-automatic. The client holds
-       * the fire button for as long as the mouse is down and sets the bit on every
-       * tick, so "the click ended" is not something it can tell us — exactly the
-       * situation jumping is in, and this is `jumpHeld` in shared/movement.js again.
+       * This separates repeating firearms from one-action melee and throwables. The
+       * client holds the fire button for as long as the mouse is down and sets the bit
+       * on every tick, so "the click ended" is not something a swing or throw can infer
+       * from the current bit alone — exactly the situation jumping is in, and this is
+       * `jumpHeld` in shared/movement.js again.
        * Server-side only rather than part of the kinematic state, because fire is not
        * predicted: shots come back as EV.SHOT and the client never simulates one.
        */
@@ -687,12 +688,12 @@ export class Room {
         consumed++;
 
         this.applyWeapon(p, inp, now);
-        // Edge-triggered fire. The latch is updated here, inside the loop that
+        // Attack-button history. The latch is updated here, inside the loop that
         // consumes real inputs, and never by the starvation filler below — the filler
         // masks BTN_FIRE off (see FILLER_BUTTONS), so if it also cleared the latch a
         // player whose packets stalled for one tick would come back holding the button
-        // and get a free round out of a semi-automatic weapon. Not clearing it means a
-        // stall costs nothing and buys nothing, which is the correct answer for both.
+        // and get a free edge-triggered swing or throw. Not clearing it means a stall
+        // costs nothing and buys nothing, which is the correct answer for both.
         const fire = (inp.buttons & C.BTN_FIRE) !== 0;
         if (fire) this.tryFire(p, inp, now);
         p.fireHeld = fire;
@@ -1097,16 +1098,17 @@ export class Room {
   tryFire(p, inp, now) {
     if (p.switchUntil > now) return;
     if (p.reloadUntil > now) return;
-    // A jammed weapon does not fire, full stop. Ahead of the automatic/semi latch and
+    // A jammed weapon does not fire, full stop. Ahead of the repeat/edge latch and
     // the cadence gate on purpose: those two decide *when* the next round is allowed,
     // and this decides that there is not going to be one until the hands have fixed it.
     if (p.jammedUntil[p.wep] > now) return;
 
     const id = idAt(p.wep);
-    // One round per click on anything that is not automatic — the pistol, the semi,
-    // the shotgun, the sniper and the knife. `fireHeld` is the trigger's state on the
-    // previous input, so this rejects every tick of a hold after the first and lets the
-    // next press through the moment the button has been off for one tick.
+    // One action per press on anything that does not repeat — currently melee and
+    // throwables. Every firearm repeats while held, but still passes through the
+    // authoritative `nextFireAt` cadence below. `fireHeld` is the attack button's state
+    // on the previous input, so this rejects every tick of a held swing or throw after
+    // the first and lets the next press through after one released tick.
     //
     // It has to be here rather than on the client. The client sets BTN_FIRE for as long
     // as the mouse is down because that is what the button *is*; asking it to send one

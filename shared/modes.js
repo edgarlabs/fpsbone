@@ -14,8 +14,8 @@
  * The first entry is load-bearing: a client asking for a weapon the mode does not offer
  * gets this one instead, so the rifle stays at the front.
  *
- * All twelve are here rather than a curated five. In a mode that lets you pick, that
- * means slot 1 cycles the six primaries and slot 4 cycles the four throwables — which
+ * The complete approved arsenal is here rather than a curated five. In a mode that lets
+ * you pick, slot 1 cycles the primaries and slot 4 cycles the four throwables — which
  * is the point of having them. In deathmatch, where `randomLoadout` turns this list into
  * a pool, it means a life is one primary, the pistol, the knife and one thing to throw,
  * dealt fresh: see `rollLoadout`, which deals per SLOT precisely so a random hand is
@@ -23,14 +23,26 @@
  */
 const FULL = [
   'rifle',
-  'pistol',
-  'sniper',
-  'knife',
-  'grenade',
+  'rifle_havoc',
+  'rifle_falcon',
   'smg',
+  'smg_kite',
+  'smg_banshee',
   'lmg',
+  'lmg_atlas',
+  'lmg_colossus',
   'semi',
+  'sniper',
   'shotgun',
+  'pistol',
+  'pistol_wisp',
+  'pistol_rook',
+  'knife',
+  'knife_karambit',
+  'knife_tanto',
+  'knife_bowie',
+  'knife_kukri',
+  'grenade',
   'flash',
   'smoke',
 ];
@@ -61,7 +73,7 @@ export const MODES = {
     ctl: 'ffa',
     teams: false,
     slots: 10,
-    loadout: ['sniper', 'knife'],
+    loadout: ['sniper', 'knife', 'knife_karambit', 'knife_tanto', 'knife_bowie', 'knife_kukri'],
     respawnMs: 5000,
     killLimit: 15,
     timeMs: 480000,

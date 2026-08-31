@@ -442,12 +442,11 @@ function duel({
   };
 
   /**
-   * Step `n` ticks working the trigger the way this weapon has to be worked.
+   * Step `n` ticks working the attack button the way this weapon has to be worked.
    *
-   * An automatic weapon is held down; everything else is clicked, because the server
-   * fires non-automatic weapons on the trigger's falling-to-rising EDGE and a held
-   * button is therefore exactly one round. Holding regardless is what these tests used
-   * to do, which measured every semi-automatic weapon at one shot per two seconds.
+   * Every firearm is held down and repeats at its own cadence; melee and throwables are
+   * clicked because they fire on the button's falling-to-rising edge and a held button
+   * is therefore exactly one action.
    *
    * `extra` is held throughout, for the tests that need right-click down at the same
    * time — releasing left-click between shots must not release that too.
@@ -655,13 +654,9 @@ for (const id of DM.loadout) {
       `${s.length} shots, mag ${w.mag ?? '—'}`);
 }
 
-// Automatic versus semi-automatic, asserted directly rather than inferred from a rate.
-//
-// "pistol should not fire when you hold left it is one bullet per click since it is not
-// automatic like rifle" — reported twice, the second time after it had been called
-// fixed. The rate tests above cannot catch a regression here on their own, because they
-// now click: a server that went back to level-triggered firing would still pass every
-// one of them. This is the check that fails.
+// Held-repeat versus edge-triggered attacks, asserted directly rather than inferred
+// from a rate. Every firearm must keep shooting while left-click is held, but only at
+// its own authoritative interval. Melee and throwables remain one action per press.
 {
   const ticks = Math.round(2000 / STEP_MS);
   for (const id of WEAPON_IDS) {
@@ -676,7 +671,7 @@ for (const id of DM.loadout) {
       okB(fired === shotsIn(w, ticks), `${id} is automatic: holding keeps it firing`,
           `${fired} shots while held, expected ${shotsIn(w, ticks)}`);
     } else {
-      okB(fired === 1, `${id} is not automatic: holding fires exactly one`,
+      okB(fired === 1, `${id} is edge-triggered: holding fires exactly one`,
           `${fired} shots in ${Math.round(ticks * STEP_MS)}ms of held trigger`);
     }
   }
@@ -897,10 +892,9 @@ for (const id of DM.loadout) {
   okB(r.A.reloadUntil > r.room.now(), 'the last round auto-started a reload',
       `${Math.round(r.A.reloadUntil - r.room.now())}ms left`);
 
-  // Mid-reload the weapon must not fire, however hard the button is worked. Clicked
-  // rather than held, because the sniper is not automatic: holding would produce no
-  // shots whether the reload gate existed or not, and a test that cannot fail is worse
-  // than no test.
+  // Mid-reload the weapon must not fire, however hard the button is worked. `trigger`
+  // follows the weapon's declared behavior, which now means holding the sniper: without
+  // the reload gate it would fire the moment its cadence allowed, so this test can fail.
   const mid = r.events.length;
   r.trigger(Math.floor(w.reloadMs / STEP_MS) - 2);
   okB(r.events.slice(mid).every((e) => e.e !== EV.SHOT), 'reloading blocks firing',
@@ -3157,7 +3151,8 @@ const okD = (cond, label, detail = '') => {
 {
   const heavies = WEAPON_IDS.filter((id) => WEAPONS[id].alt === 'heavy');
   const blocks = WEAPON_IDS.filter((id) => WEAPONS[id].heavy);
-  okD(heavies.join() === 'knife', 'the knife is the one weapon with a heavy attack', `[${heavies}]`);
+  okD(heavies.length === 5 && heavies.every((id) => WEAPONS[id].family === 'knife'),
+      'all five knives, and only knives, have a heavy attack', `[${heavies}]`);
   okD(heavies.join() === blocks.join(), 'alt:heavy and a heavy stat block can never disagree',
       `alt [${heavies}] vs block [${blocks}]`);
   okD(WEAPON_IDS.every((id) => hasHeavy(id) === (WEAPONS[id].alt === 'heavy' && !!WEAPONS[id].heavy)),
@@ -3797,18 +3792,27 @@ const okE = (cond, label, detail = '') => {
       'the bind hint under the title is generated from these');
 
   // The HUD strip numbers by the weapon's own slot, not by position in the loadout.
-  // Those coincide for a dealt hand and diverge in sniper match, whose loadout is
-  // [sniper, knife] — position would label the knife "2" while 3 is the key that
-  // draws it.
+  // Those coincide for a dealt hand and diverge in sniper match, whose loadout has one
+  // sniper and five knife shapes — position would label them 2..6 while 3 is the key
+  // that cycles through every knife.
   const strip = MODES.sniper.loadout.map((id) => ({ id, slot: WEAPONS[id].slot }))
     .sort((a, b) => a.slot - b.slot);
-  okE(strip.map((s) => `${s.slot} ${s.id}`).join(', ') === '1 sniper, 3 knife',
+  const knifeStrip = strip.filter((s) => s.slot === 3);
+  okE(strip[0]?.id === 'sniper' && strip[0]?.slot === 1 && knifeStrip.length === 5
+      && knifeStrip.every((s) => WEAPONS[s.id].family === 'knife'),
       'the slot strip is numbered by slot, not by loadout position',
       strip.map((s) => `${s.slot} ${s.id}`).join(', '));
-  okE(MODES.sniper.loadout.every((id) => slotPick(MODES.sniper.loadout.map(indexOf),
-        WEAPONS[id].slot) === indexOf(id)),
-      'and every number it prints actually draws that weapon',
-      MODES.sniper.loadout.map((id) => `${WEAPONS[id].slot}→${id}`).join(', '));
+  const sniperHand = MODES.sniper.loadout.map(indexOf);
+  const knifeRing = [];
+  let knifeAt = -1;
+  for (let i = 0; i < knifeStrip.length; i++) {
+    knifeAt = slotPick(sniperHand, 3, knifeAt);
+    knifeRing.push(knifeAt);
+  }
+  okE(new Set(knifeRing).size === knifeStrip.length
+      && slotPick(sniperHand, 3, knifeRing.at(-1)) === knifeRing[0],
+      'and key 3 cycles through every knife model and wraps',
+      knifeRing.map((id) => WEAPON_IDS[id]).join(' → '));
 }
 
 console.log([...pE, ...fE].join('\n'));
@@ -4794,8 +4798,8 @@ const okG = (cond, label, detail = '') => {
       'a worked action finishes well inside the weapon\'s own fire interval',
       cyc.map((id) => `${id} ${cycleMsOf(id)}/${WEAPONS[id].intervalMs}ms `
         + `(${((cycleMsOf(id) / WEAPONS[id].intervalMs) * 100).toFixed(0)}%)`).join(', '));
-  okG(cyc.every((id) => !isAuto(id) && !thrown(id)),
-      'and only weapons you actually work by hand have one',
+  okG(cyc.every((id) => WEAPONS[id].kind === 'hitscan' && !thrown(id)),
+      'and only firearms with a manually worked action declare one',
       `[${cyc.join(', ')}]`);
 }
 
@@ -7065,9 +7069,9 @@ ${grabH(/    tick\(now\) \{[\s\S]*?\n    \},/, 'hud.tick')}
 
   card.badge(1000, { key: 'knife', count: 1, promoted: true, levelUp: true });
   const first = card.read();
-  okK(first.label === 'KNIFE' && first.tier === TIER_NAMES[0] && first.level === 'LEVEL 1'
+  okK(first.label === WEAPONS.knife.label && first.tier === TIER_NAMES[0] && first.level === 'LEVEL 1'
       && first.pips === `+${'.'.repeat(MAX_LEVEL - 1)}` && first.glyph === '#g-knife'
-      && first.count === `1 knife kill · ${BADGES.knife.at[1] - 1} to ${TIER_NAMES[0]} 2`
+      && first.count === `1 ${WEAPONS.knife.label.toLowerCase()} kill · ${BADGES.knife.at[1] - 1} to ${TIER_NAMES[0]} 2`
       && first.cls === 'b1 on up',
       'a first-ever knife kill reads as one lit pip, a Marksman 1, and a knife in the emblem',
       `${first.label} / ${first.tier} ${first.level} / ${first.pips} / "${first.count}" / `
@@ -7129,7 +7133,7 @@ ${grabH(/    tick\(now\) \{[\s\S]*?\n    \},/, 'hud.tick')}
   const handedOver = card.read();
   card.tick(26000);
   const cleared = card.read();
-  okK(midHold.label === 'HEADSHOT' && handedOver.label === 'SNIPER'
+  okK(midHold.label === 'HEADSHOT' && handedOver.label === WEAPONS.sniper.label
       && handedOver.queued === 0 && !cleared.cls.split(' ').includes('on'),
       'and the queue drains through the same tick that expires the hitmarker',
       `held → ${handedOver.label} → ${cleared.cls ? `class "${cleared.cls}"` : 'nothing'} — `

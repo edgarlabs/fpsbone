@@ -56,6 +56,14 @@ const GUNS = {
   // Broad and low with almost no crack — the one report in the game with more body
   // than edge, which is exactly how a shotgun differs from a rifle to the ear.
   shotgun: { peak: 1, decay: 0.24, cut0: 3200, cut1: 170, q: 0.6, f0: 95, f1: 32, tp: 0.75, td: 0.26, tail: 0.26, tailMs: 0.5 },
+  rifle_havoc: { peak: 0.94, decay: 0.18, cut0: 5100, cut1: 300, q: 0.82, f0: 132, f1: 40, tp: 0.58, td: 0.14 },
+  rifle_falcon: { peak: 0.78, decay: 0.12, cut0: 6100, cut1: 520, q: 1.05, f0: 175, f1: 55, tp: 0.42, td: 0.09 },
+  smg_kite: { peak: 0.52, decay: 0.058, cut0: 7200, cut1: 1120, q: 1.55, f0: 270, f1: 105, tp: 0.2, td: 0.04 },
+  smg_banshee: { peak: 0.72, decay: 0.095, cut0: 5700, cut1: 700, q: 1.2, f0: 205, f1: 70, tp: 0.32, td: 0.07 },
+  pistol_wisp: { peak: 0.58, decay: 0.075, cut0: 6500, cut1: 790, q: 1.35, f0: 230, f1: 80, tp: 0.25, td: 0.055 },
+  pistol_rook: { peak: 0.9, decay: 0.16, cut0: 4700, cut1: 280, q: 0.8, f0: 125, f1: 38, tp: 0.58, td: 0.13, tail: 0.1, tailMs: 0.24 },
+  lmg_atlas: { peak: 0.88, decay: 0.15, cut0: 5200, cut1: 340, q: 0.9, f0: 140, f1: 42, tp: 0.52, td: 0.12, tail: 0.14, tailMs: 0.28 },
+  lmg_colossus: { peak: 1, decay: 0.22, cut0: 4200, cut1: 210, q: 0.72, f0: 95, f1: 28, tp: 0.72, td: 0.18, tail: 0.26, tailMs: 0.46 },
 };
 
 /** Where the ear ends up at the height of a flashbang, and how it gets back.
