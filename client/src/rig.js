@@ -18,7 +18,7 @@
 
 import { halfHAt } from '../../shared/movement.js';
 import * as C from '../../shared/constants.js';
-import { WEAPON_IDS, heftOf, isUtil } from '../../shared/weapons.js';
+import { WEAPON_IDS, familyOf, heftOf, isUtil, scopes } from '../../shared/weapons.js';
 
 /**
  * Body proportions, in world units, relative to the body centre.
@@ -578,6 +578,50 @@ export const HOLDS = {
 };
 
 export const holdOf = (id) => HOLDS[id] ?? HOLDS.rifle;
+
+/**
+ * Category-specific ready/carry language for remote players.
+ *
+ * A hold answers where the hands touch a particular weapon. It deliberately does not
+ * answer how a soldier carries that category while running or shoulders it to aim. The
+ * old renderer used the hold for both questions, leaving every long gun at the same low
+ * chest/stomach line. These numbers are offsets from the authored grip, so weapon-specific
+ * hand placement remains exact while rifles, pistols, SMGs and machine guns stop sharing
+ * one mannequin pose.
+ *
+ * `readyLift` raises the weapon into a usable firing position. `walkDrop` and `walkPitch`
+ * lower its mass while moving. Scope terms only apply to a real optical weapon and bring
+ * its stock/optic into the face rather than merely narrowing the owner's camera.
+ */
+export const HANDLING = {
+  knife:    { readyLift: 0.035, readyBack: 0,     readyPitch: 0.12,  walkDrop: 0.075, walkBack: 0,     walkPitch: -0.16, scopeLift: 0,    scopeBack: 0,     scopePitch: 0 },
+  pistol:   { readyLift: 0.095, readyBack: -0.01, readyPitch: 0.015, walkDrop: 0.085, walkBack: 0.025, walkPitch: -0.13, scopeLift: 0,    scopeBack: 0,     scopePitch: 0 },
+  smg:      { readyLift: 0.105, readyBack: 0,     readyPitch: 0.025, walkDrop: 0.085, walkBack: 0.02,  walkPitch: -0.12, scopeLift: 0,    scopeBack: 0,     scopePitch: 0 },
+  rifle:    { readyLift: 0.12,  readyBack: 0.015, readyPitch: 0.03,  walkDrop: 0.09,  walkBack: 0.025, walkPitch: -0.11, scopeLift: 0,    scopeBack: 0,     scopePitch: 0 },
+  dmr:      { readyLift: 0.125, readyBack: 0.02,  readyPitch: 0.035, walkDrop: 0.095, walkBack: 0.03,  walkPitch: -0.12, scopeLift: 0,    scopeBack: 0,     scopePitch: 0 },
+  sniper:   { readyLift: 0.125, readyBack: 0.025, readyPitch: 0.03,  walkDrop: 0.115, walkBack: 0.035, walkPitch: -0.15, scopeLift: 0.08, scopeBack: 0.035, scopePitch: 0.055 },
+  shotgun:  { readyLift: 0.115, readyBack: 0.02,  readyPitch: 0.025, walkDrop: 0.105, walkBack: 0.035, walkPitch: -0.14, scopeLift: 0,    scopeBack: 0,     scopePitch: 0 },
+  lmg:      { readyLift: 0.085, readyBack: 0.035, readyPitch: 0.015, walkDrop: 0.075, walkBack: 0.045, walkPitch: -0.17, scopeLift: 0,    scopeBack: 0,     scopePitch: 0 },
+  grenade:  { readyLift: 0.035, readyBack: 0,     readyPitch: 0.08,  walkDrop: 0.055, walkBack: 0.015, walkPitch: -0.12, scopeLift: 0,    scopeBack: 0,     scopePitch: 0 },
+  snowball: { readyLift: 0.035, readyBack: 0,     readyPitch: 0.08,  walkDrop: 0.055, walkBack: 0.015, walkPitch: -0.12, scopeLift: 0,    scopeBack: 0,     scopePitch: 0 },
+  utility:  { readyLift: 0.035, readyBack: 0,     readyPitch: 0.08,  walkDrop: 0.055, walkBack: 0.015, walkPitch: -0.12, scopeLift: 0,    scopeBack: 0,     scopePitch: 0 },
+};
+
+/** Resolve a remote weapon's pose without three.js, so reach and category differences can
+ * be verified. `move` and `scope` are normalised visual amounts, not simulation state. */
+export function handlingPose(id, move = 0, scope = 0) {
+  const h = HANDLING[familyOf(id)] ?? HANDLING.rifle;
+  const aimed = scopes(id) ? Math.max(0, Math.min(1, scope)) : 0;
+  // A scoped body stays shouldered even if interpolation still reports the tail of a step.
+  const carried = Math.max(0, Math.min(1, move)) * (1 - aimed * 0.9);
+  return {
+    y: h.readyLift - h.walkDrop * carried + h.scopeLift * aimed,
+    z: h.readyBack + h.walkBack * carried + h.scopeBack * aimed,
+    pitch: h.readyPitch + h.walkPitch * carried + h.scopePitch * aimed,
+    aimed,
+    carried,
+  };
+}
 
 /**
  * Every weapon has to have a hold, and every hold has to be reachable. Checked at import,

@@ -115,6 +115,7 @@ import {
 import {
   RIG, ARM_UPPER, ARM_FORE, ARM_REACH, rigExtent, corpseDrop, solveHand, armFK, rotateXYZ,
   HOLDS, holdOf, ELBOW_HINT, IDLE_HAND, READY_HAND, JAM_HAND, CYCLE_HAND, HEFT,
+  HANDLING, handlingPose,
   DEAD_HAND, DEAD_GUN, deadGunZ, thrown, HITBOX_HALF_W,
 } from './client/src/rig.js';
 import {
@@ -1201,6 +1202,17 @@ for (const id of DM.loadout) {
   okB(snap.md?.kl === DM.killLimit, 'mode state reports the score target', `kl=${snap.md?.kl}`);
   okB(snap.players.every((p) => typeof p.w === 'number' && typeof p.tm === 'number'),
       'snapshot players carry weapon and team', JSON.stringify(snap.players[0]));
+  r.A.wep = indexOf('sniper');
+  r.A.scope = 1;
+  const scoped = r.room.snapshotBase().players.find((p) => p.id === r.idA);
+  okB(scoped.sc === 1,
+      'a remote player receives the sniper scope state needed to shoulder the weapon',
+      `public sc=${scoped.sc}`);
+  r.A.scope = 0;
+  const unscoped = r.room.snapshotBase().players.find((p) => p.id === r.idA);
+  okB(unscoped.sc === undefined,
+      'and the public scope field disappears when the glass is down',
+      'the common unscoped snapshot stays compact');
 }
 
 
@@ -4713,6 +4725,30 @@ const okG = (cond, label, detail = '') => {
       h.support ? ELBOW_HINT.support : ELBOW_HINT.idle,
     ]);
   }
+  // Ready, moving carry and optical aim translate/rotate the entire weapon, then solve both
+  // hands again. Measure those shipped category poses too; checking the authored rest hold
+  // alone would let a new animation pull a palm back off its grip.
+  for (const id of WEAPON_IDS) {
+    const h = holdOf(id);
+    for (const [name, move, scope] of [['ready', 0, 0], ['carry', 1, 0], ['aim', 0, 1]]) {
+      const p = handlingPose(id, move, scope);
+      const trigger = [h.grip[0], h.grip[1] + p.y, h.grip[2] + p.z];
+      targets.push([`${id} ${name} trigger`, 1, trigger, ELBOW_HINT.trigger]);
+      if (h.support) {
+        const d = rotateXYZ(
+          p.pitch, 0, 0,
+          h.support[0] - h.grip[0],
+          h.support[1] - h.grip[1],
+          h.support[2] - h.grip[2],
+        );
+        targets.push([
+          `${id} ${name} off`, -1,
+          [trigger[0] + d.x, trigger[1] + d.y, trigger[2] + d.z],
+          ELBOW_HINT.support,
+        ]);
+      }
+    }
+  }
   targets.push(['ready hand', -1, READY_HAND, ELBOW_HINT.idle]);
   targets.push(['dead trigger', 1, DEAD_HAND.trigger, ELBOW_HINT.dead]);
   targets.push(['dead off', -1, DEAD_HAND.support, ELBOW_HINT.dead]);
@@ -4867,10 +4903,29 @@ const okG = (cond, label, detail = '') => {
       'the remote character is assembled from shaped low-poly anatomy rather than body boxes',
       'tapered torso and limbs · rounded pelvis, joints and head · bevelled hard gear');
   okG(rnSrc.includes("orb(elbow, 0.115, 0.13, 0.13, 0, -ARM_FORE, 0, gearMat")
-      && rnSrc.includes('a.shoulders.position.z = a.kick * 0.09;')
+      && rnSrc.includes('a.shoulders.position.z = a.kick * 0.09 - handling.aimed * 0.025;')
       && rnSrc.includes('muzzleFlash.visible = now < a.flashUntil;'),
       'third-person arsenal handling has hands, shoulder recoil and a timed muzzle flash',
       'the hand centre is the IK endpoint shared with the grip, and the body absorbs every shot');
+  okG(Object.keys(HANDLING).length >= 11
+      && handlingPose('rifle', 0, 0).y > handlingPose('lmg', 0, 0).y
+      && handlingPose('sniper', 0, 1).y > handlingPose('sniper', 0, 0).y
+      && handlingPose('sniper', 1, 0).pitch < handlingPose('sniper', 0, 0).pitch,
+      'weapon families have distinct ready, moving-carry and optical-aim poses',
+      `rifle lift ${handlingPose('rifle', 0, 0).y.toFixed(3)} · lmg lift `
+      + `${handlingPose('lmg', 0, 0).y.toFixed(3)} · sniper scope `
+      + `${handlingPose('sniper', 0, 1).y.toFixed(3)}`);
+  okG(rnSrc.includes('poseUpper(a, p.pitch, p.yaw, p.sc ?? 0')
+      && rnSrc.includes('a.pivot.position.z = -handling.aimed')
+      && rnSrc.includes('handlingPose(a.wep, a.swing, a.scopePose)'),
+      'third-person scope, gait and firing pose are driven by live state rather than one generic hold',
+      'scope shoulders the optic · gait carries by family · shot impulse remains on the same IK rig');
+  okG(vmSrc.includes("from 'three/examples/jsm/geometries/RoundedBoxGeometry.js'")
+      && vmSrc.includes('new THREE.CylinderGeometry(w * 0.43, w * 0.56, len')
+      && vmSrc.includes('const roundBarrel = part[1] !== \'sphere\'')
+      && vmSrc.includes('new RoundedBoxGeometry(...FIST'),
+      'the first-person body and arsenal no longer render as raw boxes',
+      'tapered forearms · rounded hands/receivers · cylindrical barrels');
 
   /** Brace-match a `{...}` starting at or after `from` and evaluate it. */
   const braced = (src, from) => {

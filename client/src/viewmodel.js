@@ -1,6 +1,6 @@
 // First-person weapons, hands, recoil, muzzle flash and tracers.
 //
-// Each weapon is a handful of boxes parented to a `hand` group on the camera. All
+// Each weapon is a compact low-poly assembly parented to a `hand` group on the camera. All
 // rigs are built once at startup and one is shown at a time — swapping which is
 // visible is a flag, not construction, so a weapon change never hitches. The swap the
 // player *sees* is an animation over that flag: the old weapon goes down, the flag
@@ -10,6 +10,7 @@
 // kick interact for free: hold the trigger on the rifle and the kicks stack.
 
 import * as THREE from 'three';
+import { RoundedBoxGeometry } from 'three/examples/jsm/geometries/RoundedBoxGeometry.js';
 import * as C from '../../shared/constants.js';
 import {
   WEAPON_IDS,
@@ -854,21 +855,20 @@ const V = (x, y, z) => new THREE.Vector3(x, y, z);
 const FORWARD_Z = V(0, 0, 1);
 
 /**
- * A box stretched from `a` to `b`, oriented without touching the scene graph.
+ * A tapered forearm stretched from `a` to `b`, oriented without touching the scene graph.
  *
  * `Object3D.lookAt` would be shorter but it reads the parent's world matrix, so it
  * only gives the right answer if the whole chain above it has been updated — a
  * silent dependency on when this happens to be called. setFromUnitVectors has no
- * such dependency. Polarity does not matter: a centred box looks identical whether
- * its +z or its -z faces the target.
+ * such dependency. The cylinder is authored along +Y, then aimed directly at the wrist.
  */
 function limb(mat, a, b, w) {
   const dir = b.clone().sub(a);
   const len = dir.length();
   if (len < 1e-5) return null;
-  const mesh = new THREE.Mesh(new THREE.BoxGeometry(w, w, len), mat);
+  const mesh = new THREE.Mesh(new THREE.CylinderGeometry(w * 0.43, w * 0.56, len, 8, 1), mat);
   mesh.position.copy(a).addScaledVector(dir, 0.5);
-  mesh.quaternion.setFromUnitVectors(FORWARD_Z, dir.divideScalar(len));
+  mesh.quaternion.setFromUnitVectors(V(0, 1, 0), dir.divideScalar(len));
   return mesh;
 }
 
@@ -919,7 +919,10 @@ function buildArms(spec, side, dz) {
     h.userData.shoulder = shoulder.clone();
     h.userData.back = back.clone();
 
-    const fist = new THREE.Mesh(new THREE.BoxGeometry(...FIST), skin);
+    const fist = new THREE.Mesh(
+      new RoundedBoxGeometry(...FIST, 3, Math.min(...FIST) * 0.28),
+      skin,
+    );
     fist.position.copy(wrist);
     // Face the fist along the arm, so the knuckles sit across the weapon rather
     // than skewed to the world axes.
@@ -1135,10 +1138,23 @@ function buildRig(spec) {
     if (part[0] === 'steel' || part[0] === 'dark' || part[0] === 'trim') {
       finishMats.push({ role: part[0], mat });
     }
-    const geo =
-      part[1] === 'sphere'
-        ? new THREE.IcosahedronGeometry(part[2], 1) // faceted, to match the flat look
-        : new THREE.BoxGeometry(part[1], part[2], part[3]);
+    const roundBarrel = part[1] !== 'sphere'
+      && part[3] > Math.max(part[1], part[2]) * 3.4
+      && Math.abs(part[1] - part[2]) < Math.max(part[1], part[2]) * 0.35;
+    const geo = part[1] === 'sphere'
+      ? new THREE.IcosahedronGeometry(part[2], 1) // faceted, to match the flat look
+      : roundBarrel
+        ? new THREE.CylinderGeometry(
+          Math.max(part[1], part[2]) * 0.5,
+          Math.max(part[1], part[2]) * 0.5,
+          part[3],
+          10,
+          1,
+        )
+        : new RoundedBoxGeometry(
+          part[1], part[2], part[3], 2, Math.min(part[1], part[2], part[3]) * 0.16,
+        );
+    if (roundBarrel) geo.rotateX(Math.PI / 2);
     const mesh = new THREE.Mesh(geo, mat);
     const off = part[1] === 'sphere' ? part.slice(3) : part.slice(4);
     mesh.position.set(off[0], off[1], off[2] + dz);

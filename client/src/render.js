@@ -39,6 +39,7 @@ import {
   deadGunZ,
   JAM_HAND,
   CYCLE_HAND,
+  handlingPose,
   ARM_UPPER,
   ARM_FORE,
 } from './rig.js';
@@ -410,11 +411,18 @@ const rampIn = (p, lo, hi) => {
  *
  * @param pitch camera pitch from the snapshot, radians.
  * @param yaw   body yaw from the snapshot, for the turn lag.
+ * @param scopeStep public optical zoom step, 0 while the glass is down.
  * @param jamMs remaining stoppage from the snapshot's `jm`, 0 for a working weapon. Off the
  *   server countdown, not a local timer, so the punching stops on the tick the gun fires.
  */
-function poseUpper(a, pitch, yaw, jamMs, now, dtMs) {
+function poseUpper(a, pitch, yaw, scopeStep, jamMs, now, dtMs) {
   const dt = Math.min(0.1, Math.max(0.001, dtMs / 1000));
+
+  // Snapshot scope is discrete, but a shoulder does not teleport eight centimetres. Ease
+  // the body into/out of the glass quickly enough to read as deliberate shouldering.
+  const scopeTarget = scopeStep > 0 ? 1 : 0;
+  a.scopePose += (scopeTarget - a.scopePose) * (1 - Math.exp(-dt / 0.075));
+  const handling = handlingPose(a.wep, a.swing, a.scopePose);
 
   // Aim, arriving late by weight. `1 - e^(-dt/tau)` rather than a fixed fraction per frame,
   // so a 30fps client and a 240fps one see the same lag rather than the same stiffness.
@@ -432,8 +440,11 @@ function poseUpper(a, pitch, yaw, jamMs, now, dtMs) {
   const gaitLift = Math.abs(Math.sin(a.stride)) * 0.012 * a.swing;
   const braceRoll = Math.sin(a.stride) * 0.025 * a.swing;
   a.shoulders.position.y = RIG.shoulderY + breathe + gaitLift + Math.min(0.025, a.kick * 0.035);
-  a.shoulders.position.z = a.kick * 0.09;
-  a.shoulders.rotation.z = braceRoll - a.kick * 0.08;
+  a.shoulders.position.z = a.kick * 0.09 - handling.aimed * 0.025;
+  a.shoulders.rotation.z = braceRoll * (1 - handling.aimed * 0.8) - a.kick * 0.08;
+  // The cheek follows the optic a little. The actual camera/head pitch remains authoritative;
+  // this is a two-centimetre lean, not a second aim system.
+  a.pivot.position.z = -handling.aimed * 0.018;
   const muzzleFlash = a.gun?.userData.muzzleFlash;
   if (muzzleFlash) muzzleFlash.visible = now < a.flashUntil;
 
@@ -468,16 +479,16 @@ function poseUpper(a, pitch, yaw, jamMs, now, dtMs) {
   // Where the weapon points. Sag is a constant droop; recoil lifts the muzzle; the turn lag
   // is clamped because `trail` is per rad/s and a flick can exceed 3 rad/s, which unclamped
   // would swing an lmg 30deg off the body's facing.
-  const wrx = -a.sag + a.kick * 0.8 - 0.05 * stroke;
+  const wrx = -a.sag + handling.pitch + a.kick * 0.8 - 0.05 * stroke;
   const wry = Math.max(-0.35, Math.min(0.35, -a.turn * a.trail));
 
   // The trigger hand IS the weapon's origin, so this one position places both.
   const gx = hold.grip[0];
-  const gy = hold.grip[1] + a.kick * 0.1;
+  const gy = hold.grip[1] + handling.y + a.kick * 0.1;
   // Back, not just up. The viewmodel got the same correction for the same reason: recoil
   // that only pitches the weapon up reads as a flinch, and a body that never moves back
   // under a heavy gun does not look like it is carrying anything.
-  const gz = hold.grip[2] + a.kick * 0.45;
+  const gz = hold.grip[2] + handling.z + a.kick * 0.45;
 
   // The off hand, placed by ROTATING the grip-to-forend offset by the weapon's own rotation
   // rather than by a second hand-tuned target. That is what keeps it on the barrel through
@@ -680,9 +691,11 @@ function reviveAvatar(a) {
   // otherwise respawn still settling from the last shot of a previous life.
   a.kick = 0;
   a.kickVel = 0;
+  a.scopePose = 0;
   a.flashUntil = 0;
   a.shoulders.position.set(0, RIG.shoulderY, 0);
   a.shoulders.rotation.z = 0;
+  a.pivot.position.z = 0;
   for (const rig of a.rigs.values()) {
     if (rig.userData.muzzleFlash) rig.userData.muzzleFlash.visible = false;
   }
@@ -961,6 +974,8 @@ function makeAvatar(id) {
     kickVel: 0,
     /** Pitch the WEAPON has reached, which lags the pitch the head is already at. */
     aim: 0,
+    /** Smoothed public scope state, used to shoulder a remote sniper into its optic. */
+    scopePose: 0,
     /** Smoothed turn rate and the yaw it is differenced from, for the weapon's turn lag. */
     turn: 0,
     yawPrev: 0,
@@ -1666,7 +1681,7 @@ export function createScene(canvas, baseFov = 85) {
           // takes its share immediately and the shoulders take theirs late, by weight —
           // which is `poseUpper`'s job, along with the hands and the weapon.
           a.pivot.rotation.x = p.pitch * HEAD_PITCH;
-          poseUpper(a, p.pitch, p.yaw, p.jm ?? 0, now, dtMs);
+          poseUpper(a, p.pitch, p.yaw, p.sc ?? 0, p.jm ?? 0, now, dtMs);
           stepGait(a, p.x, p.z, dtMs);
           a.group.visible = true;
           continue;

@@ -1422,6 +1422,11 @@ export class Room {
         // that guessed at it would draw a standing body the server treats as ducked.
         cr: r3(p.crouch),
       };
+      // Public aiming state. Camera pitch says where somebody is looking; it cannot say
+      // whether a sniper has actually shouldered the glass. Without this field every other
+      // client must draw the same waist-level carry both scoped and unscoped. Omitted at 0
+      // because almost every player in almost every snapshot is not using an optic.
+      if (p.scope > 0) player.sc = p.scope;
       // Spawn protection, as milliseconds still to run. Omitted the moment it lapses,
       // which is almost always — it is two seconds out of a whole life.
       //
