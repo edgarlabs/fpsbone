@@ -77,6 +77,7 @@ import { readFileSync, writeFileSync, existsSync, unlinkSync, mkdirSync, rmdirSy
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import * as C from './shared/constants.js';
+import { createSocialService } from './server/social.js';
 import { ARENA, MAP, OBJECTIVE_SITES, SPAWNS, TEAM_SPAWNS, WORLD_BOXES } from './shared/map.js';
 import { ENVIRONMENT_ID, ZONE_LABELS } from './client/src/environment.js';
 import { rayWorld, overlapsBox, depenetrate, EPS } from './shared/collide.js';
@@ -10399,6 +10400,103 @@ function beginUse(room, p, site) {
 }
 
 console.log([...pV, ...fV].join('\n'));
+// ─────────────────────────────────────────── Part W: social lobby and matchmaking
+console.log('\n=== Part W — social presence, parties, and matchmaking ===\n');
+const pW = [], fW = [];
+const okW = (cond, label, detail = '') => {
+  (cond ? pW : fW).push(`${cond ? 'PASS' : 'FAIL'}  ${label}${detail ? `  — ${detail}` : ''}`);
+};
+
+{
+  let humans = 0;
+  const roomHumans = { dm: 0, arena: 0 };
+  const fakeHost = {
+    available: ['dm', 'arena'], regionCap: 20,
+    rooms: new Map([
+      ['dm', { room: { mode: { slots: 10 } } }],
+      ['arena', { room: { mode: { slots: 10 } } }],
+    ]),
+    occupancy: () => ({ ...roomHumans }),
+    get humans() { return humans; },
+  };
+  let serial = 0;
+  const social = createSocialService({ host: fakeHost, now: () => 1000, makeToken: () => `social-${++serial}` });
+  const alpha = social.open('account-alpha', 'Alpha');
+  const bravo = social.open('account-bravo', 'Bravo');
+  const charlie = social.open('account-charlie', 'Charlie');
+  okW(alpha.state.self.code.length === 8 && !alpha.state.self.code.includes('account'),
+    'friend codes are public aliases rather than account identifiers', alpha.state.self.code);
+  okW(humans === 0 && social.sessions === 3,
+    'opening social presence consumes no game seats', `${social.sessions} presence / ${humans} seats`);
+
+  social.action(alpha.token, { action: 'friend_request', code: bravo.state.self.code });
+  let bravoState = social.state(bravo.token);
+  okW(bravoState.requests.some((person) => person.code === alpha.state.self.code),
+    'an online player receives a friend request by public code');
+  social.action(bravo.token, { action: 'friend_accept', code: alpha.state.self.code });
+  okW(social.state(alpha.token).friends.some((person) => person.code === bravo.state.self.code),
+    'accepting creates the friendship on both sides');
+
+  social.action(alpha.token, { action: 'party_invite', code: bravo.state.self.code });
+  social.action(bravo.token, { action: 'party_accept', code: alpha.state.self.code });
+  const party = social.state(alpha.token).party;
+  okW(party?.members.length === 2 && party.leader === alpha.state.self.code,
+    'friends can form a two-player party with an explicit leader');
+  let followerBlocked = false;
+  try { social.action(bravo.token, { action: 'queue', modes: ['dm'] }); } catch (err) {
+    followerBlocked = err.message === 'social_leader_required';
+  }
+  okW(followerBlocked, 'only the party leader can start matchmaking');
+
+  const matched = social.action(alpha.token, { action: 'queue', modes: ['dm'] });
+  bravoState = social.state(bravo.token);
+  okW(matched.match?.mode === 'dm' && bravoState.match?.mode === 'dm',
+    'a party is matched together when the regional room has enough seats');
+
+  humans = 19;
+  roomHumans.dm = 10;
+  const waiting = social.action(charlie.token, { action: 'queue', modes: ['dm'] });
+  okW(waiting.queue?.modes[0] === 'dm' && !waiting.match,
+    'a full room remains queued instead of bypassing capacity');
+  const cancelled = social.action(charlie.token, { action: 'cancel' });
+  okW(!cancelled.queue && !cancelled.match, 'the queue can be cancelled without opening a socket');
+
+  const accountApiSource = readFileSync('./server/account-api.js', 'utf8');
+  const clientApiSource = readFileSync('./client/src/account-client.js', 'utf8');
+  okW(accountApiSource.includes("'social'") && clientApiSource.includes("signed('social'"),
+    'opening presence requires the same signed device proof as the account APIs');
+  const menuSource = readFileSync('./client/src/menu.js', 'utf8');
+  okW(menuSource.includes("performSocial('queue'") && menuSource.includes("performSocial('cancel')"),
+    'the lobby UI exposes queue start and cancellation');
+
+  let hostSerial = 0;
+  const heldHost = createHost({
+    nowNs: () => 0n,
+    makeToken: () => `held-${++hostSerial}`,
+    setTimer: () => ({ timer: hostSerial }),
+    clearTimer: () => {},
+  });
+  const held = heldHost.reserveMatch('dm', 10);
+  okW(held?.length === 10 && heldHost.occupancy().dm === 10,
+    'the game host atomically reserves a whole party against the visible room count');
+  const wire = [];
+  const admitted = heldHost.connect({
+    send: (payload) => wire.push(decode(payload)), isOpen: () => true, close: () => {}, rtt: () => 0,
+  });
+  admitted.start();
+  await admitted.message(encode({ t: MSG.HELLO, name: 'ticket owner', mode: 'arena', match: held[0] }));
+  okW(wire.some((message) => message?.t === MSG.WELCOME && message.mode === 'dm'),
+    'a valid ticket locks HELLO to its reserved mode rather than the client request');
+  const replayWire = [];
+  const replay = heldHost.connect({
+    send: (payload) => replayWire.push(decode(payload)), isOpen: () => true, close: () => {}, rtt: () => 0,
+  });
+  replay.start();
+  await replay.message(encode({ t: MSG.HELLO, name: 'ticket copier', mode: 'dm', match: held[0] }));
+  okW(replayWire.some((message) => message?.t === MSG.REJECT && message.reason === REJECT.MODE_FULL),
+    'a consumed ticket cannot clone its held seat when the room is reserved full');
+}
+console.log([...pW, ...fW].join('\n'));
 // ─────────────────────────────────────────── Part I: two live clients
 console.log('\n=== Part I — two live clients over the wire ===\n');
 
@@ -10596,8 +10694,9 @@ const total = fail.length + fB.length + fC.length + fD.length + fE.length + fF.l
   + fG.length + fH.length + fJ.length + fK.length + fL.length + fM.length + fN.length
   + fO.length + fP.length
   + fQ.length + fR.length + fS.length + fT.length + fU.length + fV.length
+  + fW.length
   + f2.length;
 console.log(
-  `\n${total === 0 ? 'ALL PASS' : `${total} FAILURE(S)`} — ${pass.length + pB.length + pC.length + pD.length + pE.length + pF.length + pG.length + pH.length + pJ.length + pK.length + pL.length + pM.length + pN.length + pO.length + pP.length + pQ.length + pR.length + pS.length + pT.length + pU.length + pV.length + p2.length} checks passed`,
+  `\n${total === 0 ? 'ALL PASS' : `${total} FAILURE(S)`} — ${pass.length + pB.length + pC.length + pD.length + pE.length + pF.length + pG.length + pH.length + pJ.length + pK.length + pL.length + pM.length + pN.length + pO.length + pP.length + pQ.length + pR.length + pS.length + pT.length + pU.length + pV.length + pW.length + p2.length} checks passed`,
 );
 process.exit(total === 0 ? 0 : 1);

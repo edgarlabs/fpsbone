@@ -123,6 +123,18 @@ export function createMenu(settings, cbs) {
     marketItems: $('market-items'),
     marketHistory: $('market-history'),
     marketState: $('market-state'),
+    socialCode: $('social-code'),
+    socialAddCode: $('social-add-code'),
+    socialAdd: $('social-add'),
+    socialStatus: $('social-status'),
+    socialRequests: $('social-requests'),
+    socialFriends: $('social-friends'),
+    socialInvites: $('social-invites'),
+    socialParty: $('social-party'),
+    socialQueueTitle: $('social-queue-title'),
+    socialQueueNote: $('social-queue-note'),
+    socialQueue: $('social-queue'),
+    socialCancel: $('social-cancel'),
   };
   const panes = [...document.querySelectorAll('.pane')];
   const screens = [...document.querySelectorAll('.screen')];
@@ -155,6 +167,8 @@ export function createMenu(settings, cbs) {
     state: 'loading', owned: new Set(sanitizeInventory()), submissions: [],
     credits: 0, market: [], transactions: [], purchasing: null,
   };
+  let socialState = null;
+  let socialBusy = false;
   let matchState = 'lobby';
   /** The action waiting for a key, or null. */
   let arming = null;
@@ -169,6 +183,103 @@ export function createMenu(settings, cbs) {
     tab.addEventListener('click', () => showScreen(tab.dataset.screen));
   }
   els.openSettings.addEventListener('click', () => showScreen('settings'));
+
+  function socialRow(person, actions = []) {
+    const row = document.createElement('div');
+    row.className = 'social-row';
+    const copy = document.createElement('div');
+    const name = document.createElement('b');
+    const meta = document.createElement('small');
+    name.textContent = person.name;
+    meta.textContent = `${person.code} · ${person.online ? person.status : 'offline'}`;
+    copy.append(name, meta);
+    row.append(copy);
+    if (actions.length) {
+      const group = document.createElement('div');
+      group.className = 'social-actions';
+      for (const [label, action, extra] of actions) {
+        const button = document.createElement('button');
+        button.type = 'button';
+        button.textContent = label;
+        button.disabled = socialBusy;
+        button.addEventListener('click', () => performSocial(action, { code: person.code, ...extra }));
+        group.append(button);
+      }
+      row.append(group);
+    }
+    return row;
+  }
+
+  function socialEmpty(text) {
+    const row = document.createElement('div');
+    row.className = 'note';
+    row.textContent = text;
+    return row;
+  }
+
+  function renderSocial() {
+    const ready = Boolean(socialState?.self);
+    els.socialCode.textContent = socialState?.self?.code ?? '--------';
+    els.socialAdd.disabled = !ready || socialBusy;
+    els.socialRequests.replaceChildren(...(socialState?.requests?.length
+      ? [socialEmpty('FRIEND REQUESTS'), ...socialState.requests.map((person) => socialRow(person, [['accept', 'friend_accept']]))]
+      : []));
+    els.socialFriends.replaceChildren(...(socialState?.friends?.length
+      ? socialState.friends.map((person) => socialRow(person, person.online
+        ? [['invite', 'party_invite'], ['remove', 'friend_remove']]
+        : [['remove', 'friend_remove']]))
+      : [socialEmpty(ready ? 'No friends added yet.' : 'Verified online account required.')]));
+    els.socialInvites.replaceChildren(...(socialState?.invites?.length
+      ? [socialEmpty('PARTY INVITES'), ...socialState.invites.map((person) => socialRow(person, [['join', 'party_accept']]))]
+      : []));
+    const party = socialState?.party;
+    els.socialParty.replaceChildren(...(party?.members?.length
+      ? party.members.map((person) => socialRow(person))
+      : [socialEmpty('You are currently solo.')]));
+    if (party?.members?.length) {
+      const leave = document.createElement('button');
+      leave.type = 'button'; leave.className = 'social-button alt'; leave.textContent = 'leave party';
+      leave.disabled = socialBusy;
+      leave.addEventListener('click', () => performSocial('party_leave'));
+      els.socialParty.append(leave);
+    }
+    const queued = Boolean(socialState?.queue);
+    const matched = socialState?.match;
+    els.socialQueueTitle.textContent = matched ? `Match found · ${matched.mode}`
+      : queued ? 'Searching regional lobbies…' : 'Quick match';
+    els.socialQueueNote.textContent = matched ? 'Joining through the authoritative game server now.'
+      : queued ? `Party queued for ${socialState.queue.modes.join(', ').toUpperCase()}. Keep this page open.`
+        : `Queue for ${MODES[settings.mode]?.label ?? settings.mode}. Full servers remain closed.`;
+    els.socialQueue.disabled = !ready || socialBusy || queued || Boolean(matched);
+    els.socialCancel.hidden = !queued;
+    els.socialCancel.disabled = socialBusy;
+  }
+
+  async function performSocial(action, extra = {}) {
+    if (socialBusy) return;
+    socialBusy = true;
+    els.socialStatus.textContent = 'Updating social lobby…';
+    renderSocial();
+    try {
+      const result = await cbs.onSocialAction?.(action, extra);
+      if (result?.state || result?.self) socialState = result.state ?? result;
+      els.socialStatus.textContent = 'Presence online · no match seat used';
+    } catch (err) {
+      els.socialStatus.textContent = String(err?.message ?? 'social request failed').replaceAll('_', ' ');
+    } finally {
+      socialBusy = false;
+      renderSocial();
+    }
+  }
+
+  els.socialAdd.addEventListener('click', () => {
+    const code = els.socialAddCode.value.trim();
+    if (!code) return;
+    els.socialAddCode.value = '';
+    performSocial('friend_request', { code });
+  });
+  els.socialQueue.addEventListener('click', () => performSocial('queue', { modes: [settings.mode] }));
+  els.socialCancel.addEventListener('click', () => performSocial('cancel'));
 
   // ───────────────────────────────────────────────────────────── settings tabs
   for (const tab of els.tabs.children) {
@@ -883,6 +994,7 @@ export function createMenu(settings, cbs) {
   renderWeapons();
   renderFinishes();
   renderProfile();
+  renderSocial();
   refreshAll();
 
   return {
@@ -1046,6 +1158,13 @@ export function createMenu(settings, cbs) {
       renderInventoryPreview(MODES[settings.mode].randomLoadout ? null : settings.wep);
       renderSubmissions();
       renderMarketplace();
+    },
+    setSocialState(next) {
+      socialState = next?.state ?? next ?? null;
+      els.socialStatus.textContent = socialState?.self
+        ? 'Presence online · no match seat used'
+        : 'Social service unavailable.';
+      renderSocial();
     },
     /** The career is private owner data; current kills/deaths come from this match's snapshot. */
     setPlayerStats(next) {

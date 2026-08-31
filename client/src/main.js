@@ -134,6 +134,8 @@ const accountApi = useLocalHost ? null : createAccountClient({
   origin: accountOrigin(url),
   identity,
 });
+let socialToken = null;
+let socialMatchJoining = false;
 /** What we asked for, kept because the server may seat us somewhere else. */
 let requestedMode = settings.mode;
 
@@ -389,6 +391,11 @@ const menu = createMenu(settings, {
     if (!accountApi) throw new Error('account_unavailable');
     return accountApi.purchase(finish);
   },
+  onSocialAction: async (action, extra) => {
+    if (!accountApi || !socialToken) throw new Error('social_unavailable');
+    const result = await accountApi.socialAction(socialToken, action, extra);
+    return result;
+  },
   onRecoveryExport: () => exportRecoveryCode(identity),
   onRecoveryImport: async (code) => {
     await importRecoveryCode(code, identity);
@@ -429,6 +436,25 @@ if (accountApi) {
       career: profile.career, xp: profile.xp, stats: profile.stats, kills: 0, deaths: 0,
     });
   }).catch(() => menu.setInventoryState({ state: 'offline' }));
+
+  const adoptSocial = async (state) => {
+    menu.setSocialState(state);
+    if (!state?.match || lifecycle !== 'lobby' || socialMatchJoining) return;
+    socialMatchJoining = true;
+    selectLobbyMode(state.match.mode);
+    net.setMatchTicket(state.match.ticket);
+    joinOrResume();
+  };
+  accountApi.openSocial(identity.displayName).then(({ token, state }) => {
+    socialToken = token;
+    adoptSocial(state);
+    setInterval(() => {
+      if (!socialToken) return;
+      accountApi.socialState(socialToken)
+        .then(({ state: next }) => adoptSocial(next))
+        .catch(() => menu.setSocialState(null));
+    }, 4000);
+  }).catch(() => menu.setSocialState(null));
 } else {
   menu.setInventoryState({
     state: identity.verified ? 'local' : 'guest',
@@ -618,6 +644,8 @@ function leaveMatch() {
   menu.setPlayerStats({ career: currentCareer, xp: currentXp, stats: currentAccountStats, kills: 0, deaths: 0 });
   hud.showStart('left match · seat released');
   pollLobby();
+  socialMatchJoining = false;
+  if (socialToken) accountApi?.socialAction(socialToken, 'presence', { status: 'lobby' }).catch(() => {});
 }
 
 function returnToLobby() {
@@ -627,6 +655,8 @@ function returnToLobby() {
   menu.setPlayerStats({ career: currentCareer, xp: currentXp, stats: currentAccountStats, kills: 0, deaths: 0 });
   hud.showStart('select a match to join');
   pollLobby();
+  socialMatchJoining = false;
+  if (socialToken) accountApi?.socialAction(socialToken, 'presence', { status: 'lobby' }).catch(() => {});
 }
 
 function replayMatch() {
@@ -680,6 +710,8 @@ net.on('reject', (m) => {
   menu.setMatchState('lobby');
   hud.showStart(text);
   pollLobby();
+  socialMatchJoining = false;
+  if (socialToken) accountApi?.socialAction(socialToken, 'presence', { status: 'lobby' }).catch(() => {});
 });
 
 // How full every lobby is. Arrives twice over: once on WELCOME as `lob` so the menu is
@@ -700,6 +732,8 @@ net.on('welcome', (m) => {
   menu.setLobby(m.lob ?? {});
   menu.setPopulation(m.pop ?? {});
   menu.setAccount(m.account ?? {});
+  socialMatchJoining = false;
+  if (socialToken) accountApi?.socialAction(socialToken, 'presence', { status: 'playing' }).catch(() => {});
   if (m.inventory) {
     const finish = m.inventory.equipped?.finish ?? DEFAULT_FINISH;
     setIdentityCosmetics(identity, { finish });

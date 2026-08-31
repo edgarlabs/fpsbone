@@ -114,6 +114,10 @@ export function createHost({
   // into eleven while reclaiming the slot it was promised.
   const rooms = new Map();
   const reservations = new Map(); // opaque resume token -> reservation
+  // Opaque, short-lived seats created by the lobby matchmaker. Unlike reconnect
+  // reservations they have no Room player yet, but they count against both gates so a
+  // party cannot be split by an ordinary join during its account checks.
+  const matchTickets = new Map();
   const startedNs = nowNs();
   const recentSteps = [];
   const recentSnapshots = [];
@@ -157,11 +161,47 @@ export function createHost({
   const pickRoom = (want) => (rooms.has(want) ? want : DEFAULT_MODE);
 
   const seatsOf = (slot) => slot.clients.size + slot.reserved.size;
+  const ticketsFor = (modeId) => {
+    let n = 0;
+    for (const ticket of matchTickets.values()) if (ticket.mode === modeId) n++;
+    return n;
+  };
   const humansTotal = () => {
     let n = 0;
     for (const slot of rooms.values()) n += seatsOf(slot);
     return n;
   };
+  const admissionTotal = () => humansTotal() + matchTickets.size;
+
+  function releaseMatchTicket(ticket) {
+    if (!ticket || matchTickets.get(ticket.token) !== ticket) return;
+    matchTickets.delete(ticket.token);
+    clearTimer(ticket.timer);
+  }
+
+  /** Atomically hold a whole party's seats. The returned tokens are individually consumed
+   *  by HELLO; null means neither the room nor the regional gate has enough space. */
+  function reserveMatch(modeId, count, ttlMs = 15_000) {
+    const slot = rooms.get(modeId);
+    const seats = Math.floor(Number(count));
+    if (!slot || seats < 1 || seats > slot.room.mode.slots) return null;
+    if (admissionTotal() + seats > C.REGION_HUMAN_CAP) return null;
+    if (seatsOf(slot) + ticketsFor(modeId) + seats > slot.room.mode.slots) return null;
+    const made = [];
+    for (let i = 0; i < seats; i++) {
+      const token = makeToken();
+      const ticket = { token, mode: modeId, claimed: false, timer: null };
+      matchTickets.set(token, ticket);
+      ticket.timer = setTimer(() => {
+        if (matchTickets.get(token) !== ticket || ticket.claimed) return;
+        releaseMatchTicket(ticket);
+        pushLobby();
+      }, Math.max(1000, Math.min(30_000, Math.floor(Number(ttlMs)) || 15_000)));
+      made.push(token);
+    }
+    pushLobby();
+    return made;
+  }
 
   /** Throw away every transient thing in an empty match, including controller timers and
    *  scores. Replacing the Room is both more complete and less fragile than teaching the
@@ -217,7 +257,7 @@ export function createHost({
    */
   const lobbyState = () => {
     const out = {};
-    for (const [modeId, slot] of rooms) out[modeId] = seatsOf(slot);
+    for (const [modeId, slot] of rooms) out[modeId] = seatsOf(slot) + ticketsFor(modeId);
     return out;
   };
 
@@ -238,7 +278,7 @@ export function createHost({
     };
     for (const [modeId, slot] of rooms) {
       const connected = slot.clients.size;
-      const reserved = slot.reserved.size;
+      const reserved = slot.reserved.size + ticketsFor(modeId);
       const humans = connected + reserved;
       const bots = slot.room.bots.size;
       const capacity = slot.room.mode.slots;
@@ -509,6 +549,7 @@ export function createHost({
     let dropped = false;
     let accountType = 'guest';
     let accountProfile = null;
+    let matchTicket = null;
     const challenge = makeToken();
 
     const sendWelcome = (modeId) => {
@@ -587,28 +628,42 @@ export function createHost({
           return;
         }
 
+        // A matchmaking ticket holds one exact seat. Claiming prevents a copied token from
+        // opening two sockets, while leaving the record in the map keeps that seat counted
+        // during the asynchronous account/inventory read below.
+        const offeredTicket = typeof m.match === 'string' ? matchTickets.get(m.match) : null;
+        if (offeredTicket && !offeredTicket.claimed) {
+          offeredTicket.claimed = true;
+          clearTimer(offeredTicket.timer);
+          matchTicket = offeredTicket;
+        }
+
         let identity = null;
         try {
           identity = resolveIdentity?.(m, challenge) ?? null;
         } catch {
-          reject(REJECT.IDENTITY_INVALID, pickRoom(m.mode));
+          const refusedMode = matchTicket?.mode ?? pickRoom(m.mode);
+          releaseMatchTicket(matchTicket);
+          matchTicket = null;
+          pushLobby();
+          reject(REJECT.IDENTITY_INVALID, refusedMode);
           return;
         }
 
-        const modeId = pickRoom(m.mode);
+        const modeId = matchTicket?.mode ?? pickRoom(m.mode);
         slot = rooms.get(modeId);
 
         // The regional gate is checked before the room gate so a process at 20/20 tells
         // the truth even when the requested room also happens to be full. Node dispatches
         // handshakes serially, so checking and inserting in this same callback makes the
         // final seat atomic: two callers cannot both observe 19 and become player twenty.
-        if (humansTotal() >= C.REGION_HUMAN_CAP) {
+        if (!matchTicket && admissionTotal() >= C.REGION_HUMAN_CAP) {
           totals.serverFull++;
           reject(REJECT.SERVER_FULL, modeId);
           slot = null;
           return;
         }
-        if (seatsOf(slot) >= slot.room.mode.slots) {
+        if (!matchTicket && seatsOf(slot) + ticketsFor(modeId) >= slot.room.mode.slots) {
           totals.modeFull++;
           reject(REJECT.MODE_FULL, modeId);
           slot = null;
@@ -624,7 +679,12 @@ export function createHost({
         let profile;
         if (account && ranks.authorizeCosmetics) {
           const authorized = await ranks.authorizeCosmetics(account, grantedCosmetics);
-          if (dropped || !client.isOpen()) return;
+          if (dropped || !client.isOpen()) {
+            releaseMatchTicket(matchTicket);
+            matchTicket = null;
+            pushLobby();
+            return;
+          }
           profile = authorized.profile;
           grantedCosmetics = authorized.cosmetics;
         } else {
@@ -634,14 +694,19 @@ export function createHost({
         }
         // Database-backed ownership checks yield. Recheck both limits after that yield so two
         // simultaneous handshakes cannot both observe the final free seat and overfill it.
-        if (dropped || !client.isOpen()) return;
-        if (humansTotal() >= C.REGION_HUMAN_CAP) {
+        if (dropped || !client.isOpen()) {
+          releaseMatchTicket(matchTicket);
+          matchTicket = null;
+          pushLobby();
+          return;
+        }
+        if (!matchTicket && admissionTotal() >= C.REGION_HUMAN_CAP) {
           totals.serverFull++;
           reject(REJECT.SERVER_FULL, modeId);
           slot = null;
           return;
         }
-        if (seatsOf(slot) >= slot.room.mode.slots) {
+        if (!matchTicket && seatsOf(slot) + ticketsFor(modeId) >= slot.room.mode.slots) {
           totals.modeFull++;
           reject(REJECT.MODE_FULL, modeId);
           slot = null;
@@ -657,6 +722,8 @@ export function createHost({
         player.xp = profile.xp ?? 0;
         player.accountStats = profile.stats ?? {};
         slot.clients.set(id, client);
+        releaseMatchTicket(matchTicket);
+        matchTicket = null;
         totals.joins++;
         // Backfill immediately, so this player's WELCOME population and first snapshot
         // already show the full room. After `add`, so bots spawn away from the human; after
@@ -682,7 +749,13 @@ export function createHost({
 
     const drop = ({ reserve = false } = {}) => {
       dropped = true;
-      if (id === null) return;
+      if (id === null) {
+        const hadTicket = Boolean(matchTicket);
+        releaseMatchTicket(matchTicket);
+        matchTicket = null;
+        if (hadTicket) pushLobby();
+        return;
+      }
       totals.disconnects++;
       const name = slot.room.players.get(id)?.name ?? '?';
 
@@ -822,6 +895,8 @@ export function createHost({
 
   return {
     available: AVAILABLE,
+    regionCap: C.REGION_HUMAN_CAP,
+    reserveMatch,
     pending,
     connect,
     advance,

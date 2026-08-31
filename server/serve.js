@@ -41,6 +41,7 @@ import { REGIONS, regionsFromEnv } from '../shared/regions.js';
 import { createHost } from './index.js';
 import { verifyDeviceIdentity } from './identity.js';
 import { createAccountGateway } from './account-api.js';
+import { createSocialService } from './social.js';
 // The only filesystem-touching module under server/, and imported here and nowhere
 // else — see the header of ranks.js for why room.js must not reach it.
 import * as ranks from './ranks.js';
@@ -121,6 +122,7 @@ const accountGateway = createAccountGateway({
   ranks,
   adminToken: process.env.FPSBONE_ADMIN_TOKEN?.trim() ?? '',
 });
+const social = createSocialService({ host });
 let rateLimitedTotal = 0;
 let handshakeTimeoutTotal = 0;
 let socketAcceptedTotal = 0;
@@ -218,6 +220,41 @@ async function serveApi(req, res, url) {
       return true;
     }
     json(res, 404, { error: 'not_found' });
+    return true;
+  }
+
+  if (req.method === 'POST' && url.pathname.startsWith('/api/social/')) {
+    try {
+      const body = await readJson(req);
+      if (url.pathname === '/api/social/open') {
+        const identity = await accountGateway.authenticate('social', body);
+        json(res, 200, social.open(identity.id, body.name));
+        return true;
+      }
+      if (url.pathname === '/api/social/state') {
+        json(res, 200, { state: social.state(body.token) });
+        return true;
+      }
+      if (url.pathname === '/api/social/action') {
+        json(res, 200, { state: social.action(body.token, body) });
+        return true;
+      }
+      json(res, 404, { error: 'not_found' });
+    } catch (err) {
+      const known = new Set([
+        'body_too_large', 'body_invalid', 'challenge_invalid', 'identity_required',
+        'bad_identity_shape', 'bad_identity_signature', 'bad_identity_key',
+        'social_session_invalid', 'social_player_unavailable', 'social_request_missing',
+        'social_friend_required', 'social_leader_required', 'social_party_full',
+        'social_invite_missing', 'social_party_offline', 'social_mode_invalid',
+        'social_action_invalid',
+      ]);
+      const error = known.has(err?.message) ? err.message : 'social_failed';
+      const status = error === 'social_session_invalid' ? 401
+        : error.includes('identity') || error === 'challenge_invalid' ? 401
+          : error === 'social_failed' ? 500 : 400;
+      json(res, status, { error });
+    }
     return true;
   }
 

@@ -40,10 +40,25 @@ export function createAccountClient({ origin, identity, fetcher = fetch } = {}) 
     return body;
   }
 
+  async function social(path, token, extra = {}) {
+    const response = await fetcher(`${origin}${path}`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      cache: 'no-store',
+      body: JSON.stringify({ token, ...extra }),
+    });
+    const body = await response.json().catch(() => ({}));
+    if (!response.ok) throw new Error(body.error ?? 'social_unavailable');
+    return body;
+  }
+
   return {
     profile: () => signed('profile', '/api/account/profile'),
     equip: (finish) => signed('equip', '/api/account/equip', { finish }),
     submit: (submission) => signed('submit', '/api/account/submissions', { submission }),
     purchase: (finish) => signed('purchase', '/api/account/purchase', { finish }),
+    openSocial: (name) => signed('social', '/api/social/open', { name }),
+    socialState: (token) => social('/api/social/state', token),
+    socialAction: (token, action, extra = {}) => social('/api/social/action', token, { action, ...extra }),
   };
 }

@@ -45,6 +45,7 @@ export function createNet({
   let ws = null;
   let open = false;
   let resumeToken = null;
+  let matchTicket = null;
   let retryTimer = null;
   let retryCount = 0;
   let rejected = false;
@@ -89,6 +90,7 @@ export function createNet({
           ...(auth ? { auth } : {}),
           mode: requestedMode,
           ...(resumeToken ? { resume: resumeToken } : {}),
+          ...(!resumeToken && matchTicket ? { match: matchTicket } : {}),
         });
       }).catch(() => {
         if (serial === connectionSerial) {
@@ -106,12 +108,14 @@ export function createNet({
       return;
     }
     if (m.t === MSG.WELCOME) {
+      matchTicket = null;
       if (typeof m.resume === 'string' && m.resume) resumeToken = m.resume;
       retryCount = 0;
       if (m.pop && typeof m.pop === 'object') emit('population', m.pop);
       return emit('welcome', m);
     }
     if (m.t === MSG.REJECT) {
+      matchTicket = null;
       rejected = true;
       wanted = false;
       if (m.lob && typeof m.lob === 'object') emit('lobby', m.lob);
@@ -222,6 +226,10 @@ export function createNet({
     setMode(id) {
       if (typeof id === 'string' && id) requestedMode = id;
     },
+    /** Hold the opaque seat issued by regional matchmaking for the next HELLO only. */
+    setMatchTicket(token) {
+      matchTicket = typeof token === 'string' && token ? token : null;
+    },
     /**
      * An intentional departure. Invalidating the serial before closing makes the close
      * callback a no-op locally, while code 1000 tells the host not to reserve the seat.
@@ -232,6 +240,7 @@ export function createNet({
       cancelRetry(retryTimer);
       retryTimer = null;
       resumeToken = null;
+      matchTicket = null;
       open = false;
       const socket = ws;
       ws = null;

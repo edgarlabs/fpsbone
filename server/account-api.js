@@ -7,7 +7,7 @@
 import { randomUUID, timingSafeEqual } from 'node:crypto';
 import { verifyDeviceIdentity } from './identity.js';
 
-export const ACCOUNT_PURPOSES = Object.freeze(['profile', 'equip', 'submit', 'purchase']);
+export const ACCOUNT_PURPOSES = Object.freeze(['profile', 'equip', 'submit', 'purchase', 'social']);
 const TTL_MS = 60_000;
 const MAX_CHALLENGES = 2048;
 

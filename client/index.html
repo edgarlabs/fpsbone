@@ -886,6 +886,30 @@
       .submission-row small { margin-top: 4px; color: var(--dim); font-size: 8px; }
       .submission-row em { align-self: start; padding: 2px 5px; color: var(--self); border: 1px solid currentColor; font-size: 7px; font-style: normal; letter-spacing: .8px; text-transform: uppercase; }
       .settings-screen { max-width: 900px; margin: 0 auto; }
+      .social-screen { max-width: 1000px; margin: 0 auto; }
+      .social-grid { display: grid; grid-template-columns: 1.05fr .95fr; gap: 16px; }
+      .social-panel { padding: 18px; border: 1px solid var(--line); background: rgba(13,22,31,.82); }
+      .social-panel h3 { margin: 4px 0 7px; color: #fff; font-size: 14px; letter-spacing: 1px; text-transform: uppercase; }
+      .social-panel p { font-size: 9px; line-height: 1.55; }
+      .social-code { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin: 14px 0; padding: 13px; border: 1px solid rgba(53,196,155,.35); background: rgba(53,196,155,.055); }
+      .social-code span { color: var(--dim); font-size: 8px; text-transform: uppercase; }
+      .social-code b { color: var(--self); font-size: 18px; letter-spacing: 3px; }
+      .social-add { display: grid; grid-template-columns: 1fr auto; gap: 8px; }
+      .social-add input { min-width: 0; padding: 9px 10px; color: var(--ink); border: 1px solid var(--line); background: #070d13; font: inherit; font-size: 10px; letter-spacing: 1px; text-transform: uppercase; }
+      .social-button { padding: 9px 12px; color: #06130f; border: 0; background: var(--self); cursor: pointer; font: inherit; font-size: 8px; font-weight: 700; letter-spacing: .8px; text-transform: uppercase; }
+      .social-button.alt { color: var(--ink); border: 1px solid var(--line); background: transparent; }
+      .social-button:disabled { cursor: not-allowed; opacity: .45; }
+      .social-list { display: grid; gap: 7px; margin-top: 12px; }
+      .social-row { display: grid; grid-template-columns: 1fr auto; align-items: center; gap: 9px; padding: 10px; border: 1px solid var(--line); background: rgba(255,255,255,.02); }
+      .social-row b, .social-row small { display: block; }
+      .social-row b { font-size: 9px; } .social-row small { margin-top: 3px; color: var(--dim); font-size: 8px; }
+      .social-actions { display: flex; gap: 5px; }
+      .social-actions button { padding: 6px 8px; color: var(--ink); border: 1px solid var(--line); background: transparent; cursor: pointer; font: inherit; font-size: 7px; text-transform: uppercase; }
+      .social-actions button:hover { color: var(--self); border-color: var(--self); }
+      #social-status { min-height: 14px; margin-top: 9px; color: var(--dim); font-size: 8px; }
+      .queue-card { margin-top: 13px; padding: 16px; border: 1px solid rgba(53,196,155,.3); background: linear-gradient(135deg,rgba(53,196,155,.09),rgba(255,255,255,.015)); }
+      .queue-card strong { display: block; margin-bottom: 6px; color: #fff; font-size: 17px; text-transform: uppercase; }
+      .queue-actions { display: flex; gap: 8px; margin-top: 13px; }
       .account-card { padding: 20px; border: 1px solid var(--line); background: rgba(13,22,31,.75); }
       .account-card h3 { margin: 4px 0 8px; color: #fff; font-size: 15px; letter-spacing: 1px; text-transform: uppercase; }
       .account-card > p { max-width: 680px; font-size: 10px; line-height: 1.6; }
@@ -1086,7 +1110,7 @@
         .screen-tab { min-width: 0; padding: 0 9px; font-size: 9px; }
         .screen { height: auto; min-height: 100%; padding: 14px; }
         .screen[data-screen="inventory"].on { display: block; }
-        .lobby-grid, .inventory-grid, .community-workbench, .marketplace-workbench { height: auto; grid-template-columns: 1fr; }
+        .lobby-grid, .inventory-grid, .community-workbench, .marketplace-workbench, .social-grid { height: auto; grid-template-columns: 1fr; }
         .operator-stage { height: 210px; }
         .player-panel { min-height: 420px; }
         .lobby-footer { position: sticky; bottom: 0; padding: 10px 14px; }
@@ -1482,6 +1506,7 @@
           <div class="lobby-brand"><b>fpsbone</b><span>regional combat network</span></div>
           <nav id="screen-tabs" aria-label="Main menu">
             <button class="screen-tab on" type="button" data-screen="lobby">lobby</button>
+            <button class="screen-tab" type="button" data-screen="social">social</button>
             <button class="screen-tab" type="button" data-screen="inventory">inventory</button>
             <button class="screen-tab" type="button" data-screen="settings">settings</button>
           </nav>
@@ -1565,6 +1590,30 @@
             <p class="note warn" id="host-note" hidden></p>
           </div>
                 <div id="keys"></div>
+              </section>
+            </div>
+          </section>
+
+          <section class="screen social-screen" data-screen="social">
+            <div class="screen-heading"><span class="panel-kicker">regional network</span><h1>Social &amp; matchmaking</h1>
+              <p>Build a party without taking a match seat. The game server still performs the final capacity check when a match is found.</p>
+            </div>
+            <div class="social-grid">
+              <section class="social-panel">
+                <span class="panel-kicker">friends</span><h3>Your callsign</h3>
+                <p>Share this public code—not your private recovery code—to let an online player add you.</p>
+                <div class="social-code"><span>friend code</span><b id="social-code">--------</b></div>
+                <div class="social-add"><input id="social-add-code" maxlength="10" placeholder="ENTER CODE" autocomplete="off" /><button class="social-button" id="social-add" type="button">add player</button></div>
+                <div id="social-status">Opening secure lobby presence…</div>
+                <div id="social-requests" class="social-list"></div>
+                <div id="social-friends" class="social-list"><div class="note">Friends appear here.</div></div>
+              </section>
+              <section class="social-panel">
+                <span class="panel-kicker">party</span><h3>Squad lobby</h3>
+                <p>Only the leader starts or cancels matchmaking. A party is matched together against the current regional capacity.</p>
+                <div id="social-invites" class="social-list"></div>
+                <div id="social-party" class="social-list"><div class="note">You are currently solo.</div></div>
+                <div class="queue-card"><strong id="social-queue-title">Quick match</strong><p id="social-queue-note">Queue for the mode selected on the Lobby screen.</p><div class="queue-actions"><button class="social-button" id="social-queue" type="button">find match</button><button class="social-button alt" id="social-cancel" type="button" hidden>cancel queue</button></div></div>
               </section>
             </div>
           </section>
