@@ -1,11 +1,12 @@
 // Scene construction and avatar management.
 //
-// The combatants remain clean box-and-capsule silhouettes; FOUNDRY 64 adds restrained
+// The combatants use clean low-poly human silhouettes; FOUNDRY 64 adds restrained
 // procedural surface grain, authored markings and an industrial skyline around them.
 // One directional key, hemisphere fill and fog preserve strong face separation so that
 // environment detail never costs player readability.
 
 import * as THREE from 'three';
+import { RoundedBoxGeometry } from 'three/examples/jsm/geometries/RoundedBoxGeometry.js';
 import * as C from '../../shared/constants.js';
 import { ARENA, WORLD_BOXES } from '../../shared/map.js';
 import { buildEnvironment } from './environment.js';
@@ -279,15 +280,44 @@ const SNOW_COLOR = 0xeef3f9;
  */
 function buildWeapon(a, id) {
   const g = new THREE.Group();
-  for (const [i, [w, h, d, x, y, z, tag, rx = 0, ry = 0, rz = 0]] of holdOf(id).parts.entries()) {
+  const hold = holdOf(id);
+  let muzzle = null;
+  for (const [i, [w, h, d, x, y, z, tag, rx = 0, ry = 0, rz = 0]] of hold.parts.entries()) {
     const weaponMat = i === 0 ? a.weaponMat : i % 3 === 0 ? a.weaponTrimMat : a.weaponDarkMat;
-    const mesh = new THREE.Mesh(new THREE.BoxGeometry(w, h, d), tag === 'snow' ? a.snowMat : weaponMat);
+    const roundBarrel = d > Math.max(w, h) * 3.4 && Math.abs(w - h) < Math.max(w, h) * 0.35;
+    const geometry = roundBarrel
+      ? new THREE.CylinderGeometry(Math.max(w, h) * 0.5, Math.max(w, h) * 0.5, d, 8, 1)
+      : new RoundedBoxGeometry(w, h, d, 2, Math.min(w, h, d) * 0.16);
+    // Weapon rig depth runs down local Z while a cylinder is authored on Y.
+    if (roundBarrel) geometry.rotateX(Math.PI / 2);
+    const mesh = new THREE.Mesh(geometry, tag === 'snow' ? a.snowMat : weaponMat);
     mesh.position.set(x, y, z);
     mesh.rotation.set(rx, ry, rz);
     // Only the receiver-sized boxes cast. A shadow pass over the slivers — barrels, sights
     // — draws a silhouette indistinguishable from the one the big box draws by itself.
     mesh.castShadow = w * h * d > 0.0006;
     g.add(mesh);
+
+    // Find the foremost authored part. Its centre gives the barrel line and its nearest
+    // rotated corner gives the muzzle plane, so rifles, pistols and odd angled receivers
+    // all place the flash from their own silhouette rather than from a category constant.
+    if (hold.support) {
+      let front = Infinity;
+      for (const sx of [-1, 1]) for (const sy of [-1, 1]) for (const sz of [-1, 1]) {
+        const c = rotateXYZ(rx, ry, rz, sx * w * 0.5, sy * h * 0.5, sz * d * 0.5);
+        front = Math.min(front, z + c.z);
+      }
+      if (!muzzle || front < muzzle.z) muzzle = { x, y, z: front };
+    }
+  }
+  if (muzzle) {
+    const flash = new THREE.Mesh(new THREE.OctahedronGeometry(1, 0), a.muzzleMat);
+    flash.position.set(muzzle.x, muzzle.y, muzzle.z - 0.07);
+    flash.scale.set(0.045, 0.045, 0.14);
+    flash.visible = false;
+    flash.frustumCulled = false;
+    g.add(flash);
+    g.userData.muzzleFlash = flash;
   }
   a.shoulders.add(g);
   return g;
@@ -331,6 +361,12 @@ function setAvatarWeapon(a, w) {
 function avatarShot(a, w, now) {
   setAvatarWeapon(a, w);
   a.kickVel += a.kickAmt;
+  a.flashUntil = now + 55;
+  const flash = a.gun?.userData.muzzleFlash;
+  if (flash) {
+    flash.rotation.z = (now * 0.037) % Math.PI;
+    flash.visible = true;
+  }
   if (a.cycleMs > 0) a.cycleAt = now;
 }
 
@@ -389,6 +425,17 @@ function poseUpper(a, pitch, yaw, jamMs, now, dtMs) {
   // the viewmodel's, so a shot watched from outside settles on the same curve as one felt.
   a.kickVel += (-a.kick * 260 - a.kickVel * 22) * dt;
   a.kick += a.kickVel * dt;
+  // The gun does not recoil in isolation. A small shoulder rise, backward compression
+  // and cant make the body absorb the shot while both solved hands remain attached.
+  // Kept deliberately smaller than the gun's own travel below: readable, not a flinch.
+  const breathe = Math.sin(now * 0.0021 + a.id) * 0.004 * (1 - a.swing * 0.7);
+  const gaitLift = Math.abs(Math.sin(a.stride)) * 0.012 * a.swing;
+  const braceRoll = Math.sin(a.stride) * 0.025 * a.swing;
+  a.shoulders.position.y = RIG.shoulderY + breathe + gaitLift + Math.min(0.025, a.kick * 0.035);
+  a.shoulders.position.z = a.kick * 0.09;
+  a.shoulders.rotation.z = braceRoll - a.kick * 0.08;
+  const muzzleFlash = a.gun?.userData.muzzleFlash;
+  if (muzzleFlash) muzzleFlash.visible = now < a.flashUntil;
 
   // How fast the body is turning, smoothed — snapshots land at 20Hz and the raw difference
   // between two of them is a staircase. Shortest-angle, or a player crossing +/-PI would
@@ -522,6 +569,11 @@ function poseDeadUpper(a, k) {
   // The aim relaxes out of the shoulders, and the weapon slides down to the ground beside
   // the body. Both start from the live rest pose, so there is no pop at the instant of death.
   a.shoulders.rotation.x = a.aim * (1 - k);
+  a.shoulders.rotation.z = -a.kick * 0.08 * (1 - k);
+  a.shoulders.position.y = RIG.shoulderY + Math.min(0.025, a.kick * 0.035) * (1 - k);
+  a.shoulders.position.z = a.kick * 0.09 * (1 - k);
+  const muzzleFlash = a.gun?.userData.muzzleFlash;
+  if (muzzleFlash) muzzleFlash.visible = false;
   // Everything but the depth slides to a fixed spot; the depth slides to wherever THIS
   // weapon's lowest corner sits on the ground, which is the difference between a rifle lying
   // in the snow and a rifle half inside it.
@@ -628,6 +680,12 @@ function reviveAvatar(a) {
   // otherwise respawn still settling from the last shot of a previous life.
   a.kick = 0;
   a.kickVel = 0;
+  a.flashUntil = 0;
+  a.shoulders.position.set(0, RIG.shoulderY, 0);
+  a.shoulders.rotation.z = 0;
+  for (const rig of a.rigs.values()) {
+    if (rig.userData.muzzleFlash) rig.userData.muzzleFlash.visible = false;
+  }
   a.cycleAt = 0;
   a.turn = 0;
   // Restart the gait from a standing pose. Without this a player who died mid-run
@@ -658,6 +716,7 @@ function makeAvatar(id) {
   const weaponMat = material(0x3a4351);
   const weaponDarkMat = material(0x252c38);
   const weaponTrimMat = material(0x357e69);
+  const muzzleMat = new THREE.MeshBasicMaterial({ color: 0xffd27a, toneMapped: false });
   // Its own material, because the one thing in the game that is not gunmetal must not be
   // repainted by a team colour. Created up front rather than on the first snowball so it is
   // already in `materials` when the corpse fade starts driving opacity.
@@ -674,18 +733,36 @@ function makeAvatar(id) {
   const duck = new THREE.Group();
   tilt.add(duck);
 
-  // Every part below is on the ONE body material, so a team recolour repaints the whole
-  // silhouette in a single write and the corpse fade drives one opacity. `castShadow` is
-  // set only on the parts big enough to matter — torso, thighs, head, gun. A shadow map
-  // pass over fourteen little boxes per player costs real time and draws a silhouette
-  // indistinguishable from the four large ones.
-  const part = (parent, w, h, d, x, y, z, m = uniformMat, shadow = false) => {
-    const mesh = new THREE.Mesh(new THREE.BoxGeometry(w, h, d), m);
+  // The dimensions still come from RIG — therefore the visible body still agrees with the
+  // hitbox — but the primitives are deliberately not boxes. Six-sided tapers give limbs and
+  // the torso an inexpensive human silhouette, low-poly spheres close the joints, and only
+  // hard equipment uses a softly bevelled box. Ten players remain cheap while no longer
+  // reading as stacks of shipping crates.
+  const formed = (parent, geometry, x, y, z, sx, sy, sz, m, shadow = false) => {
+    const mesh = new THREE.Mesh(geometry, m);
     mesh.position.set(x, y, z);
+    mesh.scale.set(sx, sy, sz);
     mesh.castShadow = shadow;
     parent.add(mesh);
     return mesh;
   };
+  const part = (parent, w, h, d, x, y, z, m = uniformMat, shadow = false) => {
+    const radius = Math.max(0.003, Math.min(w, h, d) * 0.18);
+    return formed(parent, new RoundedBoxGeometry(w, h, d, 2, radius), x, y, z, 1, 1, 1, m, shadow);
+  };
+  const taper = (parent, w, h, d, x, y, z, m = uniformMat, shadow = false,
+    top = 0.5, bottom = 0.38) => formed(
+    parent, new THREE.CylinderGeometry(top, bottom, 1, 6, 1, false),
+    x, y, z, w, h, d, m, shadow,
+  );
+  const capsule = (parent, w, h, d, x, y, z, m = uniformMat, shadow = false) => formed(
+    parent, new THREE.CapsuleGeometry(0.5, 1, 3, 6),
+    x, y, z, w, h * 0.5, d, m, shadow,
+  );
+  const orb = (parent, w, h, d, x, y, z, m = uniformMat, shadow = false) => formed(
+    parent, new THREE.SphereGeometry(0.5, 8, 6),
+    x, y, z, w, h, d, m, shadow,
+  );
   /** A joint: an empty at the pivot point, so rotating it swings everything below. */
   const joint = (parent, x, y, z) => {
     const g = new THREE.Group();
@@ -694,17 +771,17 @@ function makeAvatar(id) {
     return g;
   };
 
-  part(duck, RIG.pelvisW, RIG.pelvisH, RIG.pelvisD, 0, RIG.pelvisY, 0, armorMat);
-  part(duck, RIG.torsoW, RIG.torsoH, RIG.torsoD, 0, RIG.torsoY, 0, uniformMat, true);
-  part(duck, RIG.neckW, RIG.neckH, RIG.neckW, 0, RIG.neckY, 0, skinMat);
+  capsule(duck, RIG.pelvisW, RIG.pelvisH, RIG.pelvisD, 0, RIG.pelvisY, 0, armorMat);
+  taper(duck, RIG.torsoW, RIG.torsoH, RIG.torsoD, 0, RIG.torsoY, 0, uniformMat, true, 0.5, 0.39);
+  taper(duck, RIG.neckW, RIG.neckH, RIG.neckW, 0, RIG.neckY, 0, skinMat, false, 0.46, 0.46);
 
   // Close-fitting faction gear adds identity without lying about the server hitbox.
   // Sentinel wears a squared plate carrier; Raider wears a lighter crossed harness.
   const sentinelBody = new THREE.Group();
   const raiderBody = new THREE.Group();
   duck.add(sentinelBody, raiderBody);
-  part(sentinelBody, RIG.torsoW + 0.035, RIG.torsoH * 0.55, RIG.torsoD + 0.055,
-    0, RIG.torsoY + 0.07, -0.012, armorMat, true);
+  taper(sentinelBody, RIG.torsoW + 0.035, RIG.torsoH * 0.55, RIG.torsoD + 0.055,
+    0, RIG.torsoY + 0.07, -0.012, armorMat, true, 0.5, 0.43);
   part(sentinelBody, RIG.torsoW * 0.34, 0.055, RIG.torsoD + 0.07,
     0, RIG.torsoY - 0.13, -0.01, operatorAccentMat);
   part(raiderBody, 0.075, RIG.torsoH * 0.9, RIG.torsoD + 0.045,
@@ -720,9 +797,10 @@ function makeAvatar(id) {
   const legs = [];
   for (const side of [1, -1]) {
     const hip = joint(duck, side * RIG.hipX, RIG.hipY, 0);
-    part(hip, RIG.thighW, RIG.thighH, RIG.thighD, 0, -RIG.thighH / 2, 0, clothMat, true);
+    taper(hip, RIG.thighW, RIG.thighH, RIG.thighD, 0, -RIG.thighH / 2, 0, clothMat, true, 0.5, 0.39);
     const knee = joint(hip, 0, -RIG.thighH, 0);
-    part(knee, RIG.shinW, RIG.shinH, RIG.shinD, 0, -RIG.shinH / 2, 0, clothMat);
+    orb(knee, RIG.shinW * 1.03, 0.13, RIG.shinD * 1.03, 0, -0.015, 0, clothMat);
+    taper(knee, RIG.shinW, RIG.shinH, RIG.shinD, 0, -RIG.shinH / 2, 0, clothMat, false, 0.45, 0.34);
     part(knee, RIG.shinW + 0.035, 0.11, RIG.shinD + 0.035, 0, -0.08, -0.025, gearMat);
     // Toes forward, so which way a body is facing survives even from directly above.
     part(knee, RIG.footW, RIG.footH, RIG.footD, 0, -RIG.shinH - RIG.footH / 2, RIG.footZ, gearMat);
@@ -735,6 +813,13 @@ function makeAvatar(id) {
   // someone aims up, and a rifle floating away from its own hands is worse than no
   // arms at all. One parent, one rotation, they move together by construction.
   const shoulders = joint(duck, 0, RIG.shoulderY, 0);
+  // Shoulder caps bridge the tapered torso and the independently solved arms. Without
+  // them a correct IK pose still looks assembled because the rotating segments meet at
+  // two sharp corners rather than at a joint.
+  for (const side of [1, -1]) {
+    orb(shoulders, RIG.upperW * 1.28, 0.16, RIG.upperD * 1.18,
+      side * RIG.shoulderX, 0, 0, uniformMat, true);
+  }
   // Both arms are kept: every frame solves both to real grip points, and which one is the
   // trigger hand matters — it is the one the weapon group hangs on, and the other is the one
   // free to work the action or punch a stoppage. No rest pose is baked in here, because
@@ -744,10 +829,15 @@ function makeAvatar(id) {
   const arms = {};
   for (const side of [1, -1]) {
     const arm = joint(shoulders, side * RIG.shoulderX, 0, 0);
-    part(arm, RIG.upperW, ARM_UPPER, RIG.upperD, 0, -ARM_UPPER / 2, 0, uniformMat);
+    taper(arm, RIG.upperW, ARM_UPPER, RIG.upperD, 0, -ARM_UPPER / 2, 0, uniformMat, false, 0.48, 0.36);
     const elbow = joint(arm, 0, -ARM_UPPER, 0);
-    part(elbow, RIG.foreW, ARM_FORE, RIG.foreD, 0, -ARM_FORE / 2, 0, clothMat);
-    part(elbow, RIG.foreW * 1.12, 0.1, RIG.foreD * 1.12, 0, -ARM_FORE - 0.05, 0, gearMat);
+    orb(elbow, RIG.foreW * 1.04, 0.125, RIG.foreD * 1.04, 0, 0, 0, clothMat);
+    taper(elbow, RIG.foreW, ARM_FORE, RIG.foreD, 0, -ARM_FORE / 2, 0, clothMat, false, 0.44, 0.34);
+    // The palm is centred on the exact endpoint solveHand targets. It therefore overlaps
+    // the grip instead of ending the forearm beside an invisible hand, which was the main
+    // reason mathematically correct arms still looked as though they were not holding it.
+    orb(elbow, 0.115, 0.13, 0.13, 0, -ARM_FORE, 0, gearMat, true);
+    part(elbow, RIG.foreW * 1.1, 0.075, RIG.foreD * 1.1, 0, -ARM_FORE + 0.045, 0, gearMat);
     arms[side] = { arm, elbow };
   }
 
@@ -759,7 +849,7 @@ function makeAvatar(id) {
   tilt.add(pivot);
 
   const visorMat = new THREE.MeshBasicMaterial({ color: C.PALETTE.visor });
-  part(pivot, RIG.headW, RIG.headH, RIG.headD, 0, RIG.headY - C.EYE_OFFSET, 0, skinMat, true);
+  orb(pivot, RIG.headW, RIG.headH, RIG.headD, 0, RIG.headY - C.EYE_OFFSET, 0, skinMat, true);
   part(
     pivot,
     RIG.visorW,
@@ -775,12 +865,12 @@ function makeAvatar(id) {
   const raiderHead = new THREE.Group();
   pivot.add(sentinelHead, raiderHead);
   const headY = RIG.headY - C.EYE_OFFSET;
-  part(sentinelHead, RIG.headW + 0.075, 0.13, RIG.headD + 0.07,
-    0, headY + RIG.headH * 0.38, 0.015, armorMat, true);
+  orb(sentinelHead, RIG.headW + 0.075, 0.15, RIG.headD + 0.07,
+    0, headY + RIG.headH * 0.2, 0.015, armorMat, true);
   part(sentinelHead, RIG.headW + 0.095, 0.065, RIG.headD + 0.09,
     0, headY + RIG.headH * 0.16, 0.02, armorMat);
-  part(raiderHead, RIG.headW + 0.06, 0.075, RIG.headD + 0.055,
-    0, headY + RIG.headH * 0.42, 0.01, clothMat, true);
+  orb(raiderHead, RIG.headW + 0.06, 0.105, RIG.headD + 0.055,
+    0, headY + RIG.headH * 0.28, 0.01, clothMat, true);
   part(raiderHead, RIG.headW * 0.9, 0.075, 0.12,
     0, headY - 0.085, -RIG.headD / 2 - 0.025, gearMat);
 
@@ -890,13 +980,14 @@ function makeAvatar(id) {
     weaponMat,
     weaponDarkMat,
     weaponTrimMat,
+    muzzleMat,
     sentinelKit: [sentinelBody, sentinelHead],
     raiderKit: [raiderBody, raiderHead],
     operator: null,
     finish: null,
     snowMat,
     materials: [uniformMat, armorMat, clothMat, gearMat, skinMat, operatorAccentMat,
-      weaponMat, weaponDarkMat, weaponTrimMat, visorMat, snowMat],
+      weaponMat, weaponDarkMat, weaponTrimMat, muzzleMat, visorMat, snowMat],
     // Not in `materials`: that list is "everything the corpse fade drives", and the
     // shield has its own fixed opacity. Disposed explicitly in syncAvatars' cull.
     shieldMat,
@@ -915,6 +1006,8 @@ function makeAvatar(id) {
     // -1 rather than 0 so the first sync always applies, whatever height it is.
     crouch: -1,
     deadAt: 0,
+    /** Brief third-person firing cue. The mesh lives on each weapon rig; this is its clock. */
+    flashUntil: 0,
     opacity: 1,
     // Gait state. `null` rather than 0 so the first sync seeds the position instead of
     // reading a stride from wherever the avatar happened to be created.

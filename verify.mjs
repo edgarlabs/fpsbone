@@ -4860,6 +4860,18 @@ const okG = (cond, label, detail = '') => {
   const vmSrc = readFileSync(new URL('./client/src/viewmodel.js', import.meta.url), 'utf8');
   const rnSrc = readFileSync(new URL('./client/src/render.js', import.meta.url), 'utf8');
 
+  okG(rnSrc.includes('const taper = (parent, w, h, d')
+      && rnSrc.includes('const capsule = (parent, w, h, d')
+      && rnSrc.includes('const orb = (parent, w, h, d')
+      && rnSrc.includes('new RoundedBoxGeometry'),
+      'the remote character is assembled from shaped low-poly anatomy rather than body boxes',
+      'tapered torso and limbs · rounded pelvis, joints and head · bevelled hard gear');
+  okG(rnSrc.includes("orb(elbow, 0.115, 0.13, 0.13, 0, -ARM_FORE, 0, gearMat")
+      && rnSrc.includes('a.shoulders.position.z = a.kick * 0.09;')
+      && rnSrc.includes('muzzleFlash.visible = now < a.flashUntil;'),
+      'third-person arsenal handling has hands, shoulder recoil and a timed muzzle flash',
+      'the hand centre is the IK endpoint shared with the grip, and the body absorbs every shot');
+
   /** Brace-match a `{...}` starting at or after `from` and evaluate it. */
   const braced = (src, from) => {
     const i = src.indexOf('{', from);
