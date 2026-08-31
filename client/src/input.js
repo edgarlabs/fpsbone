@@ -5,6 +5,7 @@ import * as C from '../../shared/constants.js';
 import {
   RECOIL_HOLD_MS,
   RECOIL_RECOVER,
+  hasHeavy,
   idAt,
   recoilMaxOf,
   recoilOf,
@@ -57,7 +58,7 @@ async function grabKeyboard() {
   }
 }
 
-export function createInput(canvas, settings) {
+export function createInput(canvas, settings, hooks = {}) {
   const keys = new Set();
   let yaw = 0;
   let pitch = 0;
@@ -78,6 +79,10 @@ export function createInput(canvas, settings) {
    * the server is waiting for.
    */
   let clickLatch = false;
+  /** Right-click attacks must survive until the next fixed input sample just like a
+   * fast left click does. This is separate from `alt`, which is the current held state:
+   * a quick knife stab can be pressed and released between two 60Hz samples. */
+  let altFireLatch = false;
   /** Right mouse held. What it MEANS is the weapon's business, not this module's. */
   let alt = false;
   /**
@@ -225,6 +230,7 @@ export function createInput(canvas, settings) {
       keys.clear();
       firing = false;
       clickLatch = false;
+      altFireLatch = false;
       alt = false;
       // Both latches, and neither drops itself: releasing the mouse does not release a
       // toggle, and keys.clear() above skips the keyup that would have resolved the hold.
@@ -279,12 +285,20 @@ export function createInput(canvas, settings) {
       firing = true;
       // Remember the press so a click too short to be caught by a sample still fires.
       clickLatch = true;
+      hooks.onAttack?.(wep, alt, performance.now());
     }
     if (e.button === 2) {
       // The raw button stays for the verbs that really are held — a lobbed grenade
       // and the knife's heavy stab both want to know the button is DOWN, and both are
       // read off BTN_ALT on the server.
       alt = true;
+      // In every conventional FPS, right-clicking a knife IS the heavy attack. It is
+      // not a modifier the player must hold while also pressing left-click.
+      if (alive && !jammed && hasHeavy(idAt(wep))) {
+        clickLatch = true;
+        altFireLatch = true;
+        hooks.onAttack?.(wep, true, performance.now());
+      }
       // A scope is the exception, and this is the whole of it: the DOWN EDGE advances a
       // latch instead of the button being sampled. unscoped → first zoom → second zoom
       // → unscoped, so the same click that opens the scope eventually closes it and
@@ -375,6 +389,7 @@ export function createInput(canvas, settings) {
     keys.clear();
     firing = false;
     clickLatch = false;
+    altFireLatch = false;
     alt = false;
     unscope();
     dropSprint();
@@ -624,7 +639,8 @@ export function createInput(canvas, settings) {
       // one sees a released trigger, which edge-triggered melee and throwables need.
       if (firing || clickLatch) buttons |= C.BTN_FIRE;
       clickLatch = false;
-      if (alt) buttons |= C.BTN_ALT;
+      if (alt || altFireLatch) buttons |= C.BTN_ALT;
+      altFireLatch = false;
       if (down('reload')) buttons |= C.BTN_RELOAD;
       if (down('use')) buttons |= C.BTN_USE;
       // C is the default crouch key. Ctrl crouches too, but ONLY while the Keyboard

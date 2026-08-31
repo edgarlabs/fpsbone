@@ -3323,15 +3323,21 @@ const okD = (cond, label, detail = '') => {
   const room = new Room(DEFAULT_MODE);
   room.projectiles = [thrown('grenade', false)];
   const wire = room.snapshotBase().proj?.[0];
-  okD([wire?.vx, wire?.vy, wire?.vz].every(Number.isFinite)
+  okD(wire?.o === 1 && [wire?.vx, wire?.vy, wire?.vz].every(Number.isFinite)
       && Math.hypot(wire.vx, wire.vy, wire.vz) > 1,
       'the first projectile snapshot carries its authoritative velocity',
-      `v=(${wire?.vx},${wire?.vy},${wire?.vz}) — the browser need not wait for two positions before moving it`);
+      `owner ${wire?.o}, v=(${wire?.vx},${wire?.vy},${wire?.vz}) — the browser need not wait for two positions before moving it`);
   const renderSrc = readFileSync(new URL('./client/src/render.js', import.meta.url), 'utf8');
   okD(renderSrc.includes('vx: Number.isFinite(q.vx) ? q.vx : 0')
       && renderSrc.includes('s.vx = Number.isFinite(q.vx) ? q.vx'),
       'and the renderer starts and reconciles flight from that velocity',
       'a newly released grenade advances on its first drawn frame instead of freezing until the next snapshot');
+  const mainThrowSrc = readFileSync(new URL('./client/src/main.js', import.meta.url), 'utf8');
+  okD(renderSrc.includes('predictProjectile(kind, owner, x, y, z, dir, now, lob = false)')
+      && renderSrc.includes('v.predicted && v.sim.kind === q.k && v.sim.owner === q.o')
+      && mainThrowSrc.includes('view.predictProjectile('),
+      'the client launches a cosmetic grenade immediately and authority adopts the same mesh',
+      'click-time flight covers the round trip; the server still owns the burst, damage and final position');
 }
 
 // The other thing right-click must not mean: a scope, while the action is stuck.
@@ -3439,6 +3445,24 @@ const okD = (cond, label, detail = '') => {
   okD(clear === 0 && input.scopeStep === 1,
       'a working weapon omits the field entirely and the scope survives the snapshot',
       `no jm → jamMs ${clear}, step ${input.scopeStep}`);
+
+  // Knife controls follow the established FPS contract: left-click light, right-click
+  // heavy. The old input only sent BTN_ALT on right-click, so nothing happened until the
+  // player also pressed left — a modifier chord disguised as an attack button.
+  handlers.get('mouseup')({ button: 2 });
+  const knifeI = indexOf('knife');
+  input.setLoadout([knifeI]);
+  input.setWeapon(knifeI);
+  rmb();
+  handlers.get('mouseup')({ button: 2 });
+  const stab = input.sample();
+  const released = input.sample();
+  okD((stab.buttons & (C.BTN_FIRE | C.BTN_ALT)) === (C.BTN_FIRE | C.BTN_ALT),
+      'right-clicking a knife directly sends one heavy attack',
+      `buttons ${stab.buttons}: fire+alt together, without a left-click chord`);
+  okD(!(released.buttons & C.BTN_FIRE),
+      'and holding or releasing right-click does not repeat the stab',
+      'one click is one edge-triggered heavy swing');
 
   // ---- Shift: two verbs off one key ------------------------------------------------------
   // The server only ever sees the same two level-triggered bits, so the entire tap/hold
@@ -4893,6 +4917,89 @@ const okG = (cond, label, detail = '') => {
       || id === 'knife'),
       'the viewmodel contains a deliberate motion branch for every special knife',
       'karambit hook · tanto thrust · bowie sweep/chop · kukri diagonal cleave · combat alternating cut');
+
+  // Every decorative box must belong to the assembly. A sight may sit a few millimetres
+  // above a rail, but a barrel, stock or magazine separated by open air is the exact
+  // "floating parts" failure this guards against.
+  const partBox = (p) => {
+    if (p[1] === 'sphere') return {
+      x0: p[3] - p[2], x1: p[3] + p[2], y0: p[4] - p[2], y1: p[4] + p[2], z0: p[5] - p[2], z1: p[5] + p[2],
+    };
+    const h = [p[1] / 2, p[2] / 2, p[3] / 2];
+    const corners = [];
+    for (const sx of [-1, 1]) for (const sy of [-1, 1]) for (const sz of [-1, 1]) {
+      const c = rotateXYZ(p[7] ?? 0, p[8] ?? 0, p[9] ?? 0, sx * h[0], sy * h[1], sz * h[2]);
+      corners.push([p[4] + c.x, p[5] + c.y, p[6] + c.z]);
+    }
+    return {
+      x0: Math.min(...corners.map((c) => c[0])), x1: Math.max(...corners.map((c) => c[0])),
+      y0: Math.min(...corners.map((c) => c[1])), y1: Math.max(...corners.map((c) => c[1])),
+      z0: Math.min(...corners.map((c) => c[2])), z1: Math.max(...corners.map((c) => c[2])),
+    };
+  };
+  const boxGap = (a, b) => Math.hypot(
+    Math.max(0, a.x0 - b.x1, b.x0 - a.x1),
+    Math.max(0, a.y0 - b.y1, b.y0 - a.y1),
+    Math.max(0, a.z0 - b.z1, b.z0 - a.z1),
+  );
+  const floating = [];
+  for (const id of WEAPON_IDS.filter((wid) => WEAPONS[wid].kind === 'hitscan')) {
+    const boxes = RIGS[id].parts.map(partBox);
+    const joined = new Set([0]);
+    let changed = true;
+    while (changed) {
+      changed = false;
+      for (let i = 0; i < boxes.length; i++) if (!joined.has(i)
+        && [...joined].some((j) => boxGap(boxes[i], boxes[j]) <= 0.018)) {
+        joined.add(i); changed = true;
+      }
+    }
+    if (joined.size !== boxes.length) floating.push(`${id}:${boxes.map((_, i) => i).filter((i) => !joined.has(i)).join(',')}`);
+  }
+  okG(floating.length === 0, 'every first-person gun is one connected assembly with no floating parts',
+      floating.length ? floating.join(' · ') : 'all barrels, magazines, sights and stocks meet the weapon they belong to');
+
+  const remotePartBox = (p) => {
+    const h = [p[0] / 2, p[1] / 2, p[2] / 2];
+    const corners = [];
+    for (const sx of [-1, 1]) for (const sy of [-1, 1]) for (const sz of [-1, 1]) {
+      const c = rotateXYZ(p[7] ?? 0, p[8] ?? 0, p[9] ?? 0, sx * h[0], sy * h[1], sz * h[2]);
+      corners.push([p[3] + c.x, p[4] + c.y, p[5] + c.z]);
+    }
+    return {
+      x0: Math.min(...corners.map((c) => c[0])), x1: Math.max(...corners.map((c) => c[0])),
+      y0: Math.min(...corners.map((c) => c[1])), y1: Math.max(...corners.map((c) => c[1])),
+      z0: Math.min(...corners.map((c) => c[2])), z1: Math.max(...corners.map((c) => c[2])),
+    };
+  };
+  const remoteFloating = [];
+  for (const id of WEAPON_IDS.filter((wid) => WEAPONS[wid].kind === 'hitscan')) {
+    const boxes = holdOf(id).parts.map(remotePartBox);
+    const joined = new Set([0]);
+    let changed = true;
+    while (changed) {
+      changed = false;
+      for (let i = 0; i < boxes.length; i++) if (!joined.has(i)
+        && [...joined].some((j) => boxGap(boxes[i], boxes[j]) <= 0.025)) {
+        joined.add(i); changed = true;
+      }
+    }
+    if (joined.size !== boxes.length) remoteFloating.push(`${id}:${boxes.map((_, i) => i).filter((i) => !joined.has(i)).join(',')}`);
+  }
+  okG(remoteFloating.length === 0, 'third-person guns remain connected assemblies from every viewing angle',
+      remoteFloating.length ? remoteFloating.join(' · ') : 'no opponent carries disconnected weapon pieces');
+
+  const buriedArms = [];
+  for (const id of WEAPON_IDS.filter((wid) => WEAPONS[wid].kind === 'hitscan')) {
+    const receiver = partBox(RIGS[id].parts[0]);
+    for (const [gx, gy, _gz, arm] of RIGS[id].grips) {
+      const beside = Math.abs(gx) >= Math.min(Math.abs(receiver.x0), receiver.x1) * 0.75;
+      const below = gy <= receiver.y0 - 0.015;
+      if (!beside || !below) buriedArms.push(`${id}:${arm ? 'support' : 'trigger'}`);
+    }
+  }
+  okG(buriedArms.length === 0, 'firearm wrists stay below and beside the receiver instead of passing through it',
+      buriedArms.length ? buriedArms.join(' · ') : 'both forearms approach external grip surfaces on every gun');
   const REAR_CLEAR = num(vmSrc, 'REAR_CLEAR');
   const POSE_ROOM = num(vmSrc, 'POSE_ROOM');
   const INSPECT_TURN = num(vmSrc, 'INSPECT_TURN');

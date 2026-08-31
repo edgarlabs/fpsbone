@@ -405,8 +405,8 @@ const RIGS = {
     kick: 5.4,
     mag: 2,
     grips: [
-      [0.014, -0.062, 0.04, 0],
-      [-0.012, -0.05, -0.21, 1],
+      [0.045, -0.105, -0.1, 0],
+      [-0.045, -0.09, -0.31, 1],
     ],
     parts: [
       ['steel', 0.08, 0.105, 0.34, 0, 0, -0.05],
@@ -425,8 +425,8 @@ const RIGS = {
     // Both hands on the grip — the two-handed stance, which is what makes a pistol
     // read as a pistol rather than as a small rifle.
     grips: [
-      [0.016, -0.058, 0.052, 0],
-      [-0.026, -0.078, 0.036, 1],
+      [0.035, -0.105, 0.05, 0],
+      [-0.035, -0.115, 0.03, 1],
     ],
     parts: [
       ['steel', 0.052, 0.072, 0.2, 0, 0, 0],
@@ -441,8 +441,8 @@ const RIGS = {
     kick: 9.2,
     mag: 5,
     grips: [
-      [0.014, -0.05, 0.03, 0],
-      [-0.014, -0.042, -0.3, 1],
+      [0.045, -0.105, 0.03, 0],
+      [-0.045, -0.085, -0.34, 1],
     ],
     parts: [
       ['steel', 0.07, 0.09, 0.55, 0, 0, 0],
@@ -514,8 +514,8 @@ const RIGS = {
     kick: 3.4,
     mag: 2,
     grips: [
-      [0.014, -0.056, 0.03, 0],
-      [-0.01, -0.05, -0.14, 1],
+      [0.043, -0.105, 0.03, 0],
+      [-0.043, -0.09, -0.18, 1],
     ],
     parts: [
       // VIPER-9 — closed tubular receiver, long suppressor, curved forward magazine.
@@ -536,11 +536,11 @@ const RIGS = {
     kick: 7.2,
     mag: 4,
     grips: [
-      [0.018, -0.062, 0.08, 0],
+      [0.05, -0.115, 0.08, 0],
       // Support hand out on the handguard, not on the receiver. On a weapon this long
       // a hand tucked in close reads as a rifle held badly; out at -0.29 it reads as
       // somebody bracing something heavy.
-      [-0.014, -0.044, -0.29, 1],
+      [-0.05, -0.095, -0.34, 1],
     ],
     /**
      * "the machine gun doesnt look like machine gun cmon now."
@@ -593,8 +593,8 @@ const RIGS = {
     kick: 6.2,
     mag: 2,
     grips: [
-      [0.014, -0.06, 0.05, 0],
-      [-0.012, -0.05, -0.22, 1],
+      [0.045, -0.11, 0.05, 0],
+      [-0.045, -0.09, -0.27, 1],
     ],
     parts: [
       ['steel', 0.072, 0.088, 0.42, 0, 0, 0],
@@ -617,8 +617,8 @@ const RIGS = {
     // animation both test for the field, so what plays is the weapon being worked
     // without anything falling out of it.
     grips: [
-      [0.016, -0.058, 0.07, 0],
-      [-0.012, -0.048, -0.24, 1],
+      [0.045, -0.11, 0.07, 0],
+      [-0.045, -0.09, -0.28, 1],
     ],
     parts: [
       ['steel', 0.078, 0.095, 0.34, 0, 0, 0],
@@ -664,7 +664,7 @@ const RIGS = {
   // ── weapon-overhaul variants ---------------------------------------------------
   rifle_havoc: {
     rest: [0.108, -0.09, -0.18], muzzle: [0, 0.018, -0.57], kick: 6.3, mag: 3,
-    grips: [[0.015, -0.064, 0.055, 0], [-0.013, -0.052, -0.23, 1]],
+    grips: [[0.048, -0.11, 0.06, 0], [-0.048, -0.09, -0.3, 1]],
     parts: [
       // HAVOC R4 — old-school long-stroke rifle: exposed gas tube, raked magazine,
       // separate wooden fore-end and a solid triangular stock.
@@ -672,7 +672,7 @@ const RIGS = {
       ['trim', 0.078, 0.075, 0.23, 0, -0.006, -0.27],
       ['steel', 0.038, 0.038, 0.34, 0, 0.018, -0.46],
       ['dark', 0.064, 0.19, 0.08, 0, -0.115, 0.015, -0.33, 0, 0],
-      ['dark', 0.026, 0.026, 0.3, 0, 0.075, -0.33],
+      ['dark', 0.026, 0.026, 0.3, 0, 0.055, -0.33],
       ['trim', 0.072, 0.105, 0.25, 0, -0.005, 0.31, 0.12, 0, 0],
       ['dark', 0.045, 0.11, 0.055, 0, -0.07, 0.12, 0.18, 0, 0],
       ['steel', 0.052, 0.025, 0.045, 0, 0.068, 0.05],
@@ -680,7 +680,7 @@ const RIGS = {
   },
   rifle_falcon: {
     rest: [0.1, -0.086, -0.215], muzzle: [0, 0.012, -0.43], kick: 4.7, mag: 2,
-    grips: [[0.014, -0.058, 0.03, 0], [-0.012, -0.048, -0.18, 1]],
+    grips: [[0.043, -0.105, 0.03, 0], [-0.043, -0.085, -0.22, 1]],
     parts: [
       // FALCON C4 — very short carbine with a raised carry handle and twin-rail stock.
       ['steel', 0.064, 0.082, 0.29, 0, 0, -0.015],
@@ -696,7 +696,7 @@ const RIGS = {
   },
   smg_kite: {
     rest: [0.105, -0.094, -0.25], muzzle: [0, 0.012, -0.28], kick: 2.9, mag: 2,
-    grips: [[0.014, -0.055, 0.02, 0], [-0.012, -0.048, -0.11, 1]],
+    grips: [[0.04, -0.115, 0.04, 0], [-0.04, -0.09, -0.13, 1]],
     parts: [
       // KITE-9 — Uzi-like machine pistol: magazine through the grip and folding wire stock.
       ['steel', 0.058, 0.12, 0.22, 0, 0, -0.015],
@@ -711,7 +711,7 @@ const RIGS = {
   },
   smg_banshee: {
     rest: [0.104, -0.092, -0.215], muzzle: [0, 0.015, -0.38], kick: 4.2, mag: 3,
-    grips: [[0.015, -0.06, 0.045, 0], [-0.012, -0.05, -0.16, 1]],
+    grips: [[0.045, -0.11, 0.05, 0], [-0.045, -0.09, -0.2, 1]],
     parts: [
       // BANSHEE .45 — blocky top-fed SMG with a long suppressor and side battery housing.
       ['steel', 0.082, 0.11, 0.3, 0, 0, -0.02],
@@ -721,13 +721,13 @@ const RIGS = {
       ['dark', 0.052, 0.11, 0.065, 0, -0.075, 0.055],
       ['trim', 0.035, 0.075, 0.16, 0.055, -0.01, -0.02],
       ['steel', 0.06, 0.075, 0.16, 0, -0.004, 0.22],
-      ['dark', 0.025, 0.025, 0.1, 0, 0.095, 0.12],
-      ['trim', 0.045, 0.02, 0.09, 0, 0.105, -0.2],
+      ['dark', 0.025, 0.025, 0.1, 0, 0.078, 0.12],
+      ['trim', 0.045, 0.02, 0.09, 0, 0.07, -0.2],
     ],
   },
   pistol_wisp: {
     rest: [0.102, -0.104, -0.29], muzzle: [0, 0.014, -0.145], kick: 3.1, mag: 2,
-    grips: [[0.016, -0.058, 0.048, 0], [-0.026, -0.078, 0.032, 1]],
+    grips: [[0.034, -0.105, 0.05, 0], [-0.034, -0.115, 0.03, 1]],
     parts: [
       // WISP-9 — machine pistol: vented slide, compensator and unmistakable extended mag.
       ['steel', 0.046, 0.062, 0.16, 0, 0, 0.005],
@@ -741,7 +741,7 @@ const RIGS = {
   },
   pistol_rook: {
     rest: [0.1, -0.098, -0.235], muzzle: [0, 0.018, -0.22], kick: 5.2, mag: 2,
-    grips: [[0.016, -0.062, 0.06, 0], [-0.028, -0.082, 0.042, 1]],
+    grips: [[0.038, -0.115, 0.065, 0], [-0.038, -0.12, 0.04, 1]],
     parts: [
       // ROOK .45 — revolver. The faceted cylinder, exposed barrel and hooked grip make
       // it categorically different from the two magazine-fed pistols.
@@ -755,7 +755,7 @@ const RIGS = {
   },
   lmg_atlas: {
     rest: [0.112, -0.096, -0.18], muzzle: [0, 0.02, -0.59], kick: 6.2, mag: 3,
-    grips: [[0.018, -0.062, 0.07, 0], [-0.014, -0.046, -0.27, 1]],
+    grips: [[0.05, -0.115, 0.075, 0], [-0.05, -0.095, -0.31, 1]],
     parts: [
       // ATLAS SAW — squad automatic rifle: top carry handle and a side-mounted soft box.
       ['steel', 0.082, 0.105, 0.42, 0, 0, -0.015],
@@ -765,14 +765,14 @@ const RIGS = {
       ['brass', 0.065, 0.022, 0.045, 0.042, -0.035, -0.045],
       ['dark', 0.062, 0.06, 0.16, 0, -0.018, -0.28],
       ['dark', 0.044, 0.1, 0.065, 0, -0.072, 0.08],
-      ['steel', 0.052, 0.082, 0.19, 0, -0.004, 0.31],
+      ['steel', 0.052, 0.082, 0.19, 0, -0.004, 0.3],
       ['dark', 0.018, 0.11, 0.2, 0, 0.13, -0.12, 0, 0, -0.28],
       ['dark', 0.06, 0.018, 0.1, 0, 0.175, -0.18],
     ],
   },
   lmg_colossus: {
     rest: [0.12, -0.102, -0.145], muzzle: [0, 0.022, -0.72], kick: 8.1, mag: 4,
-    grips: [[0.02, -0.066, 0.09, 0], [-0.016, -0.048, -0.32, 1]],
+    grips: [[0.052, -0.12, 0.095, 0], [-0.052, -0.1, -0.36, 1]],
     parts: [
       // COLOSSUS 120 — rotary support gun: central motor, three separated barrels and
       // a huge under-slung ammunition drum. No other gun has this front silhouette.
@@ -789,7 +789,7 @@ const RIGS = {
       ['dark', 0.016, 0.13, 0.016, 0.048, -0.085, -0.65],
       ['dark', 0.016, 0.13, 0.016, -0.048, -0.085, -0.65],
       ['dark', 0.058, 0.14, 0.078, 0, -0.102, 0.12],
-      ['steel', 0.066, 0.1, 0.23, 0, -0.006, 0.4],
+      ['steel', 0.066, 0.1, 0.23, 0, -0.006, 0.32],
     ],
   },
   knife_karambit: {

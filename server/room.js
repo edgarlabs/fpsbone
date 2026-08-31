@@ -1471,6 +1471,7 @@ export class Room {
       snap.proj = this.projectiles.map((pr) => ({
         i: pr.id,
         k: pr.kind,
+        o: pr.owner,
         x: r3(pr.x),
         y: r3(pr.y),
         z: r3(pr.z),
