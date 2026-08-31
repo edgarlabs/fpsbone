@@ -58,6 +58,9 @@
 // Part T is the inventory and creator pipeline: issued versus granted ownership, a second
 // admission check, one-use signed account actions, bounded palette-only submissions and a
 // review surface that stays locked until its private operator token is configured.
+// Part V is Arena's round contract: two honest floor sites, a continuous server-measured
+// use hold, one life, plant/defuse/fuse/elimination outcomes, bot participation and one
+// match settlement after the seventh round.
 //
 // Part I opens two real sockets and confirms each client sees the other — and each
 // other's bots, since the room is shared and the count is a live request.
@@ -74,7 +77,7 @@ import { readFileSync, writeFileSync, existsSync, unlinkSync, mkdirSync, rmdirSy
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import * as C from './shared/constants.js';
-import { ARENA, MAP, SPAWNS, TEAM_SPAWNS, WORLD_BOXES } from './shared/map.js';
+import { ARENA, MAP, OBJECTIVE_SITES, SPAWNS, TEAM_SPAWNS, WORLD_BOXES } from './shared/map.js';
 import { ENVIRONMENT_ID, ZONE_LABELS } from './client/src/environment.js';
 import { rayWorld, overlapsBox, depenetrate, EPS } from './shared/collide.js';
 import {
@@ -10210,6 +10213,192 @@ const okU = (cond, label, detail = '') =>
       'real-money, wallet and blockchain behavior stays disabled until a provider and rules exist');
 }
 console.log([...pU, ...fU].join('\n'));
+// ─────────────────────────────────────────── Part V: Arena rounds and objectives
+console.log('\n=== Part V — Arena rounds, objectives, and one-life play ===\n');
+const pV = [], fV = [];
+const okV = (cond, label, detail = '') =>
+  (cond ? pV : fV).push(`${cond ? 'PASS' : 'FAIL'}  ${label}${detail ? `  — ${detail}` : ''}`);
+
+function arenaPair(accounts = false) {
+  const room = new Room('arena');
+  const a = room.players.get(room.add('attacker', {}, accounts ? 'arena-a' : null));
+  const d = room.players.get(room.add('defender', {}, accounts ? 'arena-d' : null));
+  room.drainEvents();
+  return { room, a, d };
+}
+
+function arenaAdvance(room, ms) {
+  room.tick += Math.ceil(ms / STEP_MS);
+  room.ctl.tick(room);
+}
+
+function beginUse(room, p, site) {
+  p.x = site.x;
+  p.z = site.z;
+  p.vx = 0;
+  p.vz = 0;
+  p.useUntil = Infinity;
+  room.ctl.tick(room);
+}
+
+{
+  const blocked = [];
+  for (const site of OBJECTIVE_SITES) {
+    const hit = WORLD_BOXES.find((b) => b.y + b.h * 0.5 > 0.05
+      && overlapsBox(
+        site.x, C.PLAYER_HALF_H, site.z,
+        site.radius + C.PLAYER_HALF_W, C.PLAYER_HALF_H,
+        site.radius + C.PLAYER_HALF_W, b,
+      ));
+    if (hit) blocked.push(site.id);
+  }
+  okV(OBJECTIVE_SITES.length === 2 && OBJECTIVE_SITES.map((s) => s.id).join('') === 'AB'
+      && OBJECTIVE_SITES.every((s) => s.z > 0) && blocked.length === 0,
+      'A and B are clear, authoritative pads in the defenders’ half',
+      blocked.length ? `blocked: ${blocked.join(',')}` : OBJECTIVE_SITES.map((s) => `${s.id}(${s.x},${s.z})`).join(' '));
+
+  const { room, a, d } = arenaPair();
+  const mate = room.players.get(room.add('wing', {}));
+  okV(a.team === 1 && d.team === 2 && a.z < 0 && d.z > 0,
+      'the attackers and defenders join opposite bases',
+      `${a.name}=team${a.team}@${a.z}, ${d.name}=team${d.team}@${d.z}`);
+  okV(room.ctl.canDamage(room, a, d) && !room.ctl.canDamage(room, a, mate)
+      && room.ctl.canDamage(room, a, a),
+      'live enemies can fight, friendly fire stays off, and self-damage remains real');
+
+  d.alive = false;
+  room.ctl.onKill(room, a, d);
+  room.ctl.tick(room);
+  const killed = room.snapshotBase().md;
+  okV(!d.alive || d.respawnAt === Infinity,
+      'a death has no mid-round respawn', `respawnAt=${d.respawnAt}`);
+  okV(killed.ph === 'round_over' && killed.ts[0] === 1 && killed.rr === 'elimination',
+      'eliminating the defenders awards the attackers one round', JSON.stringify(killed));
+  okV(!room.ctl.canDamage(room, a, d),
+      'damage is closed during the round result screen');
+  arenaAdvance(room, 5000);
+  const next = room.snapshotBase().md;
+  okV(next.ph === 'live' && next.rn === 2 && a.alive && d.alive
+      && room.projectiles.length === 0 && room.clouds.length === 0,
+      'the next round respawns both sides together and clears old utility', JSON.stringify(next));
+}
+
+{
+  const { room, a, d } = arenaPair(true);
+  const site = OBJECTIVE_SITES[0];
+  beginUse(room, a, site);
+  arenaAdvance(room, MODES.arena.plantMs / 2);
+  a.x += site.radius + 1;
+  room.ctl.tick(room);
+  okV(room.snapshotBase().md.ap === undefined && room.snapshotBase().md.bp === undefined,
+      'leaving the pad interrupts a partial plant instead of banking it');
+
+  beginUse(room, a, site);
+  arenaAdvance(room, MODES.arena.plantMs);
+  const planted = room.snapshotBase().md;
+  okV(planted.bp === 1 && planted.tl === Math.round(MODES.arena.fuseMs / 1000)
+      && a.match.objectives === 1,
+      'a continuous server-timed hold plants A and earns one objective credit', JSON.stringify(planted));
+
+  // Killing every attacker no longer ends a planted round. The defender must use the pad.
+  a.alive = false;
+  room.ctl.onKill(room, d, a);
+  room.ctl.tick(room);
+  okV(room.snapshotBase().md.ph === 'live' && room.snapshotBase().md.bp === 1,
+      'a planted charge stays live after the attackers are eliminated');
+
+  beginUse(room, d, site);
+  arenaAdvance(room, MODES.arena.defuseMs);
+  const defused = room.snapshotBase().md;
+  okV(defused.ph === 'round_over' && defused.ts[1] === 1 && defused.rr === 'defused'
+      && d.match.objectives === 1,
+      'a continuous defender hold defuses and scores the round', JSON.stringify(defused));
+}
+
+{
+  const { room, a } = arenaPair();
+  const site = OBJECTIVE_SITES[1];
+  beginUse(room, a, site);
+  arenaAdvance(room, MODES.arena.plantMs);
+  arenaAdvance(room, MODES.arena.fuseMs);
+  const blown = room.snapshotBase().md;
+  okV(blown.ph === 'round_over' && blown.ts[0] === 1 && blown.rr === 'detonated',
+      'an undefused charge awards the attackers on the fuse clock', JSON.stringify(blown));
+}
+
+{
+  const { room } = arenaPair();
+  arenaAdvance(room, MODES.arena.roundMs);
+  const timed = room.snapshotBase().md;
+  okV(timed.ph === 'round_over' && timed.ts[1] === 1 && timed.rr === 'time',
+      'the defenders win when the round clock expires without a plant', JSON.stringify(timed));
+}
+
+{
+  const { room, a } = arenaPair();
+  const site = OBJECTIVE_SITES[0];
+  a.x = site.x;
+  a.z = site.z;
+  a.vx = a.vz = 0;
+  room.queueInput(a.id, [{ seq: 1, moveX: 0, moveZ: 0, yaw: a.yaw, pitch: 0,
+    buttons: C.BTN_USE, wep: a.wep, sc: 0 }]);
+  for (let i = 0; i < 24; i++) room.step();
+  const released = room.snapshotBase().md;
+  okV(released.bp === undefined && released.ap === undefined && a.useUntil < room.now(),
+      'one use packet cannot survive starvation and finish an objective',
+      `now=${Math.round(room.now())}, lease=${Math.round(a.useUntil)}`);
+}
+
+{
+  const room = new Room('arena');
+  const bot = room.players.get(room.addBot('BOT Objective'));
+  const site = OBJECTIVE_SITES[0];
+  bot.x = site.x;
+  bot.z = site.z;
+  const input = room.ctl.botInput(room, bot, room.now(), {
+    seq: 1, moveX: 1, moveZ: 1, yaw: 0, pitch: 0, buttons: 0, wep: bot.wep, sc: 0,
+  });
+  okV((input.buttons & C.BTN_USE) !== 0 && input.moveX === 0 && input.moveZ === 0,
+      'a bot on an objective stops and uses the same BTN_USE a person sends');
+}
+
+{
+  const { room, a, d } = arenaPair(true);
+  const receipts = [];
+  room.onMatch = (account, data) => receipts.push({ account, data });
+  for (let round = 1; round <= MODES.arena.winRounds; round++) {
+    d.alive = false;
+    room.ctl.onKill(room, a, d);
+    room.ctl.tick(room);
+    if (round < MODES.arena.winRounds) arenaAdvance(room, 5000);
+  }
+  const final = room.snapshotBase().md;
+  okV(final.ph === 'over' && final.wt === 1 && final.ts[0] === MODES.arena.winRounds
+      && receipts.length === 2 && receipts.every((r) => r.data.result.mode === 'arena'),
+      'the seventh round settles one Arena match for both accounts',
+      `${JSON.stringify(final)}, receipts=${receipts.length}`);
+  okV(a.pendingResult?.won === true && d.pendingResult?.won === false
+      && !room.ctl.canDamage(room, a, d),
+      'the final receipt identifies the winning side and closes combat');
+}
+
+{
+  const hudSrc = readFileSync('./client/src/hud.js', 'utf8');
+  const mainSrc = readFileSync('./client/src/main.js', 'utf8');
+  const environmentSrc = readFileSync('./client/src/environment.js', 'utf8');
+  okV(hudSrc.includes("md.ak === 'p' ? 'planting' : 'defusing'")
+      && hudSrc.includes("site ${site} · charge planted")
+      && environmentSrc.includes('OBJECTIVE_SITES'),
+      'the HUD names plant, defuse and fuse states over the shared painted sites');
+  okV(mainSrc.includes("mode.spectate === 'team'")
+      && mainSrc.includes('view.syncAvatars(states, hiddenId'),
+      'an eliminated Arena player follows a living teammate instead of staring at a corpse');
+  const menuSrc = readFileSync('./client/src/menu.js', 'utf8');
+  okV(menuSrc.includes("[kb('use'), 'plant <em>/</em> defuse']"),
+      'the live lobby key reference tells players that E plants and defuses');
+}
+
+console.log([...pV, ...fV].join('\n'));
 // ─────────────────────────────────────────── Part I: two live clients
 console.log('\n=== Part I — two live clients over the wire ===\n');
 
@@ -10406,9 +10595,9 @@ try {
 const total = fail.length + fB.length + fC.length + fD.length + fE.length + fF.length
   + fG.length + fH.length + fJ.length + fK.length + fL.length + fM.length + fN.length
   + fO.length + fP.length
-  + fQ.length + fR.length + fS.length + fT.length + fU.length
+  + fQ.length + fR.length + fS.length + fT.length + fU.length + fV.length
   + f2.length;
 console.log(
-  `\n${total === 0 ? 'ALL PASS' : `${total} FAILURE(S)`} — ${pass.length + pB.length + pC.length + pD.length + pE.length + pF.length + pG.length + pH.length + pJ.length + pK.length + pL.length + pM.length + pN.length + pO.length + pP.length + pQ.length + pR.length + pS.length + pT.length + pU.length + p2.length} checks passed`,
+  `\n${total === 0 ? 'ALL PASS' : `${total} FAILURE(S)`} — ${pass.length + pB.length + pC.length + pD.length + pE.length + pF.length + pG.length + pH.length + pJ.length + pK.length + pL.length + pM.length + pN.length + pO.length + pP.length + pQ.length + pR.length + pS.length + pT.length + pU.length + pV.length + p2.length} checks passed`,
 );
 process.exit(total === 0 ? 0 : 1);

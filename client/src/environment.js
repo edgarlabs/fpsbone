@@ -12,7 +12,7 @@
 import * as THREE from 'three';
 import { mergeGeometries } from 'three/examples/jsm/utils/BufferGeometryUtils.js';
 import * as C from '../../shared/constants.js';
-import { ARENA, MAP, WORLD_BOXES } from '../../shared/map.js';
+import { ARENA, MAP, OBJECTIVE_SITES, WORLD_BOXES } from '../../shared/map.js';
 
 export const ENVIRONMENT_ID = MAP.id;
 export const ZONE_LABELS = Object.freeze(['ALPHA', 'MID', 'BRAVO']);
@@ -121,6 +121,24 @@ function horizontalPlane(scene, geometry, x, z, mat, y = 0.018) {
   return mesh;
 }
 
+function objectiveTexture(label) {
+  const canvas = document.createElement('canvas');
+  canvas.width = canvas.height = 256;
+  const ctx = canvas.getContext('2d');
+  ctx.clearRect(0, 0, 256, 256);
+  ctx.strokeStyle = '#e3a33f';
+  ctx.lineWidth = 13;
+  ctx.strokeRect(12, 12, 232, 232);
+  ctx.fillStyle = '#e3a33f';
+  ctx.font = '900 154px Arial Black, Arial, sans-serif';
+  ctx.textAlign = 'center';
+  ctx.textBaseline = 'middle';
+  ctx.fillText(label, 128, 134);
+  const tex = new THREE.CanvasTexture(canvas);
+  tex.colorSpace = THREE.SRGBColorSpace;
+  return tex;
+}
+
 function buildFloorLanguage(scene) {
   const pale = new THREE.MeshBasicMaterial({ color: PAINT, transparent: true, opacity: 0.58, depthWrite: false });
   const yellow = new THREE.MeshBasicMaterial({ color: SAFETY, transparent: true, opacity: 0.9, depthWrite: false });
@@ -150,6 +168,24 @@ function buildFloorLanguage(scene) {
   horizontalPlane(scene, new THREE.RingGeometry(5.2, 5.45, 48), 0, -25.5, blue);
   horizontalPlane(scene, new THREE.RingGeometry(5.2, 5.45, 48), 0, 25.5, orange);
   horizontalPlane(scene, new THREE.RingGeometry(9.4, 9.62, 64), 0, 0, pale);
+
+  // The paint is the rule: these are the same shared circles the Arena controller tests.
+  // A label sits inside each ring, visible in every mode as real map language without
+  // pretending that deathmatch has an objective of its own.
+  for (const site of OBJECTIVE_SITES) {
+    horizontalPlane(
+      scene,
+      new THREE.RingGeometry(site.radius - 0.16, site.radius, 48),
+      site.x,
+      site.z,
+      yellow,
+      0.026,
+    );
+    const label = new THREE.MeshBasicMaterial({
+      map: objectiveTexture(site.id), transparent: true, opacity: 0.84, depthWrite: false,
+    });
+    horizontalPlane(scene, new THREE.PlaneGeometry(1.65, 1.65), site.x, site.z, label, 0.028);
+  }
 
   // Hazard bars announce every one of the four smoke-sized lane doors. They sit flat on
   // real floor, so they add no fake step or edge to prediction.

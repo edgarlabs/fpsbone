@@ -37,7 +37,7 @@
 // parked somewhere again, the question to ask is what it thinks it is walking towards.
 
 import * as C from '../shared/constants.js';
-import { WORLD_BOXES, SPAWNS } from '../shared/map.js';
+import { WORLD_BOXES, SPAWNS, OBJECTIVE_SITES } from '../shared/map.js';
 import { rayWorld } from '../shared/collide.js';
 import { chestY, eyeY } from '../shared/movement.js';
 import { PROJECTILES } from '../shared/projectile.js';
@@ -210,7 +210,11 @@ const STALE_MS = 500;
  * a wall until the stuck check saved it — and the centre because without it bots
  * orbit the perimeter and the middle of the map goes unused.
  */
-const ROAM = [...SPAWNS.map((s) => ({ x: s.x, z: s.z })), { x: 0, z: 0 }];
+const ROAM = [
+  ...SPAWNS.map((s) => ({ x: s.x, z: s.z })),
+  ...OBJECTIVE_SITES.map((s) => ({ x: s.x, z: s.z })),
+  { x: 0, z: 0 },
+];
 
 const clamp = (v, lo, hi) => (v < lo ? lo : v > hi ? hi : v);
 /** Shortest way round to an angle difference. */

@@ -322,3 +322,18 @@ export const TEAM_SPAWNS = [
   SPAWNS.filter((s) => s.z < 0),
   SPAWNS.filter((s) => s.z > 0),
 ];
+
+/**
+ * Arena objective sites. Team 1 attacks from the negative-z base and team 2 defends
+ * these two pads in the positive-z half. They are shared data because the server uses
+ * the exact circles for plant/defuse admission while the client paints those circles
+ * on the floor; two hand-copied coordinates would eventually turn the visible pad into
+ * a lie.
+ *
+ * Each full circle was audited clear of every solid, not merely its centre. A player
+ * can therefore stand anywhere the paint says is valid without clipping a crate.
+ */
+export const OBJECTIVE_SITES = Object.freeze([
+  Object.freeze({ id: 'A', x: -21, z: 20, radius: 2.4 }),
+  Object.freeze({ id: 'B', x: 27, z: 14, radius: 2.4 }),
+]);

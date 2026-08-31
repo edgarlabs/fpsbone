@@ -1,4 +1,4 @@
-// Mode controllers — the seven hooks that keep `Room` mode-agnostic.
+// Mode controllers — the eight hooks that keep `Room` mode-agnostic.
 //
 // The alternative was a switch statement inside Room for every rule that differs
 // between deathmatch and a bomb round. That grows without bound and puts arena
@@ -11,6 +11,7 @@
 //   onKill(room, killer, vic)  Room.tryFire      scoring, respawn scheduling
 //   tick(room)                 end of Room.step  timers, rounds, win checks
 //   state()                    Room.snapshotBase the HUD blob
+//   botInput(room,p,now,inp)   Room.thinkBots     objective intent, same input path
 //   rebalance(room)            server/index.js   even the sides up after a join or drop
 //
 // `rebalance` is the one hook a Room never calls. It belongs to the HOST, which is what
@@ -24,6 +25,7 @@
 
 import { createFfa } from './ffa.js';
 import { createTdm } from './tdm.js';
+import { createArena } from './arena.js';
 
 /**
  * Only controllers that actually exist are registered. A mode in shared/modes.js
@@ -34,7 +36,7 @@ import { createTdm } from './tdm.js';
 const CONTROLLERS = {
   ffa: createFfa,
   tdm: createTdm,
-  // arena: M8
+  arena: createArena,
 };
 
 const defaults = {
@@ -49,6 +51,9 @@ const defaults = {
   tick() {},
   state() {
     return null;
+  },
+  botInput(_room, _p, _now, input) {
+    return input;
   },
   rebalance() {},
 };

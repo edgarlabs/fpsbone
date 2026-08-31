@@ -298,6 +298,7 @@ function killGlyph(wIdx, zone) {
  *  respawn (arena). 0 while alive. */
 let respawnAt = 0;
 let killer = null;
+let spectateId = 0;
 
 /**
  * The death drop.
@@ -584,6 +585,7 @@ function resetMatchClientState() {
   badgeCounts = null;
   badgeCards = [];
   killChains.clear();
+  spectateId = 0;
   hud.killmarkClear();
   hud.alive();
 }
@@ -792,6 +794,7 @@ net.on('snapshot', (m) => {
     } else if (!wasAlive && selfAlive) {
       respawnAt = 0;
       killer = null;
+      spectateId = 0;
       dropAt = 0;
       hud.alive();
     }
@@ -1144,6 +1147,7 @@ function handleEvent(ev, now, players) {
 
     case EV.SPAWN:
       if (ev.id === selfId && primed) {
+        spectateId = 0;
         predictor.teleport({ x: ev.x, y: ev.y, z: ev.z, yaw: ev.yaw ?? 0, pitch: 0 });
         input.setView(ev.yaw ?? 0, 0);
       }
@@ -1316,12 +1320,35 @@ function frame(now) {
     pitch = Math.max(-C.PITCH_LIMIT, pitch - DROP_PITCH * k);
     roll = dropRoll * DROP_ROLL * k;
   }
-  view.camera.position.set(s.x + e.x, eye, s.z + e.z);
-  view.camera.rotation.set(pitch, yaw, roll);
-
   const states = interp.sample(now);
+  let hiddenId = selfId;
+  let spectating = '';
+  // Arena has no mid-round respawn. After the short death fall, follow a living team-mate
+  // and hide that avatar from its own eye position. Aim remains under the viewer's mouse,
+  // which makes this a useful team camera without giving the corpse any input authority.
+  if (!selfAlive && mode.spectate === 'team' && states && now - dropAt >= DROP_MS) {
+    const mine = latestPlayers.find((p) => p.id === selfId);
+    const valid = (p) => p && p.a === 1 && p.tm === mine?.tm && p.id !== selfId;
+    let target = latestPlayers.find((p) => p.id === spectateId && valid(p));
+    if (!target) target = latestPlayers.find(valid);
+    if (target) {
+      spectateId = target.id;
+      const watched = states.get(target.id) ?? target;
+      hiddenId = target.id;
+      spectating = target.n;
+      eye = eyeY(watched);
+      view.camera.position.set(watched.x, eye, watched.z);
+      view.camera.rotation.set(pitch, yaw, 0);
+    } else {
+      spectateId = 0;
+    }
+  }
+  if (!spectating) {
+    view.camera.position.set(s.x + e.x, eye, s.z + e.z);
+    view.camera.rotation.set(pitch, yaw, roll);
+  }
   if (states && selfId !== null) {
-    view.syncAvatars(states, selfId, now, CORPSE_MS(mode), latestRoster);
+    view.syncAvatars(states, hiddenId, now, CORPSE_MS(mode), latestRoster);
   }
   view.tickEffects(now);
 
@@ -1416,7 +1443,7 @@ function frame(now) {
     // number and `tdm.js` is the only thing allowed to have an opinion about it.
     match?.ts ?? null,
   );
-  if (!selfAlive) hud.dead(respawnAt == null ? null : (respawnAt - now) / 1000, killer);
+  if (!selfAlive) hud.dead(respawnAt == null ? null : (respawnAt - now) / 1000, killer, spectating);
 
   view.render();
 }

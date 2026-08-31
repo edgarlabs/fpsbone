@@ -195,6 +195,7 @@ export function createMenu(settings, cbs) {
       // Right-click is three different things depending on what you are holding, and
       // naming it "aim" is what made players expect a scope on a knife.
       ['<kbd>right-click</kbd>', 'scope <em>/</em> stab <em>/</em> lob'],
+      [kb('use'), 'plant <em>/</em> defuse'],
       [kb('reload'), 'reload'],
       [kb('inspect'), 'inspect <em>(hold)</em>'],
       ['<kbd>1</kbd>–<kbd>4</kbd> <em>/</em> <kbd>wheel</kbd>', 'weapon'],

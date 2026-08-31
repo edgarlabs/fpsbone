@@ -347,6 +347,10 @@ export class Room {
       respawnAt: 0,
       inputs: [],
       lastInput: null,
+      /** A short server-clock lease renewed only by a real consumed BTN_USE input.
+       *  Objective modes read this instead of `lastInput`, which may be repeated during
+       *  packet starvation and must never finish a plant after the key was released. */
+      useUntil: 0,
       lastSeq: 0,
       /** When this player may next attack. A deadline rather than a timestamp of the
        *  last shot, because a weapon's two attacks can have different cadences — see
@@ -550,7 +554,8 @@ export class Room {
     for (const id of this.bots) {
       const p = this.players.get(id);
       if (!p?.bot || !p.alive) continue;
-      this.queueInput(id, [p.bot.think(this, p, now)]);
+      const input = p.bot.think(this, p, now);
+      this.queueInput(id, [this.ctl.botInput(this, p, now, input)]);
     }
   }
 
@@ -643,6 +648,7 @@ export class Room {
     // a fresh body that walks out of its spawn on its own while the player is still
     // watching the death cam.
     p.lastInput = null;
+    p.useUntil = 0;
     // `fireHeld` is deliberately NOT cleared. Somebody who died with the button down
     // is still holding it, and a fresh latch would read that as a new click — one free
     // round on respawn from a weapon that is supposed to need a release first.
@@ -675,6 +681,9 @@ export class Room {
         stepPlayer(p, inp, C.TICK_DT, WORLD_BOXES);
         p.lastSeq = inp.seq;
         p.lastInput = inp;
+        // Renewed by real inputs only. The starvation filler deliberately cannot hold an
+        // objective key down forever after a browser stops sending packets.
+        p.useUntil = (inp.buttons & C.BTN_USE) !== 0 ? now + 100 : 0;
         consumed++;
 
         this.applyWeapon(p, inp, now);

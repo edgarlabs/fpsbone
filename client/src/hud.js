@@ -596,13 +596,24 @@ export function createHud() {
         els.mTime.textContent = time;
       }
 
-      const text = over
-        ? winnerName
-          ? `${winnerName} wins`
-          : 'match over'
-        : md.kl
-          ? `${label} · first to ${md.kl}`
-          : label;
+      let text;
+      if (over) {
+        text = winnerName ? `${winnerName} wins` : 'match over';
+      } else if (md.ar) {
+        const site = md.as ? String.fromCharCode(64 + md.as) : md.bp ? String.fromCharCode(64 + md.bp) : '';
+        if (md.ph === 'round_over') {
+          const side = md.rw ? TEAM_NAMES[md.rw] : 'round';
+          text = `${side} · ${md.rr || 'draw'}`;
+        } else if (md.ak) {
+          text = `${md.ak === 'p' ? 'planting' : 'defusing'} ${site} · ${md.ap ?? 0}%`;
+        } else if (md.bp) {
+          text = `site ${site} · charge planted`;
+        } else {
+          text = `${label} · round ${md.rn} · first to ${md.wr}`;
+        }
+      } else {
+        text = md.kl ? `${label} · first to ${md.kl}` : label;
+      }
       if (text !== shownLabel) {
         shownLabel = text;
         els.mLabel.textContent = text;
@@ -698,7 +709,7 @@ export function createHud() {
     /** @param secondsLeft null in modes with no mid-round respawn (arena).
      *  @param killer `{name, wep}` for the shot that landed, or null for a fall or
      *         any other death with nobody to blame. */
-    dead(secondsLeft, killer) {
+    dead(secondsLeft, killer, spectating = '') {
       els.dead.classList.remove('hidden');
 
       const secs = secondsLeft == null ? '' : Math.max(0, secondsLeft).toFixed(1);
@@ -707,12 +718,14 @@ export function createHud() {
         els.respawnIn.textContent = secs;
       }
 
-      const key = killer ? `${killer.name} ${killer.wep}` : '';
+      const key = `${killer ? `${killer.name} ${killer.wep}` : ''}|${spectating}`;
       if (key !== shownKiller) {
         shownKiller = key;
-        els.killedBy.innerHTML = killer
+        const killed = killer
           ? `killed by <b>${esc(killer.name)}</b> <span>${esc(WEAPONS[idAt(killer.wep)].label)}</span>`
           : '';
+        const watching = spectating ? `${killed ? '<br>' : ''}spectating <b>${esc(spectating)}</b>` : '';
+        els.killedBy.innerHTML = killed + watching;
       }
     },
     alive() {
