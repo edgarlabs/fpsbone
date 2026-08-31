@@ -1471,9 +1471,17 @@ export class Room {
       snap.proj = this.projectiles.map((pr) => ({
         i: pr.id,
         k: pr.kind,
+        o: pr.owner,
         x: r3(pr.x),
         y: r3(pr.y),
         z: r3(pr.z),
+        // Velocity is authority too. Without it a newly seen grenade has to wait for
+        // TWO snapshots before the browser can infer a direction, so it visibly hangs
+        // at the release point on a high-ping route. Sending the six rounded numbers
+        // lets the first rendered frame continue the exact server arc.
+        vx: r3(pr.vx),
+        vy: r3(pr.vy),
+        vz: r3(pr.vz),
       }));
     }
     // Smoke, same deal — and it is in the snapshot rather than in a one-off event

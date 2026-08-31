@@ -3323,30 +3323,32 @@ const okD = (cond, label, detail = '') => {
   const room = new Room(DEFAULT_MODE);
   room.projectiles = [thrown('grenade', false)];
   const wire = room.snapshotBase().proj?.[0];
-  for (let i = 0; i < C.TICKS_PER_SNAPSHOT; i++) {
-    stepProjectile(room.projectiles[0], C.TICK_DT, FLAT, (i + 1) * STEP_MS);
-  }
-  const wire2 = room.snapshotBase().proj?.[0];
-  okD([wire?.x, wire?.y, wire?.z, wire2?.x, wire2?.y, wire2?.z].every(Number.isFinite)
-      && Math.hypot(wire2.x - wire.x, wire2.y - wire.y, wire2.z - wire.z) > 0.1,
-      'consecutive projectile snapshots carry changing authoritative positions',
-      `${JSON.stringify(wire)} → ${JSON.stringify(wire2)}`);
+  okD(wire?.o === 1 && [wire?.vx, wire?.vy, wire?.vz].every(Number.isFinite)
+      && Math.hypot(wire.vx, wire.vy, wire.vz) > 1,
+      'the first projectile snapshot carries its authoritative velocity',
+      `owner ${wire?.o}, v=(${wire?.vx},${wire?.vy},${wire?.vz}) — the browser need not wait for two positions before moving it`);
   const renderSrc = readFileSync(new URL('./client/src/render.js', import.meta.url), 'utf8');
-  okD(renderSrc.includes('s.vx = (q.x - p.px) / dt;')
-      && renderSrc.includes('s.vy = (q.y - p.py) / dt;')
-      && !renderSrc.includes('Number.isFinite(q.vx)'),
-      'the renderer derives flight from consecutive positions like 2df5a1e',
-      'server velocity fields cannot repeatedly reset the local throwable arc');
+  okD(renderSrc.includes("import { ARENA, WORLD_BOXES } from '../../shared/map.js';")
+      && renderSrc.includes('stepProjectile(s, dt, WORLD_BOXES, 0)'),
+      'the renderer imports the collision world used by live projectile frames',
+      'an undefined WORLD_BOXES would stop requestAnimationFrame on the first throwable');
+  okD(renderSrc.includes('vx: Number.isFinite(q.vx) ? q.vx : 0')
+      && renderSrc.includes('s.vx = Number.isFinite(q.vx) ? q.vx'),
+      'and the renderer starts and reconciles flight from that velocity',
+      'a newly released grenade advances on its first drawn frame instead of freezing until the next snapshot');
   const mainThrowSrc = readFileSync(new URL('./client/src/main.js', import.meta.url), 'utf8');
-  okD(mainThrowSrc.includes('const input = createInput(canvas, settings);')
-      && mainThrowSrc.includes('viewmodel.fire(heavy, now);')
-      && !mainThrowSrc.includes('view.predictProjectile('),
-      'local throw animation starts from the authoritative SHOT event',
-      'the 2df5a1e path cannot freeze a click-time cosmetic throw while the server projectile keeps moving');
-  okD(!mainThrowSrc.includes('predictedAction')
-      && !mainThrowSrc.includes('onThrowRelease:'),
-      'there is no second client-only throw clock competing with the server',
-      'grenades, utility and snowballs all use one release path');
+  okD(renderSrc.includes('predictProjectile(kind, owner, x, y, z, dir, now, lob = false)')
+      && renderSrc.includes('v.predicted && v.sim.kind === q.k && v.sim.owner === q.o')
+      && mainThrowSrc.includes('view.predictProjectile('),
+      'the client launches a cosmetic grenade immediately and authority adopts the same mesh',
+      'click-time flight covers the round trip; the server still owns the burst, damage and final position');
+  const viewmodelThrowSrc = readFileSync(new URL('./client/src/viewmodel.js', import.meta.url), 'utf8');
+  okD(mainThrowSrc.includes('onThrowRelease: (id, at)')
+      && mainThrowSrc.includes('action.heavy,')
+      && viewmodelThrowSrc.includes("hooks.onThrowRelease?.(currentId, now)")
+      && !mainThrowSrc.includes('setTimeout(() => {\n        if (predictedAction !== action) return;'),
+      'the visible hand-release frame launches the predicted grenade directly',
+      'no independent timer can stall behind the animation while the authoritative fuse keeps burning');
 }
 
 // The other thing right-click must not mean: a scope, while the action is stuck.

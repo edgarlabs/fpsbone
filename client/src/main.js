@@ -142,6 +142,9 @@ let requestedMode = settings.mode;
 const hud = createHud();
 const audio = createAudio();
 const view = createScene(canvas, settings.fov);
+/** Locally animated melee/throw action waiting for the server's matching SHOT. Combat
+ * results remain authoritative; this removes one round trip from the hands and grenade. */
+let predictedAction = null;
 // The weapon lives in its own render pass — `view.vmRoot` is that pass's camera,
 // which is also its camera space, so rig offsets go in unchanged.
 const viewmodel = createViewmodel(view.camera, view.scene, view.vmRoot, {
@@ -151,12 +154,55 @@ const viewmodel = createViewmodel(view.camera, view.scene, view.vmRoot, {
   // Fires on the shot, for a weapon whose action has to be worked before the next one.
   // Both beats come from the animation because it owns where they land in the stroke.
   onCycle: (id, weight, backInMs, homeInMs) => audio.cycle(weight, backInMs, homeInMs),
+  // The hand animation owns the exact release frame. Launching the cosmetic projectile
+  // from that edge keeps the hand and world copy on one clock; a setTimeout can be late
+  // by hundreds of milliseconds during a frame hitch while the server fuse keeps going.
+  onThrowRelease: (id, at) => {
+    const action = predictedAction;
+    if (!action || action.id !== id || action.released) return;
+    action.released = true;
+    view.predictProjectile(
+      action.kind,
+      selfId,
+      action.spawn[0], action.spawn[1], action.spawn[2],
+      action.dir,
+      at,
+      action.heavy,
+    );
+  },
 });
 viewmodel.setFinish(identity.cosmetics.finish);
-// This is intentionally the authoritative throw path used by 2df5a1e. The later
-// click-time prediction path could leave throwables frozen in their release pose while
-// the server projectile and fuse continued out of sight.
-const input = createInput(canvas, settings);
+const input = createInput(canvas, settings, {
+  onAttack: (wIdx, heavy, at) => {
+    const id = idAt(wIdx);
+    const w = WEAPONS[id];
+    if (!w || (w.kind !== 'melee' && w.kind !== 'projectile')) return;
+    if (lifecycle !== 'joined' || !selfAlive || reloadMs > 0 || jamMs > 0) return;
+    if (w.mag !== null && ammo[wIdx] <= 0) return;
+    // Do not manufacture a second cosmetic throw while the first input is crossing a
+    // high-latency route. Knives clear on their server event well inside their cadence.
+    if (predictedAction && at - predictedAction.at < 1000) return;
+
+    const action = { id, w: wIdx, heavy, at, released: false };
+    predictedAction = action;
+
+    if (w.kind === 'projectile') {
+      const s = predictor.state;
+      const yaw = input.lookYaw;
+      const pitch = input.lookPitch;
+      const cp = Math.cos(pitch);
+      const dir = { x: -Math.sin(yaw) * cp, y: Math.sin(pitch), z: -Math.cos(yaw) * cp };
+      const off = C.PLAYER_HALF_W + 0.2;
+      const spawn = [s.x + dir.x * off, eyeY(s) + dir.y * off, s.z + dir.z * off];
+      action.kind = w.proj;
+      action.spawn = spawn;
+      action.dir = dir;
+    }
+    // Set the action up first: a very slow frame may cross the release point in one
+    // update, and the callback above must already have the matching throw to launch.
+    viewmodel.fire(heavy, at);
+  },
+});
 const interp = createInterpolator();
 const net = createNet({
   url,
@@ -1042,7 +1088,12 @@ function handleEvent(ev, now, players) {
         // The heavy flag comes back from the server rather than off the local mouse.
         // The button can change between sending an input and the shot resolving, and
         // the animation has to show the swing that was actually paid for.
-        viewmodel.fire(heavy, now);
+        const locallyPlayed = predictedAction
+          && predictedAction.w === ev.w
+          && now - predictedAction.at < 1500
+          && (melee || thrownWep);
+        if (!locallyPlayed) viewmodel.fire(heavy, now);
+        else predictedAction = null;
         // And the aim kicks. Driven from the server's SHOT for the same reason: only a
         // round that was actually fired may move where you are pointing. Weapons with
         // no recoil declared ignore this, so the knife and the throwables need no
