@@ -3333,18 +3333,15 @@ const okD = (cond, label, detail = '') => {
       'and the renderer starts and reconciles flight from that velocity',
       'a newly released grenade advances on its first drawn frame instead of freezing until the next snapshot');
   const mainThrowSrc = readFileSync(new URL('./client/src/main.js', import.meta.url), 'utf8');
-  okD(renderSrc.includes('predictProjectile(kind, owner, x, y, z, dir, now, lob = false)')
-      && renderSrc.includes('v.predicted && v.sim.kind === q.k && v.sim.owner === q.o')
-      && mainThrowSrc.includes('view.predictProjectile('),
-      'the client launches a cosmetic grenade immediately and authority adopts the same mesh',
-      'click-time flight covers the round trip; the server still owns the burst, damage and final position');
-  const viewmodelThrowSrc = readFileSync(new URL('./client/src/viewmodel.js', import.meta.url), 'utf8');
-  okD(mainThrowSrc.includes('onThrowRelease: (id, at)')
-      && mainThrowSrc.includes('action.heavy,')
-      && viewmodelThrowSrc.includes("hooks.onThrowRelease?.(currentId, now)")
-      && !mainThrowSrc.includes('setTimeout(() => {\n        if (predictedAction !== action) return;'),
-      'the visible hand-release frame launches the predicted grenade directly',
-      'no independent timer can stall behind the animation while the authoritative fuse keeps burning');
+  okD(mainThrowSrc.includes('const input = createInput(canvas, settings);')
+      && mainThrowSrc.includes('viewmodel.fire(heavy, now);')
+      && !mainThrowSrc.includes('view.predictProjectile('),
+      'local throw animation starts from the authoritative SHOT event',
+      'the 2df5a1e path cannot freeze a click-time cosmetic throw while the server projectile keeps moving');
+  okD(!mainThrowSrc.includes('predictedAction')
+      && !mainThrowSrc.includes('onThrowRelease:'),
+      'there is no second client-only throw clock competing with the server',
+      'grenades, utility and snowballs all use one release path');
 }
 
 // The other thing right-click must not mean: a scope, while the action is stuck.
