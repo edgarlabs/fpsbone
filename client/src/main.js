@@ -142,6 +142,9 @@ let requestedMode = settings.mode;
 const hud = createHud();
 const audio = createAudio();
 const view = createScene(canvas, settings.fov);
+/** Locally animated melee/throw action waiting for the server's matching SHOT. Combat
+ * results remain authoritative; this removes one round trip from the hands and grenade. */
+let predictedAction = null;
 // The weapon lives in its own render pass — `view.vmRoot` is that pass's camera,
 // which is also its camera space, so rig offsets go in unchanged.
 const viewmodel = createViewmodel(view.camera, view.scene, view.vmRoot, {
@@ -151,11 +154,24 @@ const viewmodel = createViewmodel(view.camera, view.scene, view.vmRoot, {
   // Fires on the shot, for a weapon whose action has to be worked before the next one.
   // Both beats come from the animation because it owns where they land in the stroke.
   onCycle: (id, weight, backInMs, homeInMs) => audio.cycle(weight, backInMs, homeInMs),
+  // The hand animation owns the exact release frame. Launching the cosmetic projectile
+  // from that edge keeps the hand and world copy on one clock; a setTimeout can be late
+  // by hundreds of milliseconds during a frame hitch while the server fuse keeps going.
+  onThrowRelease: (id, at) => {
+    const action = predictedAction;
+    if (!action || action.id !== id || action.released) return;
+    action.released = true;
+    view.predictProjectile(
+      action.kind,
+      selfId,
+      action.spawn[0], action.spawn[1], action.spawn[2],
+      action.dir,
+      at,
+      action.heavy,
+    );
+  },
 });
 viewmodel.setFinish(identity.cosmetics.finish);
-/** Locally animated melee/throw action waiting for the server's matching SHOT. Combat
- * results remain authoritative; this removes one round trip from the hands and grenade. */
-let predictedAction = null;
 const input = createInput(canvas, settings, {
   onAttack: (wIdx, heavy, at) => {
     const id = idAt(wIdx);
@@ -167,8 +183,7 @@ const input = createInput(canvas, settings, {
     // high-latency route. Knives clear on their server event well inside their cadence.
     if (predictedAction && at - predictedAction.at < 1000) return;
 
-    viewmodel.fire(heavy, at);
-    const action = { w: wIdx, heavy, at };
+    const action = { id, w: wIdx, heavy, at, released: false };
     predictedAction = action;
 
     if (w.kind === 'projectile') {
@@ -179,15 +194,13 @@ const input = createInput(canvas, settings, {
       const dir = { x: -Math.sin(yaw) * cp, y: Math.sin(pitch), z: -Math.cos(yaw) * cp };
       const off = C.PLAYER_HALF_W + 0.2;
       const spawn = [s.x + dir.x * off, eyeY(s) + dir.y * off, s.z + dir.z * off];
-      // The hand opens 46% through the 260ms throw. Start the world copy on that same
-      // beat, not on mouse-down, or a second grenade is already flying while one is
-      // visibly still in the fist. If authority beats this timer, there is nothing to
-      // predict and the callback quietly retires.
-      setTimeout(() => {
-        if (predictedAction !== action) return;
-        view.predictProjectile(w.proj, selfId, spawn[0], spawn[1], spawn[2], dir, at + 120, heavy);
-      }, 120);
+      action.kind = w.proj;
+      action.spawn = spawn;
+      action.dir = dir;
     }
+    // Set the action up first: a very slow frame may cross the release point in one
+    // update, and the callback above must already have the matching throw to launch.
+    viewmodel.fire(heavy, at);
   },
 });
 const interp = createInterpolator();

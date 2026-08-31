@@ -1368,6 +1368,10 @@ export function createViewmodel(camera, scene, vmRoot, hooks = {}) {
    */
   let zoomFovK = 0;
   let swing = -1; // -1 idle, else 0..1 through a slash or throw
+  /** Whether the current throw has crossed the visible hand-release frame. Kept as an
+   * edge so a low frame rate can cross the threshold once without either missing it or
+   * calling the projectile launch hook on every remaining frame of the animation. */
+  let throwReleased = false;
   /** True when the running swing is the heavy variant — a wider, slower arc. */
   let swingHeavy = false;
   /** Which way the next light slash cuts, ±1, flipped on every swing. CS2's knife
@@ -1437,6 +1441,7 @@ export function createViewmodel(camera, scene, vmRoot, hooks = {}) {
     kick = 0;
     kickVel = 0;
     swing = -1;
+    throwReleased = false;
     inspectT = -1;
     cycleT = -1;
     altK = 0;
@@ -1686,6 +1691,7 @@ export function createViewmodel(camera, scene, vmRoot, hooks = {}) {
         if (current.spec.anim.startsWith('knife_') && !heavy) slashDir = -slashDir;
         swing = 0;
         swingHeavy = heavy && hasHeavy(currentId);
+        throwReleased = false;
       } else {
         kickVel += current.spec.kick;
         flash.intensity = 3.4;
@@ -1822,7 +1828,13 @@ export function createViewmodel(camera, scene, vmRoot, hooks = {}) {
       kick += kickVel * dt;
 
       if (swing >= 0) {
+        const before = swing;
         swing += step / (swingHeavy ? HEAVY_SWING_MS : SWING_MS);
+        if (!throwReleased && current?.spec.anim === 'throw'
+            && before < THROW_RELEASE && swing >= THROW_RELEASE) {
+          throwReleased = true;
+          hooks.onThrowRelease?.(currentId, now);
+        }
         if (swing >= 1) swing = -1;
       }
       // The bolt stroke. Advanced on its own clock — see `cycleT` — and cleared through

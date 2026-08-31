@@ -3338,6 +3338,13 @@ const okD = (cond, label, detail = '') => {
       && mainThrowSrc.includes('view.predictProjectile('),
       'the client launches a cosmetic grenade immediately and authority adopts the same mesh',
       'click-time flight covers the round trip; the server still owns the burst, damage and final position');
+  const viewmodelThrowSrc = readFileSync(new URL('./client/src/viewmodel.js', import.meta.url), 'utf8');
+  okD(mainThrowSrc.includes('onThrowRelease: (id, at)')
+      && mainThrowSrc.includes('action.heavy,')
+      && viewmodelThrowSrc.includes("hooks.onThrowRelease?.(currentId, now)")
+      && !mainThrowSrc.includes('setTimeout(() => {\n        if (predictedAction !== action) return;'),
+      'the visible hand-release frame launches the predicted grenade directly',
+      'no independent timer can stall behind the animation while the authoritative fuse keeps burning');
 }
 
 // The other thing right-click must not mean: a scope, while the action is stuck.
