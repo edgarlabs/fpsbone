@@ -14,7 +14,7 @@ import { halfHAt, eyeY } from '../../shared/movement.js';
 // hud.js puts the same canvas in the scoreboard's rank gutter. See insignia.js for
 // why it is not drawn in two places.
 import { insigniaCanvas, FIELD_H } from './insignia.js';
-import { createProjectile, stepProjectile } from '../../shared/projectile.js';
+import { stepProjectile } from '../../shared/projectile.js';
 import { JAM_CLEAR_MS, cycleMsOf, idAt } from '../../shared/weapons.js';
 import { DEFAULT_FINISH, finishOf, sanitizeCosmetics } from '../../shared/cosmetics.js';
 import { operatorFor } from '../../shared/operators.js';
@@ -1074,7 +1074,6 @@ export function createScene(canvas, baseFov = 85) {
   };
   const projPool = [];
   const projLive = new Map(); // id → { mesh, sim, ex, ey, ez }
-  let predictedProjectileId = 0;
   /** Error decay, 1/s. */
   const PROJ_SMOOTH = 16;
   /** Disagreement past which smoothing would be a lie — snap instead. */
@@ -1087,22 +1086,6 @@ export function createScene(canvas, baseFov = 85) {
     scene.add(m);
     projPool.push(m);
     return m;
-  }
-
-  function beginProjectile(key, sim, predicted = false, born = performance.now()) {
-    const mesh = projMesh();
-    mesh.material = projMats[sim.kind] ?? projMats.grenade;
-    mesh.scale.setScalar(sim.kind === 'snowball' ? 0.1 : 0.12);
-    mesh.position.set(sim.x, sim.y, sim.z);
-    mesh.visible = true;
-    const p = {
-      mesh, sim,
-      ex: 0, ey: 0, ez: 0,
-      px: sim.x, py: sim.y, pz: sim.z,
-      spin: 0, predicted, born,
-    };
-    projLive.set(key, p);
-    return p;
   }
 
   // ---- bursts ---------------------------------------------------------------
@@ -1655,34 +1638,19 @@ export function createScene(canvas, baseFov = 85) {
       if (a) avatarShot(a, w, now);
     },
 
-    /** Start our own cosmetic copy at click time. The server still decides whether the
-     * throw exists and where it bursts; this only covers the round trip before its first
-     * snapshot. When authority arrives, syncProjectiles adopts this mesh and corrects it. */
-    predictProjectile(kind, owner, x, y, z, dir, now, lob = false) {
-      const sim = createProjectile(kind, owner, x, y, z, dir, now, lob);
-      sim.diesAt = Infinity;
-      beginProjectile(`pred:${++predictedProjectileId}`, sim, true, now);
-    },
-
     /**
      * Reconcile the locally simulated projectiles against the latest snapshot.
      *
-     * Snapshots carry position and velocity, so a projectile the client has never seen
-     * continues its arc on the very first frame rather than freezing at release while
-     * it waits for a second position sample. Everything already in the air is corrected: authority
+     * Projectile velocity is derived from consecutive authoritative positions, matching
+     * the known-good 2df5a1e pipeline. Everything already in the air is corrected: authority
      * goes into the simulation, and the visible difference is parked in `ex/ey/ez` so
      * it decays instead of popping.
      *
      * @param list `proj` from the snapshot, or undefined when nothing is in the air.
      */
     syncProjectiles(list) {
-      const now = performance.now();
       for (const [id, p] of projLive) {
         if (!list?.some((q) => q.i === id)) {
-          // A locally predicted throw is expected to be absent while the input and first
-          // snapshot cross the network. Keep it for one second; authority normally adopts
-          // it much sooner, and a rejected throw then disappears without ever exploding.
-          if (p.predicted && now - p.born < 1000) continue;
           p.mesh.visible = false;
           projLive.delete(id);
         }
@@ -1691,27 +1659,18 @@ export function createScene(canvas, baseFov = 85) {
       for (const q of list) {
         let p = projLive.get(q.i);
         if (!p) {
-          // Adopt the oldest unmatched local copy of the same kind. Reusing its mesh is
-          // what makes prediction continuous rather than a fake grenade disappearing as
-          // the real one pops into existence beside it.
-          const guessed = [...projLive].find(([, v]) =>
-            v.predicted && v.sim.kind === q.k && v.sim.owner === q.o);
-          if (guessed) {
-            projLive.delete(guessed[0]);
-            p = guessed[1];
-            p.predicted = false;
-            projLive.set(q.i, p);
-          } else {
-            // Only the fields shared/projectile.js touches. The fuse remains the server's
-            // business: BURST removes this mesh at the authoritative instant.
-            p = beginProjectile(q.i, {
-              kind: q.k, owner: q.o, x: q.x, y: q.y, z: q.z,
-              vx: Number.isFinite(q.vx) ? q.vx : 0,
-              vy: Number.isFinite(q.vy) ? q.vy : 0,
-              vz: Number.isFinite(q.vz) ? q.vz : 0,
-              diesAt: Infinity, done: false,
-            });
-          }
+          const mesh = projMesh();
+          mesh.material = projMats[q.k] ?? projMats.grenade;
+          mesh.scale.setScalar(q.k === 'snowball' ? 0.1 : 0.12);
+          mesh.visible = true;
+          p = {
+            mesh,
+            sim: { kind: q.k, x: q.x, y: q.y, z: q.z, vx: 0, vy: 0, vz: 0, diesAt: Infinity, done: false },
+            ex: 0, ey: 0, ez: 0,
+            px: q.x, py: q.y, pz: q.z,
+            spin: 0,
+          };
+          projLive.set(q.i, p);
         }
 
         const s = p.sim;
@@ -1719,22 +1678,11 @@ export function createScene(canvas, baseFov = 85) {
         const dy = q.y - s.y;
         const dz = q.z - s.z;
 
-        // New servers send velocity directly. Keep the position-pair fallback so a
-        // client refreshing during a rolling deploy remains playable against an older
-        // host for the few minutes before Render replaces it.
-        //
-        // This used to read `(q.x - (s.x - p.ex)) / dt`, using the local sim's current
-        // position as the older sample. That is the one position guaranteed to be wrong
-        // for the purpose: the sim has already integrated a snapshot's worth of travel,
-        // so a sim tracking authority perfectly gave `q.x - s.x === 0` and the inferred
-        // velocity was ZERO. The projectile then sat still for a snapshot, arrived
-        // 1.2 m behind on the next one, got its real velocity back, and stalled again —
-        // alternating 0, v, 0, v at 20 Hz. That was the "grenade ticks like it is
-        // lagging" report: not the network, an arithmetic error in the estimator.
+        // Velocity from the two authoritative positions, exactly as 2df5a1e did it.
         const dt = C.TICKS_PER_SNAPSHOT * C.TICK_DT;
-        s.vx = Number.isFinite(q.vx) ? q.vx : (q.x - p.px) / dt;
-        s.vy = Number.isFinite(q.vy) ? q.vy : (q.y - p.py) / dt;
-        s.vz = Number.isFinite(q.vz) ? q.vz : (q.z - p.pz) / dt;
+        s.vx = (q.x - p.px) / dt;
+        s.vy = (q.y - p.py) / dt;
+        s.vz = (q.z - p.pz) / dt;
         p.px = q.x;
         p.py = q.y;
         p.pz = q.z;

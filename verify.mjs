@@ -3323,15 +3323,20 @@ const okD = (cond, label, detail = '') => {
   const room = new Room(DEFAULT_MODE);
   room.projectiles = [thrown('grenade', false)];
   const wire = room.snapshotBase().proj?.[0];
-  okD(wire?.o === 1 && [wire?.vx, wire?.vy, wire?.vz].every(Number.isFinite)
-      && Math.hypot(wire.vx, wire.vy, wire.vz) > 1,
-      'the first projectile snapshot carries its authoritative velocity',
-      `owner ${wire?.o}, v=(${wire?.vx},${wire?.vy},${wire?.vz}) — the browser need not wait for two positions before moving it`);
+  for (let i = 0; i < C.TICKS_PER_SNAPSHOT; i++) {
+    stepProjectile(room.projectiles[0], C.TICK_DT, FLAT, (i + 1) * STEP_MS);
+  }
+  const wire2 = room.snapshotBase().proj?.[0];
+  okD([wire?.x, wire?.y, wire?.z, wire2?.x, wire2?.y, wire2?.z].every(Number.isFinite)
+      && Math.hypot(wire2.x - wire.x, wire2.y - wire.y, wire2.z - wire.z) > 0.1,
+      'consecutive projectile snapshots carry changing authoritative positions',
+      `${JSON.stringify(wire)} → ${JSON.stringify(wire2)}`);
   const renderSrc = readFileSync(new URL('./client/src/render.js', import.meta.url), 'utf8');
-  okD(renderSrc.includes('vx: Number.isFinite(q.vx) ? q.vx : 0')
-      && renderSrc.includes('s.vx = Number.isFinite(q.vx) ? q.vx'),
-      'and the renderer starts and reconciles flight from that velocity',
-      'a newly released grenade advances on its first drawn frame instead of freezing until the next snapshot');
+  okD(renderSrc.includes('s.vx = (q.x - p.px) / dt;')
+      && renderSrc.includes('s.vy = (q.y - p.py) / dt;')
+      && !renderSrc.includes('Number.isFinite(q.vx)'),
+      'the renderer derives flight from consecutive positions like 2df5a1e',
+      'server velocity fields cannot repeatedly reset the local throwable arc');
   const mainThrowSrc = readFileSync(new URL('./client/src/main.js', import.meta.url), 'utf8');
   okD(mainThrowSrc.includes('const input = createInput(canvas, settings);')
       && mainThrowSrc.includes('viewmodel.fire(heavy, now);')
