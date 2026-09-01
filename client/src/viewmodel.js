@@ -167,7 +167,7 @@ const INSPECT_FILL = 0.72;
  * ever hits the clamp and no weapon's recoil silently flattens at the top of a burst.
  * verify.mjs re-derives that for every weapon; if a new one breaks it, it says so.
  */
-const KICK_BACK = 0.23;
+const KICK_BACK = 0.21;
 const KICK_UP = 0.05;
 const KICK_PITCH = 0.27;
 
@@ -229,26 +229,26 @@ const SPRINT_FIRE_MAX = 1600;
  * gun you cannot see is a worse answer to "am I sprinting" than a gun that does not move.
  * verify.mjs now counts how much of each weapon stays inside the frustum, at both hands and
  * every point in the stride, against how much of it the rest pose shows; these numbers are
- * the largest that keep 60% of that on the worst rig in the game, which is the knife.
+ * the largest that keep more than half of that on the worst straight-blade rig.
  *
- *   DROP 0.026   Down off the aim line. Still the largest vertical displacement in the file
+ *   DROP 0.024   Down off the aim line. Still the largest vertical displacement in the file
  *                — half again what a crouch does, and 4.3x the walk bob's whole amplitude.
- *   IN   0.011   Inward, across the body.
+ *   IN   0.014   Inward, across the body.
  *   BACK 0.005   Toward the chest. Smallest of the three, because it is the one axis recoil
  *                also owns: place() clamps rearward travel to POSE_ROOM and the machine gun
- *                already spends 5.9cm of the 6cm at the top of a burst.
- *   PITCH -0.145 Muzzle down 8°. Negative is muzzle-down — see KICK_PITCH, which is the
+ *                already spends most of the 6cm at the top of a burst.
+ *   PITCH -0.12  Muzzle down 7°. Negative is muzzle-down — see KICK_PITCH, which is the
  *                same axis with the opposite sign.
- *   YAW  0.12    Muzzle inward 7°, so the barrel crosses the view instead of pointing where
+ *   YAW  0.08    Muzzle inward 5°, so the barrel crosses the view instead of pointing where
  *                you are about to shoot.
- *   ROLL 0.17    Canted 10°, top toward the body, and the cue that does most of the work:
+ *   ROLL 0.10    Canted 6°, top toward the body, and the cue that does most of the work:
  *                a rolled silhouette is a different SHAPE, which survives being small in a
  *                way that a few millimetres of extra bob never did.
  * and the stride, which is what separates a carry from a static offset:
- *   PUMP 0.009   Extra drop on each footfall.
+ *   PUMP 0.006   Extra drop on each footfall.
  *   ROCK 0.075   Roll swing, +-4.3° about the cant, one cycle per stride pair, so the gun
- *                rocks between 5° and 14° of cant as you run.
- *   LEAD 0.006   Lateral swing, in step with the pump.
+ *                rocks between roughly 1° and 10° of cant as you run.
+ *   LEAD 0.004   Lateral swing, in step with the pump.
  */
 function sprintCarry(k, sway, side) {
   if (k <= 0) return { x: 0, y: 0, z: 0, pitch: 0, yaw: 0, roll: 0 };
@@ -258,14 +258,14 @@ function sprintCarry(k, sway, side) {
   const stride = Math.sin(sway);
   const pump = Math.abs(stride);
   return {
-    x: k * (-0.011 + Math.cos(sway) * 0.006) * side,
-    y: k * (-0.026 - pump * 0.009),
+    x: k * (-0.014 + Math.cos(sway) * 0.004) * side,
+    y: k * (-0.024 - pump * 0.006),
     z: k * 0.005,
     // The muzzle lifts a little on each footfall rather than pumping further down: the
     // weapon is hanging off the hands, so the mass swings behind the step.
-    pitch: k * (-0.145 + pump * 0.032),
-    yaw: k * (0.12 + stride * 0.026) * side,
-    roll: k * (0.17 + stride * 0.075) * side,
+    pitch: k * (-0.12 + pump * 0.025),
+    yaw: k * (0.08 + stride * 0.018) * side,
+    roll: k * (0.1 + stride * 0.075) * side,
   };
 }
 
@@ -808,7 +808,10 @@ export const RIGS = {
     ],
   },
   knife_karambit: {
-    rest: [0.13, -0.128, -0.285], muzzle: [0, 0.085, -0.34], kick: 2.3,
+    // The hook has the widest knife silhouette, so it sits slightly farther inward than
+    // the straight blades. This preserves the original close depth without throwing half
+    // the ring outside the narrowest supported frame during a sprint.
+    rest: [0.045, -0.09, -0.285], muzzle: [0, 0.085, -0.34], kick: 2.3,
     melee: true, anim: 'knife_karambit', grips: [[0.012, -0.005, 0.02, 0]],
     parts: [
       ['blade', 0.024, 0.23, 0.3, 0, 0.035, -0.23, 0, 0, 0, 'karambit'],
@@ -1178,24 +1181,10 @@ function frameFist(p, tanX, tanY) {
 /** Clearance between the rearmost part and the camera plane, and how much a pose is
  *  then allowed to move the rig back toward the camera on top of that. */
 const REAR_CLEAR = 0.03;
-const POSE_ROOM = 0.3;
-// The authored rest points already are FPS carry positions. The previous presentation
-// pass added another 16–30cm of setback and 7.5cm of lift, which displayed the weapon
-// like an object being held out for inspection. Keep only a tiny lift for finger
-// clearance and use the shorter family-aware depth below.
-const VIEWMODEL_RAISE = 0.018;
-
-// Enough camera-space depth to frame the forearms and receiver, but not the old 0.30u
-// showroom setback that made the gun look detached from the player. Short weapons need
-// almost the same optical distance as rifles because their hands, not their barrel, are
-// what otherwise fills the near half of the view.
-function carryDepthOf(spec) {
-  if (spec.anim === 'throw') return 0.08;
-  if (spec.melee) return 0.09;
-  if (spec.id?.startsWith('pistol')) return 0.14;
-  if (spec.id?.startsWith('smg')) return 0.15;
-  return 0.17;
-}
+// This is the original FPS placement used by df950bf and the known-good 2df5a1e build.
+// The authored rest point is already the carry position; adding a second camera setback
+// turns it into a remote display model and is the exact regression this constant guards.
+const POSE_ROOM = 0.06;
 
 /**
  * How far to slide a rig's own parts forward so all of it clears the camera.
@@ -1221,10 +1210,7 @@ function buildRig(spec) {
   // and receiver perfectly stacked—the exact flat rear-face problem we are avoiding.
   const model = new THREE.Group();
   g.add(model);
-  const modelSpec = {
-    ...spec,
-    rest: [spec.rest[0], spec.rest[1] + VIEWMODEL_RAISE, spec.rest[2] - carryDepthOf(spec)],
-  };
+  const modelSpec = spec;
   const modelParts = [...modelSpec.parts, ...weaponDetailParts(modelSpec)];
   // A buttstock is part of the authored/world model, but it lives against the shoulder
   // behind the first-person eye. Pulling it in front of the camera created the enormous
@@ -1628,14 +1614,11 @@ export function createViewmodel(camera, scene, vmRoot, hooks = {}) {
     if (!current) return;
     current.arms[1].g.visible = side === 1;
     current.arms['-1'].g.visible = side === -1;
-    // Present the near side of the action and aim the barrel toward screen centre.
-    // Zero yaw makes the player stare into the square rear face of the receiver, hiding
-    // every shaped side panel, control, finger and most of the barrel behind it.
+    // Handedness is carried by the authored rest X and the arm rig. Keep the model itself
+    // unrotated, matching the original camera placement rather than turning it into a
+    // presentation object inside the player's hands.
     hand.rotation.y = 0;
-    const presentationYaw = current.spec.anim === 'throw' ? 0.04
-      : current.spec.melee ? 0.22
-        : 0.13;
-    current.model.rotation.y = presentationYaw * side;
+    current.model.rotation.y = 0;
   }
 
   /** Undo everything an animation moved *inside* the rig. The rig's own transform is
