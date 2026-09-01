@@ -19,7 +19,7 @@ import { createProjectile, stepProjectile } from '../../shared/projectile.js';
 import { JAM_CLEAR_MS, cycleMsOf, idAt, recoilSideStep } from '../../shared/weapons.js';
 import { DEFAULT_FINISH, finishOf, sanitizeCosmetics } from '../../shared/cosmetics.js';
 import { operatorFor } from '../../shared/operators.js';
-import { boundsOfBoxParts, buildDetailedWeapon } from './weapon-meshes.js';
+import { RIGS as VIEWMODEL_RIGS } from './viewmodel.js';
 // The rig — proportions, the arm solve, and every hold — lives in its own module with no
 // three.js in it, so `npm run verify` can import it in plain Node and MEASURE that the
 // hands land on the weapon. That is the entire reason it is not in this file: the previous
@@ -284,29 +284,18 @@ function buildWeapon(a, id) {
   const g = new THREE.Group();
   const hold = holdOf(id);
   let muzzle = null;
-  const detailed = buildDetailedWeapon(id, boundsOfBoxParts(hold.parts), {
-    steel: a.weaponMat,
-    dark: a.weaponDarkMat,
-    trim: a.weaponTrimMat,
-    blade: a.weaponMat,
-    army: a.weaponTrimMat,
-    snow: a.snowMat,
-  }, { castShadow: true, anchor: hold.support || id.startsWith('knife') ? [0, 0, 0] : null });
-  if (detailed) g.add(detailed);
   for (const [i, [w, h, d, x, y, z, tag, rx = 0, ry = 0, rz = 0]] of hold.parts.entries()) {
-    if (!detailed) {
-      const weaponMat = i === 0 ? a.weaponMat : i % 3 === 0 ? a.weaponTrimMat : a.weaponDarkMat;
-      const roundBarrel = d > Math.max(w, h) * 3.4 && Math.abs(w - h) < Math.max(w, h) * 0.35;
-      const geometry = roundBarrel
-        ? new THREE.CylinderGeometry(Math.max(w, h) * 0.5, Math.max(w, h) * 0.5, d, 8, 1)
-        : new RoundedBoxGeometry(w, h, d, 2, Math.min(w, h, d) * 0.16);
-      if (roundBarrel) geometry.rotateX(Math.PI / 2);
-      const mesh = new THREE.Mesh(geometry, tag === 'snow' ? a.snowMat : weaponMat);
-      mesh.position.set(x, y, z);
-      mesh.rotation.set(rx, ry, rz);
-      mesh.castShadow = w * h * d > 0.0006;
-      g.add(mesh);
-    }
+    const weaponMat = i === 0 ? a.weaponMat : i % 3 === 0 ? a.weaponTrimMat : a.weaponDarkMat;
+    const roundBarrel = d > Math.max(w, h) * 3.4 && Math.abs(w - h) < Math.max(w, h) * 0.35;
+    const geometry = roundBarrel
+      ? new THREE.CylinderGeometry(Math.max(w, h) * 0.5, Math.max(w, h) * 0.5, d, 8, 1)
+      : new RoundedBoxGeometry(w, h, d, 2, Math.min(w, h, d) * 0.16);
+    if (roundBarrel) geometry.rotateX(Math.PI / 2);
+    const mesh = new THREE.Mesh(geometry, tag === 'snow' ? a.snowMat : weaponMat);
+    mesh.position.set(x, y, z);
+    mesh.rotation.set(rx, ry, rz);
+    mesh.castShadow = w * h * d > 0.0006;
+    g.add(mesh);
 
     // Find the foremost authored part. Its centre gives the barrel line and its nearest
     // rotated corner gives the muzzle plane, so rifles, pistols and odd angled receivers
@@ -1218,35 +1207,53 @@ export function createScene(canvas, baseFov = 85) {
 
   const projectileDarkMat = new THREE.MeshLambertMaterial({ color: 0x2d3238, flatShading: true });
   const projectileTrimMat = new THREE.MeshLambertMaterial({ color: 0xb39b4a, flatShading: true });
-  const projectileBounds = {
-    grenade: { x0: -0.0375, x1: 0.0375, y0: -0.05, y1: 0.05, z0: -0.0375, z1: 0.0375 },
-    flash: { x0: -0.035, x1: 0.035, y0: -0.0575, y1: 0.0575, z0: -0.035, z1: 0.035 },
-    smoke: { x0: -0.041, x1: 0.041, y0: -0.0625, y1: 0.0625, z0: -0.041, z1: 0.041 },
-  };
+
+  /** Build one of FPSBone's authored throwable model groups. The same `parts` array
+   * builds the object in the player's hand, so release changes ownership, not artwork. */
+  function authoredProjectile(kind) {
+    const spec = VIEWMODEL_RIGS[kind];
+    if (!spec) return null;
+    const g = new THREE.Group();
+    for (const part of spec.parts) {
+      const role = part[0];
+      const mat = role === 'snow' ? projMats.snowball
+        : role === 'dark' ? projectileDarkMat
+          : role === 'trim' ? projectileTrimMat
+            : role === 'blade' ? projMats.flash
+              : projMats[kind] ?? projMats.grenade;
+      const roundBarrel = part[1] !== 'sphere'
+        && part[3] > Math.max(part[1], part[2]) * 3.4
+        && Math.abs(part[1] - part[2]) < Math.max(part[1], part[2]) * 0.35;
+      const geometry = part[1] === 'sphere'
+        ? new THREE.IcosahedronGeometry(part[2], 1)
+        : roundBarrel
+          ? new THREE.CylinderGeometry(
+            Math.max(part[1], part[2]) * 0.5,
+            Math.max(part[1], part[2]) * 0.5,
+            part[3],
+            10,
+            1,
+          )
+          : new RoundedBoxGeometry(
+            part[1], part[2], part[3], 2, Math.min(part[1], part[2], part[3]) * 0.16,
+          );
+      if (roundBarrel) geometry.rotateX(Math.PI / 2);
+      const mesh = new THREE.Mesh(geometry, mat);
+      const off = part[1] === 'sphere' ? part.slice(3) : part.slice(4);
+      mesh.position.set(off[0], off[1], off[2]);
+      if (part[1] !== 'sphere') mesh.rotation.set(part[7] || 0, part[8] || 0, part[9] || 0);
+      mesh.castShadow = true;
+      g.add(mesh);
+    }
+    return g;
+  }
 
   function projMesh(kind) {
     for (const m of projPool) {
       if (!m.visible && m.userData.projectileKind === kind) return m;
     }
-    let m;
-    if (kind === 'snowball') {
-      m = new THREE.Mesh(projGeo, projMats.snowball);
-      m.scale.setScalar(0.055);
-    } else {
-      // Use the exact same source mesh as the held first- and third-person object.
-      // The previous path swapped every release for one generic icosahedron, which is
-      // why a different item appeared in the air and on the ground.
-      const color = projMats[kind] ?? projMats.grenade;
-      m = buildDetailedWeapon(kind, projectileBounds[kind] ?? projectileBounds.grenade, {
-        steel: kind === 'flash' ? projMats.flash : projectileDarkMat,
-        dark: projectileDarkMat,
-        trim: projectileTrimMat,
-        blade: projectileTrimMat,
-        army: color,
-        snow: projMats.snowball,
-      }, { castShadow: true }) ?? new THREE.Mesh(projGeo, color);
-      if (m.isMesh) m.scale.setScalar(0.055);
-    }
+    const m = authoredProjectile(kind)
+      ?? new THREE.Mesh(projGeo, projMats[kind] ?? projMats.grenade);
     m.userData.projectileKind = kind;
     m.frustumCulled = false;
     scene.add(m);

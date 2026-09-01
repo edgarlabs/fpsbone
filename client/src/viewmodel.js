@@ -28,7 +28,6 @@ import {
 // and that means undoing the rotation of the pivot by hand — see the inspect branch.
 import { rotateXYZ, CYCLE_HAND } from './rig.js';
 import { DEFAULT_FINISH, finishOf, sanitizeCosmetics } from '../../shared/cosmetics.js';
-import { buildDetailedWeapon, firstPersonScaleOf } from './weapon-meshes.js';
 
 // A shot has to read at a glance, so it is drawn three ways: a bright beam along
 // the path, a line of smoke puffs that lingers after the beam is gone, and the
@@ -403,7 +402,9 @@ const MATS = {
 // which is why two of them are built per rig and swapped by visibility. Negating
 // scale.x instead would invert the normals and break the flat shading that gives
 // every model in this game its shape.
-const RIGS = {
+// These authored parts are the canonical FPSBone first-person models. They are exported
+// so the world projectile renderer can build the exact same throwable after release.
+export const RIGS = {
   rifle: {
     // VANGUARD R7 — bullpup. The magazine and action sit behind the trigger hand,
     // leaving a long barrel inside a compact overall outline. This is intentionally
@@ -894,24 +895,13 @@ function limb(mat, a, b, w) {
  * @param dz the same forward shift applied to the rig's parts, so a grip stays on the
  *   piece of the weapon it was authored against.
  */
-function buildArms(spec, side, dz, gripScale = 1) {
+function buildArms(spec, side, dz) {
   const g = new THREE.Group();
   const hands = {};
   const [rx, ry, rz] = spec.rest;
   const skin = MATS.skin();
   const sleeve = MATS.sleeve();
-  const trigger = spec.grips?.find((grip) => grip[3] === 0);
-
-  for (const [sourceX, sourceY, sourceZ, arm] of spec.grips ?? []) {
-    // A bulky imported receiver may be presented smaller in first person. The model is
-    // scaled about its trigger grip, so its support grip must follow that exact transform
-    // or the off hand remains at the old procedural fore-end and visibly floats beside it.
-    const gx = arm === 1 && trigger
-      ? trigger[0] + (sourceX - trigger[0]) * gripScale : sourceX;
-    const gy = arm === 1 && trigger
-      ? trigger[1] + (sourceY - trigger[1]) * gripScale : sourceY;
-    const gz = arm === 1 && trigger
-      ? trigger[2] + (sourceZ - trigger[2]) * gripScale : sourceZ;
+  for (const [gx, gy, gz, arm] of spec.grips ?? []) {
     const h = new THREE.Group();
     hands[arm] = h;
     g.add(h);
@@ -1150,64 +1140,44 @@ function buildRig(spec) {
   const dz = shiftOf(spec);
   let mag = null;
   const finishMats = [];
-  const box = boxOf(spec);
-  const detailedMats = Object.fromEntries(
-    ['steel', 'dark', 'trim', 'blade', 'army', 'snow'].map((role) => [role, MATS[role]()] ),
-  );
-  const detailed = buildDetailedWeapon(spec.id, {
-    ...box,
-    z0: box.z0 + dz,
-    z1: box.z1 + dz,
-  }, detailedMats, {
-    // The source model declares the top of its real trigger grip. Put that point at
-    // the authored hand target instead of merely centring two unrelated bounding boxes.
-    anchor: spec.grips?.length
-      ? [spec.grips[0][0], spec.grips[0][1], spec.grips[0][2] + dz]
-      : null,
-    scale: firstPersonScaleOf(spec.id),
-  });
-  if (detailed) {
-    g.add(detailed);
-    for (const role of ['steel', 'dark', 'trim']) finishMats.push({ role, mat: detailedMats[role] });
-  } else {
-    // Snowballs intentionally stay procedural; every actual arsenal model above is a
-    // connected imported mesh. This fallback also keeps the renderer resilient if a
-    // future utility is added to WEAPON_IDS before its art lands.
-    for (const part of spec.parts) {
-      const mat = MATS[part[0]]();
-      if (part[0] === 'steel' || part[0] === 'dark' || part[0] === 'trim') {
-        finishMats.push({ role: part[0], mat });
-      }
-      const roundBarrel = part[1] !== 'sphere'
-        && part[3] > Math.max(part[1], part[2]) * 3.4
-        && Math.abs(part[1] - part[2]) < Math.max(part[1], part[2]) * 0.35;
-      const geo = part[1] === 'sphere'
-        ? new THREE.IcosahedronGeometry(part[2], 1)
-        : roundBarrel
-          ? new THREE.CylinderGeometry(Math.max(part[1], part[2]) * 0.5,
-            Math.max(part[1], part[2]) * 0.5, part[3], 10, 1)
-          : new RoundedBoxGeometry(part[1], part[2], part[3], 2,
-            Math.min(part[1], part[2], part[3]) * 0.16);
-      if (roundBarrel) geo.rotateX(Math.PI / 2);
-      const mesh = new THREE.Mesh(geo, mat);
-      const off = part[1] === 'sphere' ? part.slice(3) : part.slice(4);
-      mesh.position.set(off[0], off[1], off[2] + dz);
-      if (part[1] !== 'sphere') mesh.rotation.set(part[7] || 0, part[8] || 0, part[9] || 0);
-      g.add(mesh);
+  for (const part of spec.parts) {
+    const mat = MATS[part[0]]();
+    if (part[0] === 'steel' || part[0] === 'dark' || part[0] === 'trim') {
+      finishMats.push({ role: part[0], mat });
     }
-    if (spec.mag !== undefined) {
-      mag = { mesh: g.children[spec.mag], base: g.children[spec.mag].position.clone() };
-    }
+    const roundBarrel = part[1] !== 'sphere'
+      && part[3] > Math.max(part[1], part[2]) * 3.4
+      && Math.abs(part[1] - part[2]) < Math.max(part[1], part[2]) * 0.35;
+    const geo = part[1] === 'sphere'
+      ? new THREE.IcosahedronGeometry(part[2], 1)
+      : roundBarrel
+        ? new THREE.CylinderGeometry(
+          Math.max(part[1], part[2]) * 0.5,
+          Math.max(part[1], part[2]) * 0.5,
+          part[3],
+          10,
+          1,
+        )
+        : new RoundedBoxGeometry(
+          part[1], part[2], part[3], 2, Math.min(part[1], part[2], part[3]) * 0.16,
+        );
+    if (roundBarrel) geo.rotateX(Math.PI / 2);
+    const mesh = new THREE.Mesh(geo, mat);
+    const off = part[1] === 'sphere' ? part.slice(3) : part.slice(4);
+    mesh.position.set(off[0], off[1], off[2] + dz);
+    if (part[1] !== 'sphere') mesh.rotation.set(part[7] || 0, part[8] || 0, part[9] || 0);
+    g.add(mesh);
+  }
+  if (spec.mag !== undefined) {
+    mag = { mesh: g.children[spec.mag], base: g.children[spec.mag].position.clone() };
   }
   // Both hands are built now and swapped later. Building on demand would allocate
   // geometry during a settings change, mid-match.
-  const gripScale = firstPersonScaleOf(spec.id);
-  const arms = {
-    1: buildArms(spec, 1, dz, gripScale),
-    '-1': buildArms(spec, -1, dz, gripScale),
-  };
+  const arms = { 1: buildArms(spec, 1, dz), '-1': buildArms(spec, -1, dz) };
   arms['-1'].g.visible = false;
   g.add(arms[1].g, arms['-1'].g);
+
+  const box = boxOf(spec);
 
   g.visible = false;
   return {
@@ -1283,7 +1253,7 @@ function buildRig(spec) {
      * disappear at release. The arms are separate children added after the parts, which
      * is what makes the slice safe and is why the hand can follow through empty.
      */
-    throwBody: spec.anim === 'throw' ? (detailed ? [detailed] : g.children.slice(0, spec.parts.length)) : null,
+    throwBody: spec.anim === 'throw' ? g.children.slice(0, spec.parts.length) : null,
   };
 }
 
