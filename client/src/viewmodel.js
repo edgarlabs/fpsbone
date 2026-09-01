@@ -28,7 +28,7 @@ import {
 // and that means undoing the rotation of the pivot by hand — see the inspect branch.
 import { rotateXYZ, CYCLE_HAND } from './rig.js';
 import { DEFAULT_FINISH, finishOf, sanitizeCosmetics } from '../../shared/cosmetics.js';
-import { buildDetailedWeapon } from './weapon-meshes.js';
+import { buildDetailedWeapon, firstPersonScaleOf } from './weapon-meshes.js';
 
 // A shot has to read at a glance, so it is drawn three ways: a bright beam along
 // the path, a line of smoke puffs that lingers after the beam is gone, and the
@@ -894,14 +894,24 @@ function limb(mat, a, b, w) {
  * @param dz the same forward shift applied to the rig's parts, so a grip stays on the
  *   piece of the weapon it was authored against.
  */
-function buildArms(spec, side, dz) {
+function buildArms(spec, side, dz, gripScale = 1) {
   const g = new THREE.Group();
   const hands = {};
   const [rx, ry, rz] = spec.rest;
   const skin = MATS.skin();
   const sleeve = MATS.sleeve();
+  const trigger = spec.grips?.find((grip) => grip[3] === 0);
 
-  for (const [gx, gy, gz, arm] of spec.grips ?? []) {
+  for (const [sourceX, sourceY, sourceZ, arm] of spec.grips ?? []) {
+    // A bulky imported receiver may be presented smaller in first person. The model is
+    // scaled about its trigger grip, so its support grip must follow that exact transform
+    // or the off hand remains at the old procedural fore-end and visibly floats beside it.
+    const gx = arm === 1 && trigger
+      ? trigger[0] + (sourceX - trigger[0]) * gripScale : sourceX;
+    const gy = arm === 1 && trigger
+      ? trigger[1] + (sourceY - trigger[1]) * gripScale : sourceY;
+    const gz = arm === 1 && trigger
+      ? trigger[2] + (sourceZ - trigger[2]) * gripScale : sourceZ;
     const h = new THREE.Group();
     hands[arm] = h;
     g.add(h);
@@ -1148,7 +1158,14 @@ function buildRig(spec) {
     ...box,
     z0: box.z0 + dz,
     z1: box.z1 + dz,
-  }, detailedMats);
+  }, detailedMats, {
+    // The source model declares the top of its real trigger grip. Put that point at
+    // the authored hand target instead of merely centring two unrelated bounding boxes.
+    anchor: spec.grips?.length
+      ? [spec.grips[0][0], spec.grips[0][1], spec.grips[0][2] + dz]
+      : null,
+    scale: firstPersonScaleOf(spec.id),
+  });
   if (detailed) {
     g.add(detailed);
     for (const role of ['steel', 'dark', 'trim']) finishMats.push({ role, mat: detailedMats[role] });
@@ -1184,7 +1201,11 @@ function buildRig(spec) {
   }
   // Both hands are built now and swapped later. Building on demand would allocate
   // geometry during a settings change, mid-match.
-  const arms = { 1: buildArms(spec, 1, dz), '-1': buildArms(spec, -1, dz) };
+  const gripScale = firstPersonScaleOf(spec.id);
+  const arms = {
+    1: buildArms(spec, 1, dz, gripScale),
+    '-1': buildArms(spec, -1, dz, gripScale),
+  };
   arms['-1'].g.visible = false;
   g.add(arms[1].g, arms['-1'].g);
 

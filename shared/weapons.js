@@ -809,6 +809,30 @@ export const isUtil = (id) => WEAPONS[id]?.util === true;
 export const recoilOf = (id) => WEAPONS[id]?.recoil ?? null;
 
 /**
+ * Horizontal recoil impulse for one shot in a burst.
+ *
+ * This is deliberately a fixed pattern, not `Math.random()`: a spray should pull away
+ * from the crosshair in a shape a player can learn and counter. Weapons start at
+ * different points in the same authored sequence, giving each family its own left/right
+ * rhythm without maintaining a second recoil table that can drift away from `WEAPONS`.
+ * A small amount of shot noise may be layered on by the input client, but the pattern is
+ * always the dominant part.
+ */
+const RECOIL_SIDE_PATTERN = [
+  0.35, -0.2, 0.55, 0.85, 0.5, -0.15, -0.65,
+  -0.95, -0.55, 0.05, 0.65, 1, 0.35, -0.55,
+];
+
+export function recoilSideStep(id, shot) {
+  const r = recoilOf(id);
+  if (!r?.side) return 0;
+  const n = Math.max(0, Math.trunc(shot));
+  const phase = (n + Math.max(0, WEAPON_IDS.indexOf(id)) * 3) % RECOIL_SIDE_PATTERN.length;
+  const ramp = Math.min(1, (n + 1) / Math.max(1, r.ramp));
+  return r.side * (0.45 + 0.8 * ramp) * RECOIL_SIDE_PATTERN[phase];
+}
+
+/**
  * Chance per round fired that this weapon jams. 0 for anything that is not a gun.
  *
  * Zero rather than a default probability, so the failure mode of a weapon falling out

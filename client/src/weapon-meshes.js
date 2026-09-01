@@ -38,32 +38,36 @@ import uziSilencer from '../assets/weapons/kenney/uziSilencer.obj?raw';
  * only needed by knife assets authored blade-up instead of muzzle-forward.
  */
 export const WEAPON_MESH_SOURCES = {
-  knife:          { raw: knifeSharp, rotateX: -Math.PI / 2, kind: 'blade' },
-  pistol:         { raw: pistol },
-  rifle:          { raw: m16 },
-  sniper:         { raw: sniper },
+  knife:          { raw: knifeSharp, rotateX: -Math.PI / 2, kind: 'blade', grip: [.5, .5, .82] },
+  pistol:         { raw: pistol, grip: [.5, .58, .88] },
+  rifle:          { raw: m16, grip: [.5, .58, .7] },
+  sniper:         { raw: sniper, rotateY: Math.PI, grip: [.5, .58, .82] },
   grenade:        { raw: grenade, kind: 'utility' },
-  smg:            { raw: uzi },
-  lmg:            { raw: machinegun },
-  semi:           { raw: kar98k },
-  shotgun:        { raw: gauge12 },
+  smg:            { raw: uzi, rotateY: Math.PI, grip: [.5, .58, .58] },
+  lmg:            { raw: machinegun, rotateY: Math.PI, grip: [.5, .58, .76], viewScale: .68 },
+  semi:           { raw: kar98k, rotateY: Math.PI, grip: [.5, .58, .72] },
+  shotgun:        { raw: gauge12, grip: [.5, .58, .64] },
   flash:          { raw: flash, kind: 'utility' },
   smoke:          { raw: smoke, kind: 'utility' },
-  rifle_havoc:    { raw: ak47 },
-  rifle_falcon:   { raw: stg44 },
-  smg_kite:       { raw: uziLong },
-  smg_banshee:    { raw: uziSilencer },
-  pistol_wisp:    { raw: colt1911 },
-  pistol_rook:    { raw: magnum44 },
-  lmg_atlas:      { raw: machinegunLauncher },
-  lmg_colossus:   { raw: flamethrower },
-  knife_karambit: { raw: karambit, rotateX: -Math.PI / 2, kind: 'blade' },
-  knife_tanto:    { raw: knifeSmooth, rotateX: -Math.PI / 2, kind: 'blade' },
-  knife_bowie:    { raw: knifeRoundSharp, rotateX: -Math.PI / 2, kind: 'blade' },
-  knife_kukri:    { raw: knifeRoundSmooth, rotateX: -Math.PI / 2, kind: 'blade' },
+  rifle_havoc:    { raw: ak47, grip: [.5, .58, .7], viewScale: .78 },
+  rifle_falcon:   { raw: stg44, grip: [.5, .58, .68] },
+  smg_kite:       { raw: uziLong, rotateY: Math.PI, grip: [.5, .58, .58] },
+  smg_banshee:    { raw: uziSilencer, rotateY: Math.PI, grip: [.5, .58, .58] },
+  pistol_wisp:    { raw: colt1911, grip: [.5, .58, .88] },
+  pistol_rook:    { raw: magnum44, grip: [.5, .58, .86] },
+  lmg_atlas:      { raw: machinegunLauncher, rotateY: Math.PI, grip: [.5, .58, .76], viewScale: .68 },
+  lmg_colossus:   { raw: flamethrower, rotateY: Math.PI, grip: [.5, .58, .72], viewScale: .64 },
+  knife_karambit: { raw: karambit, rotateX: -Math.PI / 2, kind: 'blade', grip: [.5, .5, .76] },
+  knife_tanto:    { raw: knifeSmooth, rotateX: -Math.PI / 2, kind: 'blade', grip: [.5, .5, .82] },
+  knife_bowie:    { raw: knifeRoundSharp, rotateX: -Math.PI / 2, kind: 'blade', grip: [.5, .5, .76] },
+  knife_kukri:    { raw: knifeRoundSmooth, rotateX: -Math.PI / 2, kind: 'blade', grip: [.5, .5, .76] },
 };
 
 const loader = new OBJLoader();
+
+/** Imported silhouettes fill their boxes differently; bulky receiver models need a
+ * smaller first-person presentation while remaining full size on remote avatars. */
+export const firstPersonScaleOf = (id) => WEAPON_MESH_SOURCES[id]?.viewScale ?? 1;
 const templates = new Map();
 
 function templateFor(id) {
@@ -122,7 +126,9 @@ function roleFor(source, material, index) {
  * axis conventions, while the authored bounds are already tested against the camera,
  * hands and muzzle. It fixes those conventions once without altering the gameplay rig.
  */
-export function buildDetailedWeapon(id, target, materials, { castShadow = false } = {}) {
+export function buildDetailedWeapon(
+  id, target, materials, { castShadow = false, anchor = null, scale = 1 } = {},
+) {
   const template = templateFor(id);
   if (!template) return null;
 
@@ -139,15 +145,29 @@ export function buildDetailedWeapon(id, target, materials, { castShadow = false 
   );
   const safe = (n) => Math.max(1e-6, n);
   g.scale.set(
-    targetSize.x / safe(template.size.x),
-    targetSize.y / safe(template.size.y),
-    targetSize.z / safe(template.size.z),
+    (targetSize.x / safe(template.size.x)) * scale,
+    (targetSize.y / safe(template.size.y)) * scale,
+    (targetSize.z / safe(template.size.z)) * scale,
   );
-  g.position.set(
-    targetCenter.x - template.center.x * g.scale.x,
-    targetCenter.y - template.center.y * g.scale.y,
-    targetCenter.z - template.center.z * g.scale.z,
-  );
+  if (anchor && template.source.grip) {
+    const f = template.source.grip;
+    const sourceGrip = new THREE.Vector3(
+      template.box.min.x + template.size.x * f[0],
+      template.box.min.y + template.size.y * f[1],
+      template.box.min.z + template.size.z * f[2],
+    );
+    g.position.set(
+      anchor[0] - sourceGrip.x * g.scale.x,
+      anchor[1] - sourceGrip.y * g.scale.y,
+      anchor[2] - sourceGrip.z * g.scale.z,
+    );
+  } else {
+    g.position.set(
+      targetCenter.x - template.center.x * g.scale.x,
+      targetCenter.y - template.center.y * g.scale.y,
+      targetCenter.z - template.center.z * g.scale.z,
+    );
+  }
 
   let meshCount = 0;
   g.traverse((o) => {

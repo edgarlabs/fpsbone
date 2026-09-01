@@ -9,6 +9,7 @@ import {
   idAt,
   recoilMaxOf,
   recoilOf,
+  recoilSideStep,
   scopes,
   slotPick,
   zoomStepCount,
@@ -499,12 +500,12 @@ export function createInput(canvas, settings, hooks = {}) {
       lastShotAt = now;
 
       const t = Math.min(1, burst / r.ramp);
-      // Vertical eases off as the burst goes on and the lateral wander opens up in its
-      // place — the shape every CS spray pattern has. `Math.sin` of the shot index
-      // gives the wander a fixed shape a player can learn; the scatter on top keeps it
-      // from being a curve you could trace exactly.
+      // Vertical eases off as the burst goes on while the shared authored side pattern
+      // moves immediately from the first round. The tiny random term keeps two sprays
+      // from drawing the exact same pixels; it is only 12% of `side`, so the fixed
+      // sequence remains the thing a player learns and counters.
       punchPitch += r.up * (1 - 0.35 * t);
-      punchYaw += r.side * t * (Math.sin(burst * 1.15) * 0.85 + (Math.random() - 0.5) * 0.6);
+      punchYaw += recoilSideStep(idAt(idx), burst) + r.side * (Math.random() - 0.5) * 0.12;
 
       // The ceiling. Without it the pattern climbs for as long as the magazine lasts
       // and a hundred-round belt ends up pointed at the sky; with it, a spray reaches

@@ -16,7 +16,7 @@ import { halfHAt, eyeY } from '../../shared/movement.js';
 // why it is not drawn in two places.
 import { insigniaCanvas, FIELD_H } from './insignia.js';
 import { createProjectile, stepProjectile } from '../../shared/projectile.js';
-import { JAM_CLEAR_MS, cycleMsOf, idAt } from '../../shared/weapons.js';
+import { JAM_CLEAR_MS, cycleMsOf, idAt, recoilSideStep } from '../../shared/weapons.js';
 import { DEFAULT_FINISH, finishOf, sanitizeCosmetics } from '../../shared/cosmetics.js';
 import { operatorFor } from '../../shared/operators.js';
 import { boundsOfBoxParts, buildDetailedWeapon } from './weapon-meshes.js';
@@ -291,7 +291,7 @@ function buildWeapon(a, id) {
     blade: a.weaponMat,
     army: a.weaponTrimMat,
     snow: a.snowMat,
-  }, { castShadow: true });
+  }, { castShadow: true, anchor: hold.support || id.startsWith('knife') ? [0, 0, 0] : null });
   if (detailed) g.add(detailed);
   for (const [i, [w, h, d, x, y, z, tag, rx = 0, ry = 0, rz = 0]] of hold.parts.entries()) {
     if (!detailed) {
@@ -364,6 +364,8 @@ function setAvatarWeapon(a, w) {
   // A stroke in flight belongs to the weapon that started it. Carrying its phase onto a
   // different weapon would drive a pump animation on a pistol.
   a.cycleAt = 0;
+  a.recoilBurst = 0;
+  a.lastShotAt = -1e9;
 }
 
 /** One shot, seen from outside: an impulse into the recoil spring, and the action starts
@@ -371,6 +373,12 @@ function setAvatarWeapon(a, w) {
 function avatarShot(a, w, now) {
   setAvatarWeapon(a, w);
   a.kickVel += a.kickAmt;
+  a.recoilBurst = now - a.lastShotAt > 340 ? 0 : a.recoilBurst + 1;
+  a.lastShotAt = now;
+  // The remote weapon follows the same learnable left/right sequence as the shooter's
+  // aim. It is intentionally a smaller visual spring: readable to an observer without
+  // making the arms detach from their solved grips.
+  a.kickYawVel += recoilSideStep(a.wep, a.recoilBurst) * 34;
   a.flashUntil = now + 55;
   const flash = a.gun?.userData.muzzleFlash;
   if (flash) {
@@ -442,6 +450,8 @@ function poseUpper(a, pitch, yaw, scopeStep, jamMs, now, dtMs) {
   // the viewmodel's, so a shot watched from outside settles on the same curve as one felt.
   a.kickVel += (-a.kick * 260 - a.kickVel * 22) * dt;
   a.kick += a.kickVel * dt;
+  a.kickYawVel += (-a.kickYaw * 210 - a.kickYawVel * 24) * dt;
+  a.kickYaw += a.kickYawVel * dt;
   // The gun does not recoil in isolation. A small shoulder rise, backward compression
   // and cant make the body absorb the shot while both solved hands remain attached.
   // Kept deliberately smaller than the gun's own travel below: readable, not a flinch.
@@ -489,7 +499,7 @@ function poseUpper(a, pitch, yaw, scopeStep, jamMs, now, dtMs) {
   // is clamped because `trail` is per rad/s and a flick can exceed 3 rad/s, which unclamped
   // would swing an lmg 30deg off the body's facing.
   const wrx = -a.sag + handling.pitch + a.kick * 0.8 - 0.05 * stroke;
-  const wry = Math.max(-0.35, Math.min(0.35, -a.turn * a.trail));
+  const wry = Math.max(-0.35, Math.min(0.35, -a.turn * a.trail + a.kickYaw));
 
   // The trigger hand IS the weapon's origin, so this one position places both.
   const gx = hold.grip[0];
@@ -700,6 +710,10 @@ function reviveAvatar(a) {
   // otherwise respawn still settling from the last shot of a previous life.
   a.kick = 0;
   a.kickVel = 0;
+  a.kickYaw = 0;
+  a.kickYawVel = 0;
+  a.recoilBurst = 0;
+  a.lastShotAt = -1e9;
   a.scopePose = 0;
   a.flashUntil = 0;
   a.shoulders.position.set(0, RIG.shoulderY, 0);
@@ -981,6 +995,11 @@ function makeAvatar(id) {
     /** Recoil spring: `kickVel` gets the impulse, `kick` is what the pose reads. */
     kick: 0,
     kickVel: 0,
+    /** Smaller lateral recoil spring, driven by the same learnable spray as local aim. */
+    kickYaw: 0,
+    kickYawVel: 0,
+    recoilBurst: 0,
+    lastShotAt: -1e9,
     /** Pitch the WEAPON has reached, which lags the pitch the head is already at. */
     aim: 0,
     /** Smoothed public scope state, used to shoulder a remote sniper into its optic. */
@@ -1197,9 +1216,38 @@ export function createScene(canvas, baseFov = 85) {
   /** Disagreement past which smoothing would be a lie — snap instead. */
   const PROJ_SNAP = 1.2;
 
-  function projMesh() {
-    for (const m of projPool) if (!m.visible) return m;
-    const m = new THREE.Mesh(projGeo, projMats.grenade);
+  const projectileDarkMat = new THREE.MeshLambertMaterial({ color: 0x2d3238, flatShading: true });
+  const projectileTrimMat = new THREE.MeshLambertMaterial({ color: 0xb39b4a, flatShading: true });
+  const projectileBounds = {
+    grenade: { x0: -0.0375, x1: 0.0375, y0: -0.05, y1: 0.05, z0: -0.0375, z1: 0.0375 },
+    flash: { x0: -0.035, x1: 0.035, y0: -0.0575, y1: 0.0575, z0: -0.035, z1: 0.035 },
+    smoke: { x0: -0.041, x1: 0.041, y0: -0.0625, y1: 0.0625, z0: -0.041, z1: 0.041 },
+  };
+
+  function projMesh(kind) {
+    for (const m of projPool) {
+      if (!m.visible && m.userData.projectileKind === kind) return m;
+    }
+    let m;
+    if (kind === 'snowball') {
+      m = new THREE.Mesh(projGeo, projMats.snowball);
+      m.scale.setScalar(0.055);
+    } else {
+      // Use the exact same source mesh as the held first- and third-person object.
+      // The previous path swapped every release for one generic icosahedron, which is
+      // why a different item appeared in the air and on the ground.
+      const color = projMats[kind] ?? projMats.grenade;
+      m = buildDetailedWeapon(kind, projectileBounds[kind] ?? projectileBounds.grenade, {
+        steel: kind === 'flash' ? projMats.flash : projectileDarkMat,
+        dark: projectileDarkMat,
+        trim: projectileTrimMat,
+        blade: projectileTrimMat,
+        army: color,
+        snow: projMats.snowball,
+      }, { castShadow: true }) ?? new THREE.Mesh(projGeo, color);
+      if (m.isMesh) m.scale.setScalar(0.055);
+    }
+    m.userData.projectileKind = kind;
     m.frustumCulled = false;
     scene.add(m);
     projPool.push(m);
@@ -1207,9 +1255,7 @@ export function createScene(canvas, baseFov = 85) {
   }
 
   function beginProjectile(key, sim, predicted = false, born = performance.now()) {
-    const mesh = projMesh();
-    mesh.material = projMats[sim.kind] ?? projMats.grenade;
-    mesh.scale.setScalar(sim.kind === 'snowball' ? 0.1 : 0.12);
+    const mesh = projMesh(sim.kind);
     mesh.position.set(sim.x, sim.y, sim.z);
     mesh.visible = true;
     const p = {
