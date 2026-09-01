@@ -28,6 +28,7 @@ import {
 // and that means undoing the rotation of the pivot by hand — see the inspect branch.
 import { rotateXYZ, CYCLE_HAND } from './rig.js';
 import { DEFAULT_FINISH, finishOf, sanitizeCosmetics } from '../../shared/cosmetics.js';
+import { buildDetailedWeapon } from './weapon-meshes.js';
 
 // A shot has to read at a glance, so it is drawn three ways: a bright beam along
 // the path, a line of smoke puffs that lingers after the beam is gone, and the
@@ -1139,44 +1140,53 @@ function buildRig(spec) {
   const dz = shiftOf(spec);
   let mag = null;
   const finishMats = [];
-  for (const part of spec.parts) {
-    const mat = MATS[part[0]]();
-    if (part[0] === 'steel' || part[0] === 'dark' || part[0] === 'trim') {
-      finishMats.push({ role: part[0], mat });
+  const box = boxOf(spec);
+  const detailedMats = Object.fromEntries(
+    ['steel', 'dark', 'trim', 'blade', 'army', 'snow'].map((role) => [role, MATS[role]()] ),
+  );
+  const detailed = buildDetailedWeapon(spec.id, {
+    ...box,
+    z0: box.z0 + dz,
+    z1: box.z1 + dz,
+  }, detailedMats);
+  if (detailed) {
+    g.add(detailed);
+    for (const role of ['steel', 'dark', 'trim']) finishMats.push({ role, mat: detailedMats[role] });
+  } else {
+    // Snowballs intentionally stay procedural; every actual arsenal model above is a
+    // connected imported mesh. This fallback also keeps the renderer resilient if a
+    // future utility is added to WEAPON_IDS before its art lands.
+    for (const part of spec.parts) {
+      const mat = MATS[part[0]]();
+      if (part[0] === 'steel' || part[0] === 'dark' || part[0] === 'trim') {
+        finishMats.push({ role: part[0], mat });
+      }
+      const roundBarrel = part[1] !== 'sphere'
+        && part[3] > Math.max(part[1], part[2]) * 3.4
+        && Math.abs(part[1] - part[2]) < Math.max(part[1], part[2]) * 0.35;
+      const geo = part[1] === 'sphere'
+        ? new THREE.IcosahedronGeometry(part[2], 1)
+        : roundBarrel
+          ? new THREE.CylinderGeometry(Math.max(part[1], part[2]) * 0.5,
+            Math.max(part[1], part[2]) * 0.5, part[3], 10, 1)
+          : new RoundedBoxGeometry(part[1], part[2], part[3], 2,
+            Math.min(part[1], part[2], part[3]) * 0.16);
+      if (roundBarrel) geo.rotateX(Math.PI / 2);
+      const mesh = new THREE.Mesh(geo, mat);
+      const off = part[1] === 'sphere' ? part.slice(3) : part.slice(4);
+      mesh.position.set(off[0], off[1], off[2] + dz);
+      if (part[1] !== 'sphere') mesh.rotation.set(part[7] || 0, part[8] || 0, part[9] || 0);
+      g.add(mesh);
     }
-    const roundBarrel = part[1] !== 'sphere'
-      && part[3] > Math.max(part[1], part[2]) * 3.4
-      && Math.abs(part[1] - part[2]) < Math.max(part[1], part[2]) * 0.35;
-    const geo = part[1] === 'sphere'
-      ? new THREE.IcosahedronGeometry(part[2], 1) // faceted, to match the flat look
-      : roundBarrel
-        ? new THREE.CylinderGeometry(
-          Math.max(part[1], part[2]) * 0.5,
-          Math.max(part[1], part[2]) * 0.5,
-          part[3],
-          10,
-          1,
-        )
-        : new RoundedBoxGeometry(
-          part[1], part[2], part[3], 2, Math.min(part[1], part[2], part[3]) * 0.16,
-        );
-    if (roundBarrel) geo.rotateX(Math.PI / 2);
-    const mesh = new THREE.Mesh(geo, mat);
-    const off = part[1] === 'sphere' ? part.slice(3) : part.slice(4);
-    mesh.position.set(off[0], off[1], off[2] + dz);
-    if (part[1] !== 'sphere') mesh.rotation.set(part[7] || 0, part[8] || 0, part[9] || 0);
-    g.add(mesh);
-  }
-  if (spec.mag !== undefined) {
-    mag = { mesh: g.children[spec.mag], base: g.children[spec.mag].position.clone() };
+    if (spec.mag !== undefined) {
+      mag = { mesh: g.children[spec.mag], base: g.children[spec.mag].position.clone() };
+    }
   }
   // Both hands are built now and swapped later. Building on demand would allocate
   // geometry during a settings change, mid-match.
   const arms = { 1: buildArms(spec, 1, dz), '-1': buildArms(spec, -1, dz) };
   arms['-1'].g.visible = false;
   g.add(arms[1].g, arms['-1'].g);
-
-  const box = boxOf(spec);
 
   g.visible = false;
   return {
@@ -1252,7 +1262,7 @@ function buildRig(spec) {
      * disappear at release. The arms are separate children added after the parts, which
      * is what makes the slice safe and is why the hand can follow through empty.
      */
-    throwBody: spec.anim === 'throw' ? g.children.slice(0, spec.parts.length) : null,
+    throwBody: spec.anim === 'throw' ? (detailed ? [detailed] : g.children.slice(0, spec.parts.length)) : null,
   };
 }
 
@@ -1282,7 +1292,7 @@ export function createViewmodel(camera, scene, vmRoot, hooks = {}) {
   for (const id of WEAPON_IDS) {
     const spec = RIGS[id];
     if (!spec) continue;
-    const built = buildRig(spec);
+    const built = buildRig({ ...spec, id });
     hand.add(built.g);
     rigs.set(id, { ...built, spec });
   }

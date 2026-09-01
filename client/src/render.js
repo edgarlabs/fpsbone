@@ -19,6 +19,7 @@ import { createProjectile, stepProjectile } from '../../shared/projectile.js';
 import { JAM_CLEAR_MS, cycleMsOf, idAt } from '../../shared/weapons.js';
 import { DEFAULT_FINISH, finishOf, sanitizeCosmetics } from '../../shared/cosmetics.js';
 import { operatorFor } from '../../shared/operators.js';
+import { boundsOfBoxParts, buildDetailedWeapon } from './weapon-meshes.js';
 // The rig — proportions, the arm solve, and every hold — lives in its own module with no
 // three.js in it, so `npm run verify` can import it in plain Node and MEASURE that the
 // hands land on the weapon. That is the entire reason it is not in this file: the previous
@@ -283,21 +284,29 @@ function buildWeapon(a, id) {
   const g = new THREE.Group();
   const hold = holdOf(id);
   let muzzle = null;
+  const detailed = buildDetailedWeapon(id, boundsOfBoxParts(hold.parts), {
+    steel: a.weaponMat,
+    dark: a.weaponDarkMat,
+    trim: a.weaponTrimMat,
+    blade: a.weaponMat,
+    army: a.weaponTrimMat,
+    snow: a.snowMat,
+  }, { castShadow: true });
+  if (detailed) g.add(detailed);
   for (const [i, [w, h, d, x, y, z, tag, rx = 0, ry = 0, rz = 0]] of hold.parts.entries()) {
-    const weaponMat = i === 0 ? a.weaponMat : i % 3 === 0 ? a.weaponTrimMat : a.weaponDarkMat;
-    const roundBarrel = d > Math.max(w, h) * 3.4 && Math.abs(w - h) < Math.max(w, h) * 0.35;
-    const geometry = roundBarrel
-      ? new THREE.CylinderGeometry(Math.max(w, h) * 0.5, Math.max(w, h) * 0.5, d, 8, 1)
-      : new RoundedBoxGeometry(w, h, d, 2, Math.min(w, h, d) * 0.16);
-    // Weapon rig depth runs down local Z while a cylinder is authored on Y.
-    if (roundBarrel) geometry.rotateX(Math.PI / 2);
-    const mesh = new THREE.Mesh(geometry, tag === 'snow' ? a.snowMat : weaponMat);
-    mesh.position.set(x, y, z);
-    mesh.rotation.set(rx, ry, rz);
-    // Only the receiver-sized boxes cast. A shadow pass over the slivers — barrels, sights
-    // — draws a silhouette indistinguishable from the one the big box draws by itself.
-    mesh.castShadow = w * h * d > 0.0006;
-    g.add(mesh);
+    if (!detailed) {
+      const weaponMat = i === 0 ? a.weaponMat : i % 3 === 0 ? a.weaponTrimMat : a.weaponDarkMat;
+      const roundBarrel = d > Math.max(w, h) * 3.4 && Math.abs(w - h) < Math.max(w, h) * 0.35;
+      const geometry = roundBarrel
+        ? new THREE.CylinderGeometry(Math.max(w, h) * 0.5, Math.max(w, h) * 0.5, d, 8, 1)
+        : new RoundedBoxGeometry(w, h, d, 2, Math.min(w, h, d) * 0.16);
+      if (roundBarrel) geometry.rotateX(Math.PI / 2);
+      const mesh = new THREE.Mesh(geometry, tag === 'snow' ? a.snowMat : weaponMat);
+      mesh.position.set(x, y, z);
+      mesh.rotation.set(rx, ry, rz);
+      mesh.castShadow = w * h * d > 0.0006;
+      g.add(mesh);
+    }
 
     // Find the foremost authored part. Its centre gives the barrel line and its nearest
     // rotated corner gives the muzzle plane, so rifles, pistols and odd angled receivers
