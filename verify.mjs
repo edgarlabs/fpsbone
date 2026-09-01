@@ -5080,8 +5080,8 @@ const okG = (cond, label, detail = '') => {
       buriedArms.length ? buriedArms.join(' · ') : 'both forearms approach external grip surfaces on every gun');
   const REAR_CLEAR = num(vmSrc, 'REAR_CLEAR');
   const POSE_ROOM = num(vmSrc, 'POSE_ROOM');
-  const INSPECT_TURN = num(vmSrc, 'INSPECT_TURN');
   const INSPECT_FILL = num(vmSrc, 'INSPECT_FILL');
+  const INSPECT_PROFILES = liftObj(vmSrc, 'INSPECT_PROFILES');
   const KICK_BACK = num(vmSrc, 'KICK_BACK');
   const KICK_UP = num(vmSrc, 'KICK_UP');
   const KICK_PITCH = num(vmSrc, 'KICK_PITCH');
@@ -5495,7 +5495,8 @@ const okG = (cond, label, detail = '') => {
             branch({
               inspectT: p, x: rig.rest[0] * side, y: rig.rest[1], z: rig.rest[2],
               bobX: 0, bobY: 0, side, current: r, g, seg, smooth, rotateXYZ,
-              INSPECT_TURN, INSPECT_FILL, setArmFade: (v) => { fade = v; },
+              INSPECT_PROFILES, INSPECT_FILL, WEAPONS, currentId: id,
+              setArmFade: (v) => { fade = v; },
               vmRoot: { fov: VM_FOV, aspect: aw / ah },
               place: (px, py, pz) => { g.pos = [px, py, Math.min(pz, r.limitZ)]; },
             });
@@ -5547,6 +5548,17 @@ const okG = (cond, label, detail = '') => {
     okG(worstJump < 1e-4,
         'and it starts and ends on the rest pose, so nothing snaps on the last frame',
         `worst discontinuity ${(worstJump * 1e6).toFixed(1)}um / urad (${jumpAt})`);
+    const families = new Set(WEAPON_IDS.map((id) => WEAPONS[id].family));
+    okG([...families].every((family) => INSPECT_PROFILES[family])
+        && new Set([...families].map((family) => JSON.stringify(INSPECT_PROFILES[family]))).size
+          === families.size,
+        'every weapon family has its own inspection choreography',
+        [...families].map((family) => `${family}:${INSPECT_PROFILES[family].turn.toFixed(2)}rad`).join(' · '));
+    okG(vmSrc.includes('handMats: [arms[1].mats[0]')
+        && vmSrc.includes('const sleeveOpacity = Math.max(0.34, o)')
+        && vmSrc.includes('setArmFade(1 - turn * 0.66)'),
+        'inspection keeps both gripping hands visible while only the sleeve ends soften',
+        'hands 100% opaque · sleeves at least 34% opaque');
   }
 
   // ---- one gesture, two views ----------------------------------------------------------

@@ -61,8 +61,29 @@ const THROW_RELEASE = 0.46;
  *  ratio: right-click has to *feel* like the commitment it is, or the trade the stats
  *  describe — twice the damage for twice the wait — is invisible to the player. */
 const HEAVY_SWING_MS = 560;
-/** One turn of the weapon inspect. Loops for as long as F is held. */
-const INSPECT_MS = 1500;
+/** One deliberate presentation of the weapon. Holding F parks at its clearest frame. */
+const INSPECT_MS = 2100;
+
+/**
+ * Inspection is weapon handling, not a turntable. Each family exposes the surface that
+ * matters: long guns roll the receiver and top rail into the light, pistols turn farther
+ * in the wrists, knives roll their blade, and heavy guns travel less because the support
+ * hand is carrying real-looking mass. Values are combined with the staged curves in the
+ * inspect branch; all positions are offsets from the weapon's normal rest pose.
+ */
+const INSPECT_PROFILES = {
+  rifle:   { turn: 1.05, pitch: -0.34, tip: 0.18, roll: 0.27, x: -0.038, y: 0.065 },
+  smg:     { turn: 1.14, pitch: -0.28, tip: 0.16, roll: 0.34, x: -0.042, y: 0.072 },
+  dmr:     { turn: 1.0,  pitch: -0.38, tip: 0.19, roll: 0.25, x: -0.034, y: 0.064 },
+  sniper:  { turn: 0.92, pitch: -0.46, tip: 0.2,  roll: 0.2,  x: -0.028, y: 0.06 },
+  shotgun: { turn: 0.98, pitch: -0.39, tip: 0.18, roll: 0.24, x: -0.032, y: 0.062 },
+  lmg:     { turn: 0.84, pitch: -0.4,  tip: 0.16, roll: 0.17, x: -0.024, y: 0.052 },
+  pistol:  { turn: 1.26, pitch: -0.22, tip: 0.24, roll: 0.43, x: -0.052, y: 0.082 },
+  knife:   { turn: 1.02, pitch: -0.16, tip: 0.08, roll: 1.02, x: -0.045, y: 0.085 },
+  grenade: { turn: 0.72, pitch: -0.5,  tip: 0.14, roll: 0.3,  x: -0.038, y: 0.078 },
+  snowball:{ turn: 0.68, pitch: -0.44, tip: 0.12, roll: 0.34, x: -0.038, y: 0.078 },
+  utility: { turn: 0.78, pitch: -0.46, tip: 0.18, roll: 0.26, x: -0.034, y: 0.074 },
+};
 
 // ---- shell casings ---------------------------------------------------------
 // "i dont see any bullet trays going out". Every round a gun chambers throws its case
@@ -92,21 +113,6 @@ const CASE_REST = 0.012;
 const CASE_BOUNCE = 0.32;
 const CASE_FRICTION = 0.55;
 const CASE_STOP = 0.9;
-/**
- * How far the inspect turns the weapon, in radians. Just past broadside.
- *
- * "the side by side of the gun ... so we can see the full view of the gun" — so the
- * hold is the weapon's PROFILE, square to the eye, which is 90°. The extra 5° is
- * deliberate: at exactly 90° a flat-shaded box weapon projects to an elevation drawing
- * with no depth in it at all, and a few degrees past brings the muzzle end nearer than
- * the stock so the silhouette reads as an object rather than a decal.
- *
- * This was 2.3 — 132°, most of the way to reversed. Past broadside the far side goes
- * away again and the barrel comes back toward the eye, which is the second half of why
- * "inspect goes to your face": the turn itself was aimed at the player. The first half
- * was the pivot, and that is fixed in the branch (see INSPECT_FILL).
- */
-const INSPECT_TURN = 1.66;
 /**
  * How far toward the edge of the frame the weapon's own edge is allowed to reach at the
  * hold. 0.72 leaves a little over a quarter of the half-frame as margin on the tighter
@@ -1185,8 +1191,9 @@ function buildRig(spec) {
      *  not. */
     center: [(box.x0 + box.x1) / 2, (box.y0 + box.y1) / 2, (box.z0 + box.z1) / 2 + dz],
     half: [(box.x1 - box.x0) / 2, (box.y1 - box.y0) / 2, (box.z1 - box.z0) / 2],
-    /** Skin and sleeve materials for both handednesses, for the inspect's fade. */
-    armMats: [...arms[1].mats, ...arms['-1'].mats],
+    /** Hands stay visible during inspection; only the disconnected ends of the sleeves fade. */
+    handMats: [arms[1].mats[0], arms['-1'].mats[0]],
+    sleeveMats: [arms[1].mats[1], arms['-1'].mats[1]],
     /** Approved finish channels only. Skin, sleeves, blades, brass and snow stay honest. */
     finishMats,
     /** The closest to the camera any pose may bring this rig. Every animated pose
@@ -1464,7 +1471,7 @@ export function createViewmodel(camera, scene, vmRoot, hooks = {}) {
   }
 
   /**
-   * Fade the forearms and fists, for the inspect.
+   * Fade the far ends of the forearms for the inspect, while keeping both fists visible.
    *
    * The arms are FOREARMS ONLY — the upper arm is deliberately off-screen behind the
    * camera (see SHOULDER), which is what makes them read as arms at rest: they run out
@@ -1473,20 +1480,30 @@ export function createViewmodel(camera, scene, vmRoot, hooks = {}) {
    * the corner and turns it broadside in the middle of the view, where a 0.43m stub
    * pointing off across the screen is exactly as disconnected as it actually is.
    *
-   * So they go with the presentation and come back with it. The alternative was to keep
-   * the weapon near the corner, and that is the thing the player asked us to stop doing.
+   * Fading the fists too made the weapon float at the exact moment the player asked to
+   * see somebody handling it. Skin therefore stays opaque; only the sleeves soften as
+   * their camera-side ends leave the frame, and even those retain a visible third.
    */
   function setArmFade(o) {
     if (armFade === o || !current) return;
     armFade = o;
-    for (const m of current.armMats) {
-      const blend = o < 1;
+    for (const m of current.handMats) {
+      if (m.transparent) {
+        m.transparent = false;
+        m.depthWrite = true;
+        m.needsUpdate = true;
+      }
+      m.opacity = 1;
+    }
+    const sleeveOpacity = Math.max(0.34, o);
+    for (const m of current.sleeveMats) {
+      const blend = sleeveOpacity < 1;
       if (m.transparent !== blend) {
         m.transparent = blend;
         m.depthWrite = !blend;
         m.needsUpdate = true;
       }
-      m.opacity = o;
+      m.opacity = sleeveOpacity;
     }
   }
 
@@ -2359,15 +2376,10 @@ export function createViewmodel(camera, scene, vmRoot, hooks = {}) {
           }
         } else if (inspectT >= 0) {
           // ---- inspect ---------------------------------------------------------
-          // Raise, turn the far side into view, hold it there, settle back. Staged, and
-          // deliberately never a whole revolution: the weapon is being *presented*, not
-          // barrel-rolled, and a turn that carries on past the far profile spends half
-          // its time showing the underside of a receiver nobody paints.
-          //
-          // INSPECT_TURN is the important number. It stops a little past broadside,
-          // which puts the flank that carries a finish square to the eye at the hold and
-          // lets the return unwind the way it came — the same reason a player turning a
-          // knife over in their hands does not spin it.
+          // Bring the weapon into the hands, expose its useful surfaces, hold, then settle
+          // it back. This is a handling gesture rather than the old generic turntable:
+          // family changes how far the wrists can turn, how much mass is lifted and which
+          // face is tipped into the light. No whole revolution and no disappearing hands.
           //
           // "the inspect when you press F inspect goes to your face": the turn used to
           // be about the rig's ORIGIN, which sits behind the receiver, so the weapon
@@ -2383,18 +2395,19 @@ export function createViewmodel(camera, scene, vmRoot, hooks = {}) {
           // Tips the presented face toward the eye during the hold, so the turn shows a
           // surface rather than an edge-on silhouette.
           const tilt = smooth(seg(p, 0.18, 0.5)) - smooth(seg(p, 0.6, 0.9));
-
-          const erx = -0.4 * lift + 0.28 * tilt;
-          const ery = INSPECT_TURN * turn * side;
-          const erz = (0.28 * lift + 0.5 * tilt) * side;
+          const family = WEAPONS[currentId]?.family ?? 'rifle';
+          const profile = INSPECT_PROFILES[family] ?? INSPECT_PROFILES.rifle;
+          const erx = profile.pitch * lift + profile.tip * tilt;
+          const ery = profile.turn * turn * side;
+          const erz = (profile.roll * lift + profile.tip * 0.55 * tilt) * side;
 
           // Where the weapon's own centre goes. At turn = 0 this is exactly where the
           // centre sits at rest — measured to the micrometre at both p=0 and p=1 — so the
           // animation starts and ends on the rest pose with nothing to blend, and the
           // whole push is carried by `turn`, which is the term that needs the room.
           const c = current.center;
-          const cx = x + bobX + c[0] - 0.05 * lift * side;
-          const cy = y - bobY + c[1] + 0.045 * lift;
+          const cx = x + bobX + c[0] + profile.x * lift * side;
+          const cy = y - bobY + c[1] + profile.y * lift;
           // How far the rig reaches across the frame right now. This is the standard
           // oriented-box projection — the row of R dotted with the half-extents — got by
           // rotating each of the rig's own axes and taking the screen components. Exact
@@ -2418,8 +2431,15 @@ export function createViewmodel(camera, scene, vmRoot, hooks = {}) {
             (Math.abs(cx) + Math.abs(a1.x) + Math.abs(a2.x) + Math.abs(a3.x)) / (tanX * INSPECT_FILL),
             (Math.abs(cy) + Math.abs(a1.y) + Math.abs(a2.y) + Math.abs(a3.y)) / (tanY * INSPECT_FILL),
           );
+          // Perspective divides every corner by ITS depth, not by the centre's. A shallow
+          // sniper turn keeps much of the metre-long barrel pointing toward the eye, so
+          // its nearest corner can be tens of centimetres closer than the centre and grow
+          // past the frame even when the centre-only calculation above says it fits.
+          // Adding the rotated z reach is conservative and exact at the limiting corner:
+          // nearestDepth = (need + reach) - reach = need.
+          const depthReach = Math.abs(a1.z) + Math.abs(a2.z) + Math.abs(a3.z);
           const restD = -(z + c[2]);
-          const depth = restD + Math.max(0, need - restD) * turn;
+          const depth = restD + Math.max(0, need + depthReach - restD) * turn;
 
           // The pivot is the centre, not the origin, and three.js rotates a group about
           // its origin — so the origin has to be placed at wherever it lands once the
@@ -2428,13 +2448,10 @@ export function createViewmodel(camera, scene, vmRoot, hooks = {}) {
           place(cx - rc.x, cy - rc.y, -depth - rc.z);
           g.rotation.set(erx, ery, erz);
 
-          // The arms go with the turn. They are forearms only — the upper arm is
-          // deliberately behind the camera — and that reads fine while the weapon is
-          // held in the corner, because the near plane cuts the open ends off. Broadside
-          // and pushed out to fill the frame it does not: the stubs come fully into view
-          // as two batons lying across the middle of the shot. So they fade out as the
-          // weapon turns and are back by the time it is shouldered again.
-          setArmFade(1 - turn);
+          // Keep both fists gripping the weapon. Only the camera-side sleeve ends soften
+          // while the assembly is centred; setArmFade never fades skin and never takes a
+          // sleeve below one third, so inspection still reads as a person handling weight.
+          setArmFade(1 - turn * 0.66);
         } else if (swing >= 0) {
           if (current.spec.anim === 'throw') {
             // ---- overhand throw ------------------------------------------------
