@@ -16,7 +16,7 @@ import { halfHAt, eyeY } from '../../shared/movement.js';
 // why it is not drawn in two places.
 import { insigniaCanvas, FIELD_H } from './insignia.js';
 import { createProjectile, stepProjectile } from '../../shared/projectile.js';
-import { JAM_CLEAR_MS, cycleMsOf, idAt, recoilSideStep } from '../../shared/weapons.js';
+import { JAM_CLEAR_MS, cycleMsOf, familyOf, idAt, recoilSideStep } from '../../shared/weapons.js';
 import { DEFAULT_FINISH, finishOf, sanitizeCosmetics } from '../../shared/cosmetics.js';
 import { operatorFor } from '../../shared/operators.js';
 import { RIGS as VIEWMODEL_RIGS } from './viewmodel.js';
@@ -430,6 +430,19 @@ function poseUpper(a, pitch, yaw, scopeStep, jamMs, now, dtMs) {
   const scopeTarget = scopeStep > 0 ? 1 : 0;
   a.scopePose += (scopeTarget - a.scopePose) * (1 - Math.exp(-dt / 0.075));
   const handling = handlingPose(a.wep, a.swing, a.scopePose);
+  const family = familyOf(a.wep);
+
+  // The torso participates in the hold. A shooter is not a vertical display stand with
+  // animated arms: weight comes slightly over the toes and the firing shoulder turns
+  // behind the support shoulder. Pistols stay squarer; long guns pocket into the shoulder;
+  // heavy weapons lean into their mass. These are deliberately small angles because the
+  // visible body still has to agree with the server hitbox.
+  const longGun = ['rifle', 'smg', 'dmr', 'sniper', 'shotgun', 'lmg'].includes(family);
+  const combatLean = family === 'lmg' ? -0.085 : longGun ? -0.068 : family === 'pistol' ? -0.045 : -0.03;
+  const shoulderTurn = longGun ? -0.105 : family === 'pistol' ? -0.055 : -0.025;
+  a.upper.rotation.x = combatLean + Math.min(0.025, a.kick * 0.025);
+  a.upper.rotation.y = shoulderTurn * (1 - a.swing * 0.35);
+  a.upper.rotation.z = -0.018 * (1 - a.swing * 0.5);
 
   // Aim, arriving late by weight. `1 - e^(-dt/tau)` rather than a fixed fraction per frame,
   // so a 30fps client and a 240fps one see the same lag rather than the same stiffness.
@@ -453,7 +466,8 @@ function poseUpper(a, pitch, yaw, scopeStep, jamMs, now, dtMs) {
   a.shoulders.rotation.z = braceRoll * (1 - handling.aimed * 0.8) - a.kick * 0.08;
   // The cheek follows the optic a little. The actual camera/head pitch remains authoritative;
   // this is a two-centimetre lean, not a second aim system.
-  a.pivot.position.z = -handling.aimed * 0.018;
+  a.pivot.position.z = -handling.aimed * 0.022 + combatLean * 0.42;
+  a.pivot.rotation.y = shoulderTurn * 0.35;
   const muzzleFlash = a.gun?.userData.muzzleFlash;
   if (muzzleFlash) muzzleFlash.visible = now < a.flashUntil;
 
@@ -663,11 +677,17 @@ function stepGait(a, x, z, dtMs) {
   for (let i = 0; i < a.legs.length; i++) {
     const { hip, knee } = a.legs[i];
     const dir = i === 0 ? 1 : -1;
-    hip.rotation.x = s * dir;
+    // Even at rest the knees are unlocked and one foot is fractionally staggered. It is
+    // the lower-body half of the combat stance; returning both joints to exactly zero was
+    // what made an armed operator stand like a showroom mannequin between footsteps.
+    const readyHip = (i === 0 ? 0.12 : 0.025) * (1 - a.swing * 0.75);
+    hip.rotation.x = readyHip + s * dir;
+    hip.rotation.z = dir * 0.035 * (1 - a.swing * 0.65);
     // A knee only folds one way. Taking the negative half of a sine offset behind the
     // hip gives the trailing leg its bend and leaves the leading one straight, which is
     // the difference between walking and a pair of scissors.
-    knee.rotation.x = -Math.max(0, -Math.sin(a.stride + 0.9) * dir) * 1.15 * a.swing;
+    const readyKnee = -(i === 0 ? 0.2 : 0.15) * (1 - a.swing * 0.7);
+    knee.rotation.x = readyKnee - Math.max(0, -Math.sin(a.stride + 0.9) * dir) * 1.15 * a.swing;
   }
   // The whole body rises and falls twice per stride, at double the leg frequency. Small
   // — 2cm — but it is most of what separates a walk from a slide.
@@ -708,7 +728,9 @@ function reviveAvatar(a) {
   a.flashUntil = 0;
   a.shoulders.position.set(0, RIG.shoulderY, 0);
   a.shoulders.rotation.z = 0;
+  a.upper.rotation.set(0, 0, 0);
   a.pivot.position.z = 0;
+  a.pivot.rotation.y = 0;
   for (const rig of a.rigs.values()) {
     if (rig.userData.muzzleFlash) rig.userData.muzzleFlash.visible = false;
   }
@@ -759,6 +781,12 @@ function makeAvatar(id) {
   const duck = new THREE.Group();
   tilt.add(duck);
 
+  // Everything above the pelvis shares a small combat lean and shoulder turn. Keeping
+  // this separate from `duck` means the legs remain planted and the crouch scale remains
+  // authoritative, while torso, armour and arms move as one connected body.
+  const upper = new THREE.Group();
+  duck.add(upper);
+
   // The dimensions still come from RIG — therefore the visible body still agrees with the
   // hitbox — but the primitives are deliberately not boxes. Six-sided tapers give limbs and
   // the torso an inexpensive human silhouette, low-poly spheres close the joints, and only
@@ -798,14 +826,14 @@ function makeAvatar(id) {
   };
 
   capsule(duck, RIG.pelvisW, RIG.pelvisH, RIG.pelvisD, 0, RIG.pelvisY, 0, armorMat);
-  taper(duck, RIG.torsoW, RIG.torsoH, RIG.torsoD, 0, RIG.torsoY, 0, uniformMat, true, 0.5, 0.39);
-  taper(duck, RIG.neckW, RIG.neckH, RIG.neckW, 0, RIG.neckY, 0, skinMat, false, 0.46, 0.46);
+  taper(upper, RIG.torsoW, RIG.torsoH, RIG.torsoD, 0, RIG.torsoY, 0, uniformMat, true, 0.5, 0.39);
+  taper(upper, RIG.neckW, RIG.neckH, RIG.neckW, 0, RIG.neckY, 0, skinMat, false, 0.46, 0.46);
 
   // Close-fitting faction gear adds identity without lying about the server hitbox.
   // Sentinel wears a squared plate carrier; Raider wears a lighter crossed harness.
   const sentinelBody = new THREE.Group();
   const raiderBody = new THREE.Group();
-  duck.add(sentinelBody, raiderBody);
+  upper.add(sentinelBody, raiderBody);
   taper(sentinelBody, RIG.torsoW + 0.035, RIG.torsoH * 0.55, RIG.torsoD + 0.055,
     0, RIG.torsoY + 0.07, -0.012, armorMat, true, 0.5, 0.43);
   part(sentinelBody, RIG.torsoW * 0.34, 0.055, RIG.torsoD + 0.07,
@@ -838,7 +866,7 @@ function makeAvatar(id) {
   // gun parented to the head and arms parented to the body come apart the moment
   // someone aims up, and a rifle floating away from its own hands is worse than no
   // arms at all. One parent, one rotation, they move together by construction.
-  const shoulders = joint(duck, 0, RIG.shoulderY, 0);
+  const shoulders = joint(upper, 0, RIG.shoulderY, 0);
   // Shoulder caps bridge the tapered torso and the independently solved arms. Without
   // them a correct IK pose still looks assembled because the rotating segments meet at
   // two sharp corners rather than at a joint.
@@ -962,6 +990,7 @@ function makeAvatar(id) {
     group,
     tilt,
     duck,
+    upper,
     pivot,
     // The walk cycle drives these; the aim drives `shoulders`.
     legs,

@@ -885,7 +885,7 @@ function limb(mat, a, b, w) {
  * a two-piece thumb and a wrist. Every segment overlaps its neighbour slightly so the
  * silhouette remains one connected hand through recoil, reload and inspection.
  */
-function articulatedHand(mat, thumbSide) {
+function articulatedHand(mat, thumbSide, role = 0, kind = 'gun') {
   const hand = new THREE.Group();
   const palm = new THREE.Mesh(
     new RoundedBoxGeometry(...FIST, 3, Math.min(...FIST) * 0.42),
@@ -894,7 +894,7 @@ function articulatedHand(mat, thumbSide) {
   palm.position.z = 0.006;
   hand.add(palm);
 
-  const knuckleGeo = new THREE.DodecahedronGeometry(0.012, 0);
+  const knuckleGeo = new THREE.DodecahedronGeometry(0.011, 0);
   const xs = [-0.0255, -0.0085, 0.0085, 0.0255];
   for (let i = 0; i < xs.length; i++) {
     const x = xs[i];
@@ -906,9 +906,14 @@ function articulatedHand(mat, thumbSide) {
     // The index finger sits a little straighter on the trigger; the remaining three
     // curl farther around the grip. That tiny asymmetry is what stops this reading as
     // four decorative tubes glued to a box.
-    const curl = i === (thumbSide > 0 ? 3 : 0) ? 0.006 : 0;
-    const joint = V(x, -0.012 - curl, -0.057);
-    const tip = V(x, -0.038 - curl, -0.067);
+    const index = i === (thumbSide > 0 ? 3 : 0);
+    // The firing index lies along the trigger guard. Every other digit wraps back
+    // toward the palm, including all four fingers of the support hand. This is a
+    // held grip silhouette, not an open puppet hand bolted beside the weapon.
+    const straight = role === 0 && kind === 'gun' && index;
+    const curl = straight ? -0.009 : role === 1 ? 0.01 : 0.005;
+    const joint = V(x, -0.013 - curl, -0.049 - (straight ? 0.01 : 0));
+    const tip = V(x, straight ? -0.018 : -0.04 - curl, straight ? -0.075 : -0.05);
     const first = limb(mat, V(x, -0.004, -0.032), joint, 0.016);
     const second = limb(mat, joint, tip, 0.014);
     if (first) hand.add(first);
@@ -979,11 +984,17 @@ function buildArms(spec, side, dz) {
     h.userData.shoulder = shoulder.clone();
     h.userData.back = back.clone();
 
-    const fist = articulatedHand(skin, side * (arm === 0 ? 1 : -1));
+    const kind = spec.anim === 'throw' ? 'throw' : spec.melee ? 'melee' : 'gun';
+    const fist = articulatedHand(skin, side * (arm === 0 ? 1 : -1), arm, kind);
     fist.position.copy(wrist);
     // Face the fist along the arm, so the knuckles sit across the weapon rather
     // than skewed to the world axes.
     fist.quaternion.setFromUnitVectors(FORWARD_Z, back.clone());
+    // Twist the glove around its forearm into the weapon instead of leaving every
+    // palm square to the camera. Trigger and support wrists naturally oppose one
+    // another; knives roll farther into a hammer grip.
+    fist.rotateZ((arm === 0 ? -0.22 : 0.28) * side);
+    fist.rotateX(kind === 'melee' ? -0.22 : arm === 1 ? 0.12 : -0.08);
     h.add(fist);
 
     const from = wrist.clone().addScaledVector(back, FIST[2] * 0.5);
@@ -1168,19 +1179,22 @@ function frameFist(p, tanX, tanY) {
  *  then allowed to move the rig back toward the camera on top of that. */
 const REAR_CLEAR = 0.03;
 const POSE_ROOM = 0.3;
-// The old framing parked the nearest stock/slide face only 9–16cm from the camera,
-// making a handful of boxes fill the screen and burying the fingers inside the gun.
-// A consistent setback preserves every authored proportion while giving the full low-
-// poly silhouette and both hands room to read. Individual rest X/Y values still decide
-// each weapon's stance.
-const VIEWMODEL_SETBACK = 0.16;
-const VIEWMODEL_RAISE = 0.075;
+// The authored rest points already are FPS carry positions. The previous presentation
+// pass added another 16–30cm of setback and 7.5cm of lift, which displayed the weapon
+// like an object being held out for inspection. Keep only a tiny lift for finger
+// clearance and use the shorter family-aware depth below.
+const VIEWMODEL_RAISE = 0.018;
 
-function setbackOf(spec) {
-  if (spec.anim) return 0.11;
-  if (spec.id?.startsWith('pistol')) return VIEWMODEL_SETBACK;
-  if (spec.id?.startsWith('smg')) return 0.23;
-  return 0.3;
+// Enough camera-space depth to frame the forearms and receiver, but not the old 0.30u
+// showroom setback that made the gun look detached from the player. Short weapons need
+// almost the same optical distance as rifles because their hands, not their barrel, are
+// what otherwise fills the near half of the view.
+function carryDepthOf(spec) {
+  if (spec.anim === 'throw') return 0.08;
+  if (spec.melee) return 0.09;
+  if (spec.id?.startsWith('pistol')) return 0.14;
+  if (spec.id?.startsWith('smg')) return 0.15;
+  return 0.17;
 }
 
 /**
@@ -1209,7 +1223,7 @@ function buildRig(spec) {
   g.add(model);
   const modelSpec = {
     ...spec,
-    rest: [spec.rest[0], spec.rest[1] + VIEWMODEL_RAISE, spec.rest[2] - setbackOf(spec)],
+    rest: [spec.rest[0], spec.rest[1] + VIEWMODEL_RAISE, spec.rest[2] - carryDepthOf(spec)],
   };
   const modelParts = [...modelSpec.parts, ...weaponDetailParts(modelSpec)];
   // A buttstock is part of the authored/world model, but it lives against the shoulder
@@ -1618,9 +1632,9 @@ export function createViewmodel(camera, scene, vmRoot, hooks = {}) {
     // Zero yaw makes the player stare into the square rear face of the receiver, hiding
     // every shaped side panel, control, finger and most of the barrel behind it.
     hand.rotation.y = 0;
-    const presentationYaw = current.spec.anim === 'throw' ? 0.08
-      : current.spec.melee ? 0.38
-        : 0.27;
+    const presentationYaw = current.spec.anim === 'throw' ? 0.04
+      : current.spec.melee ? 0.22
+        : 0.13;
     current.model.rotation.y = presentationYaw * side;
   }
 

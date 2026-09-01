@@ -328,8 +328,12 @@ export const READY_HAND = [-0.25, -0.46, -0.16];
  *  written backwards for one of them. Down in every case; the rest is what keeps the
  *  elbows out of the ribs, which a plain two-angle solve does not do (see `solveArm`). */
 export const ELBOW_HINT = {
-  trigger: [0.42, -1, 0.34], // down, out, and back behind the grip
-  support: [0.62, -1, -0.3], // down and OUT, hard enough to clear the chest
+  // A combat hold bends across the chest. The former -1 vertical bias put both elbows
+  // almost directly beneath the shoulders, giving a technically connected but unmistakably
+  // puppet-like pose. These hints keep the hands on the exact same grips while opening the
+  // elbows into a braced firing triangle.
+  trigger: [0.55, -0.55, 0.5],
+  support: [0.62, -0.5, -0.1],
   idle: [0.08, -1, 0.05], // a hanging arm: almost straight down, barely off the body
   dead: [0.14, -1, 0.02],
 };
@@ -385,11 +389,11 @@ export const HOLDS = {
     ],
   },
   pistol: {
-    // Punched out on the centre line with both hands, which is the one hold this figure's
-    // proportions can do properly: the gun is small enough that the off hand reaches the
-    // same place the trigger hand is.
-    grip: [0.09, -0.155, -0.42],
-    support: [0.045, -0.175, -0.44],
+    // Compact two-hand presentation. Full extension at -0.44 locked both elbows and made
+    // the whole operator look like a doll presenting an object; this keeps a deliberate
+    // bend while retaining a readable pistol silhouette.
+    grip: [0.085, -0.145, -0.33],
+    support: [0.035, -0.165, -0.345],
     parts: [
       [0.045, 0.075, 0.2, 0, 0.025, -0.07],
       [0.042, 0.11, 0.06, 0, -0.06, 0.02],
@@ -500,14 +504,14 @@ export const HOLDS = {
     ],
   },
   pistol_wisp: {
-    grip: [0.088, -0.155, -0.43], support: [0.043, -0.175, -0.45],
+    grip: [0.083, -0.145, -0.335], support: [0.034, -0.165, -0.35],
     parts: [
       [0.042, 0.064, 0.17, 0, 0.02, -0.06], [0.052, 0.052, 0.055, 0, 0.005, -0.17],
       [0.04, 0.19, 0.052, 0, -0.105, 0.02, null, 0.05, 0, 0], [0.018, 0.035, 0.035, 0, 0.09, -0.04],
     ],
   },
   pistol_rook: {
-    grip: [0.095, -0.16, -0.4], support: [0.048, -0.18, -0.42],
+    grip: [0.09, -0.15, -0.32], support: [0.04, -0.17, -0.34],
     parts: [
       [0.07, 0.08, 0.11, 0, 0.02, -0.05], [0.036, 0.036, 0.26, 0, 0.03, -0.24],
       [0.11, 0.11, 0.1, 0, 0.02, -0.08], [0.06, 0.16, 0.075, 0, -0.11, 0.04, null, 0.22, 0, 0],
@@ -594,14 +598,14 @@ export const holdOf = (id) => HOLDS[id] ?? HOLDS.rifle;
  * its stock/optic into the face rather than merely narrowing the owner's camera.
  */
 export const HANDLING = {
-  knife:    { readyLift: 0.035, readyBack: 0,     readyPitch: 0.12,  walkDrop: 0.075, walkBack: 0,     walkPitch: -0.16, scopeLift: 0,    scopeBack: 0,     scopePitch: 0 },
-  pistol:   { readyLift: 0.095, readyBack: -0.01, readyPitch: 0.015, walkDrop: 0.085, walkBack: 0.025, walkPitch: -0.13, scopeLift: 0,    scopeBack: 0,     scopePitch: 0 },
-  smg:      { readyLift: 0.105, readyBack: 0,     readyPitch: 0.025, walkDrop: 0.085, walkBack: 0.02,  walkPitch: -0.12, scopeLift: 0,    scopeBack: 0,     scopePitch: 0 },
-  rifle:    { readyLift: 0.12,  readyBack: 0.015, readyPitch: 0.03,  walkDrop: 0.09,  walkBack: 0.025, walkPitch: -0.11, scopeLift: 0,    scopeBack: 0,     scopePitch: 0 },
-  dmr:      { readyLift: 0.125, readyBack: 0.02,  readyPitch: 0.035, walkDrop: 0.095, walkBack: 0.03,  walkPitch: -0.12, scopeLift: 0,    scopeBack: 0,     scopePitch: 0 },
-  sniper:   { readyLift: 0.125, readyBack: 0.025, readyPitch: 0.03,  walkDrop: 0.115, walkBack: 0.035, walkPitch: -0.15, scopeLift: 0.08, scopeBack: 0.035, scopePitch: 0.055 },
-  shotgun:  { readyLift: 0.115, readyBack: 0.02,  readyPitch: 0.025, walkDrop: 0.105, walkBack: 0.035, walkPitch: -0.14, scopeLift: 0,    scopeBack: 0,     scopePitch: 0 },
-  lmg:      { readyLift: 0.085, readyBack: 0.035, readyPitch: 0.015, walkDrop: 0.075, walkBack: 0.045, walkPitch: -0.17, scopeLift: 0,    scopeBack: 0,     scopePitch: 0 },
+  knife:    { readyLift: 0.06,  readyBack: 0,     readyPitch: 0.12,  walkDrop: 0.075, walkBack: 0,     walkPitch: -0.16, scopeLift: 0,    scopeBack: 0,     scopePitch: 0 },
+  pistol:   { readyLift: 0.12,  readyBack: 0.015, readyPitch: 0.015, walkDrop: 0.075, walkBack: 0.025, walkPitch: -0.13, scopeLift: 0,    scopeBack: 0,     scopePitch: 0 },
+  smg:      { readyLift: 0.17,  readyBack: 0.025, readyPitch: 0.025, walkDrop: 0.09,  walkBack: 0.02,  walkPitch: -0.12, scopeLift: 0,    scopeBack: 0,     scopePitch: 0 },
+  rifle:    { readyLift: 0.18,  readyBack: 0.04,  readyPitch: 0.03,  walkDrop: 0.095, walkBack: 0.025, walkPitch: -0.11, scopeLift: 0,    scopeBack: 0,     scopePitch: 0 },
+  dmr:      { readyLift: 0.185, readyBack: 0.045, readyPitch: 0.035, walkDrop: 0.1,   walkBack: 0.03,  walkPitch: -0.12, scopeLift: 0,    scopeBack: 0,     scopePitch: 0 },
+  sniper:   { readyLift: 0.19,  readyBack: 0.05,  readyPitch: 0.03,  walkDrop: 0.12,  walkBack: 0.035, walkPitch: -0.15, scopeLift: 0.04, scopeBack: 0.025, scopePitch: 0.045 },
+  shotgun:  { readyLift: 0.18,  readyBack: 0.045, readyPitch: 0.025, walkDrop: 0.11,  walkBack: 0.035, walkPitch: -0.14, scopeLift: 0,    scopeBack: 0,     scopePitch: 0 },
+  lmg:      { readyLift: 0.16,  readyBack: 0.055, readyPitch: 0.015, walkDrop: 0.09,  walkBack: 0.045, walkPitch: -0.17, scopeLift: 0,    scopeBack: 0,     scopePitch: 0 },
   grenade:  { readyLift: 0.035, readyBack: 0,     readyPitch: 0.08,  walkDrop: 0.055, walkBack: 0.015, walkPitch: -0.12, scopeLift: 0,    scopeBack: 0,     scopePitch: 0 },
   snowball: { readyLift: 0.035, readyBack: 0,     readyPitch: 0.08,  walkDrop: 0.055, walkBack: 0.015, walkPitch: -0.12, scopeLift: 0,    scopeBack: 0,     scopePitch: 0 },
   utility:  { readyLift: 0.035, readyBack: 0,     readyPitch: 0.08,  walkDrop: 0.055, walkBack: 0.015, walkPitch: -0.12, scopeLift: 0,    scopeBack: 0,     scopePitch: 0 },
