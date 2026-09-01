@@ -20,6 +20,7 @@ import { JAM_CLEAR_MS, cycleMsOf, idAt, recoilSideStep } from '../../shared/weap
 import { DEFAULT_FINISH, finishOf, sanitizeCosmetics } from '../../shared/cosmetics.js';
 import { operatorFor } from '../../shared/operators.js';
 import { RIGS as VIEWMODEL_RIGS } from './viewmodel.js';
+import { weaponPartGeometry } from './weapon-geometry.js';
 // The rig — proportions, the arm solve, and every hold — lives in its own module with no
 // three.js in it, so `npm run verify` can import it in plain Node and MEASURE that the
 // hands land on the weapon. That is the entire reason it is not in this file: the previous
@@ -1221,23 +1222,7 @@ export function createScene(canvas, baseFov = 85) {
           : role === 'trim' ? projectileTrimMat
             : role === 'blade' ? projMats.flash
               : projMats[kind] ?? projMats.grenade;
-      const roundBarrel = part[1] !== 'sphere'
-        && part[3] > Math.max(part[1], part[2]) * 3.4
-        && Math.abs(part[1] - part[2]) < Math.max(part[1], part[2]) * 0.35;
-      const geometry = part[1] === 'sphere'
-        ? new THREE.IcosahedronGeometry(part[2], 1)
-        : roundBarrel
-          ? new THREE.CylinderGeometry(
-            Math.max(part[1], part[2]) * 0.5,
-            Math.max(part[1], part[2]) * 0.5,
-            part[3],
-            10,
-            1,
-          )
-          : new RoundedBoxGeometry(
-            part[1], part[2], part[3], 2, Math.min(part[1], part[2], part[3]) * 0.16,
-          );
-      if (roundBarrel) geometry.rotateX(Math.PI / 2);
+      const geometry = weaponPartGeometry(part);
       const mesh = new THREE.Mesh(geometry, mat);
       const off = part[1] === 'sphere' ? part.slice(3) : part.slice(4);
       mesh.position.set(off[0], off[1], off[2]);

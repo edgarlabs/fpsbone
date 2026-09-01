@@ -11,6 +11,7 @@
 
 import * as THREE from 'three';
 import { RoundedBoxGeometry } from 'three/examples/jsm/geometries/RoundedBoxGeometry.js';
+import { weaponDetailParts, weaponPartGeometry } from './weapon-geometry.js';
 import * as C from '../../shared/constants.js';
 import {
   WEAPON_IDS,
@@ -166,9 +167,9 @@ const INSPECT_FILL = 0.72;
  * ever hits the clamp and no weapon's recoil silently flattens at the top of a burst.
  * verify.mjs re-derives that for every weapon; if a new one breaks it, it says so.
  */
-const KICK_BACK = 0.21;
+const KICK_BACK = 0.23;
 const KICK_UP = 0.05;
-const KICK_PITCH = 0.3;
+const KICK_PITCH = 0.27;
 
 /**
  * ---- the sprint carry ------------------------------------------------------------
@@ -363,7 +364,9 @@ const SHOULDER = [0.2, -0.34, 0.16];
  *  upper arm is simply off-screen behind the camera, exactly as it is in life. */
 const ARM_LEN = 0.33;
 const FOREARM_W = 0.072;
-const FIST = [0.076, 0.07, 0.1];
+// Palm dimensions. The old value described the entire hand as one 10cm cuboid; this is
+// now only the palm, with separate knuckles, finger segments and a thumb built below.
+const FIST = [0.068, 0.046, 0.074];
 
 // Shared materials — a handful of flat-shaded values, matching the level's logic
 // that face brightness alone carries the form. `steel` stays dark deliberately: a
@@ -418,12 +421,13 @@ export const RIGS = {
       [-0.045, -0.09, -0.31, 1],
     ],
     parts: [
-      ['steel', 0.08, 0.105, 0.34, 0, 0, -0.05],
+      ['steel', 0.08, 0.105, 0.34, 0, 0, -0.05, 0, 0, 0, 'receiver'],
       ['steel', 0.032, 0.032, 0.42, 0, 0.012, -0.39],
-      ['trim', 0.058, 0.15, 0.075, 0, -0.1, 0.2, -0.24, 0, 0],
-      ['dark', 0.07, 0.12, 0.24, 0, -0.015, 0.23],
-      ['dark', 0.055, 0.08, 0.13, 0, -0.075, -0.14],
-      ['trim', 0.025, 0.06, 0.19, 0, 0.085, -0.12],
+      ['dark', 0.054, 0.11, 0.06, 0, -0.088, 0.1, -0.18, 0, 0, 'mag'],
+      ['dark', 0.055, 0.075, 0.16, 0, -0.008, 0.18, 0, 0, 0, 'stock'],
+      ['dark', 0.05, 0.09, 0.1, 0, -0.073, -0.08, 0, 0, 0, 'grip'],
+      // Inset side armour, seated flush on the receiver rather than floating over it.
+      ['trim', 0.008, 0.055, 0.18, 0.044, 0.002, -0.12, 0, 0, 0, 'handguard'],
     ],
   },
   pistol: {
@@ -438,10 +442,11 @@ export const RIGS = {
       [-0.035, -0.115, 0.03, 1],
     ],
     parts: [
-      ['steel', 0.052, 0.072, 0.2, 0, 0, 0],
-      ['dark', 0.048, 0.032, 0.22, 0, 0.05, -0.012],
-      ['trim', 0.048, 0.12, 0.072, 0, -0.088, 0.052],
+      ['steel', 0.052, 0.072, 0.2, 0, 0, 0, 0, 0, 0, 'slide'],
+      ['dark', 0.048, 0.032, 0.22, 0, 0.05, -0.012, 0, 0, 0, 'slide'],
+      ['dark', 0.048, 0.12, 0.072, 0, -0.088, 0.052, 0, 0, 0, 'grip'],
       ['steel', 0.024, 0.024, 0.06, 0, 0.014, -0.13],
+      ['trim', 0.006, 0.064, 0.045, 0.027, -0.087, 0.052, 0, 0, 0, 'grip'],
     ],
   },
   sniper: {
@@ -454,13 +459,15 @@ export const RIGS = {
       [-0.045, -0.085, -0.34, 1],
     ],
     parts: [
-      ['steel', 0.07, 0.09, 0.55, 0, 0, 0],
-      ['steel', 0.03, 0.03, 0.5, 0, 0.01, -0.52],
-      ['dark', 0.046, 0.046, 0.24, 0, 0.095, -0.12],
-      ['dark', 0.03, 0.05, 0.03, 0, 0.058, -0.02],
-      ['dark', 0.03, 0.05, 0.03, 0, 0.058, -0.22],
-      ['trim', 0.05, 0.1, 0.07, 0, -0.085, 0.02],
-      ['steel', 0.05, 0.09, 0.24, 0, -0.012, 0.36],
+      ['steel', 0.07, 0.09, 0.34, 0, 0, 0.08, 0, 0, 0, 'receiver'],
+      ['steel', 0.03, 0.03, 0.64, 0, 0.01, -0.41],
+      ['dark', 0.046, 0.046, 0.3, 0, 0.095, -0.11],
+      ['dark', 0.03, 0.05, 0.03, 0, 0.058, 0.01],
+      ['dark', 0.03, 0.05, 0.03, 0, 0.058, -0.2],
+      ['trim', 0.05, 0.1, 0.07, 0, -0.085, 0.02, 0, 0, 0, 'mag'],
+      ['steel', 0.05, 0.09, 0.24, 0, -0.012, 0.36, 0, 0, 0, 'stock'],
+      ['dark', 0.062, 0.065, 0.22, 0, -0.004, -0.18, 0, 0, 0, 'handguard'],
+      ['dark', 0.048, 0.048, 0.065, 0, 0.01, -0.75, 0, 0, 0, 'cylinder'],
     ],
   },
   knife: {
@@ -474,10 +481,9 @@ export const RIGS = {
       // Full combat-knife silhouette: thick spine, tapered point, guard, wrapped grip
       // and pommel. The old three-box spike had neither a recognisable point nor a hand
       // stop, which is why it read as a grey stick during every animation.
-      ['blade', 0.022, 0.082, 0.24, 0, 0.036, -0.22],
-      ['blade', 0.018, 0.052, 0.1, 0, 0.052, -0.39],
+      ['blade', 0.024, 0.105, 0.34, 0, 0.04, -0.28, 0, 0, 0, 'blade'],
       ['dark', 0.072, 0.026, 0.038, 0, 0.012, -0.085],
-      ['dark', 0.044, 0.052, 0.15, 0, -0.005, 0.01],
+      ['dark', 0.044, 0.052, 0.15, 0, -0.005, 0.01, 0, 0, 0, 'grip'],
       ['trim', 0.048, 0.012, 0.026, 0, -0.002, -0.018],
       ['trim', 0.048, 0.012, 0.026, 0, -0.002, 0.03],
       ['dark', 0.052, 0.058, 0.035, 0, -0.004, 0.105],
@@ -528,15 +534,15 @@ export const RIGS = {
     ],
     parts: [
       // VIPER-9 — closed tubular receiver, long suppressor, curved forward magazine.
-      ['steel', 0.068, 0.09, 0.28, 0, 0, -0.015],
+      ['steel', 0.068, 0.09, 0.28, 0, 0, -0.015, 0, 0, 0, 'receiver'],
       ['dark', 0.042, 0.042, 0.29, 0, 0.014, -0.29],
       // Magazine forward of the grip, in front of the trigger hand. That is the one
       // detail that reads as "submachine gun" rather than "short rifle" at a glance.
-      ['trim', 0.05, 0.15, 0.058, 0, -0.09, -0.055, -0.2, 0, 0],
-      ['dark', 0.046, 0.1, 0.06, 0, -0.07, 0.06],
-      ['steel', 0.02, 0.025, 0.24, 0.026, 0.005, 0.2],
-      ['steel', 0.02, 0.025, 0.24, -0.026, 0.005, 0.2],
-      ['dark', 0.07, 0.025, 0.04, 0, 0.055, -0.05],
+      ['trim', 0.05, 0.15, 0.058, 0, -0.09, -0.055, -0.2, 0, 0, 'mag'],
+      ['dark', 0.046, 0.1, 0.06, 0, -0.07, 0.06, 0, 0, 0, 'grip'],
+      ['steel', 0.02, 0.025, 0.24, 0.026, 0.005, 0.2, 0, 0, 0, 'stock'],
+      ['steel', 0.02, 0.025, 0.24, -0.026, 0.005, 0.2, 0, 0, 0, 'stock'],
+      ['dark', 0.07, 0.025, 0.04, 0, 0.025, 0.31, 0, 0, 0, 'stock'],
     ],
   },
   lmg: {
@@ -569,7 +575,7 @@ export const RIGS = {
     parts: [
       // Receiver. Deeper and taller than the rifle's 0.082×0.1×0.5 — mass is the other
       // half of what the `kick: 7.2` is telling you, and the two have to agree.
-      ['steel', 0.088, 0.112, 0.5, 0, 0, 0],
+      ['steel', 0.088, 0.112, 0.5, 0, 0, 0, 0, 0, 0, 'receiver'],
       // Feed-tray cover: the hump a belt runs in under. No rifle in the table has one.
       ['dark', 0.074, 0.038, 0.32, 0, 0.074, -0.05],
       // Carry handle — bar plus the post that holds its rear end up.
@@ -577,13 +583,13 @@ export const RIGS = {
       ['dark', 0.022, 0.03, 0.022, 0, 0.104, -0.14],
       // The belt box, and it is what `mag` points at: on a machine gun the thing that
       // comes off during a reload is the ammunition box, not a magazine.
-      ['trim', 0.108, 0.145, 0.22, 0, -0.108, -0.09],
+      ['trim', 0.108, 0.145, 0.22, 0, -0.108, -0.09, 0, 0, 0, 'mag'],
       // The belt, running out of the box into the right side of the receiver.
       ['brass', 0.08, 0.026, 0.05, 0.05, -0.036, -0.05],
       // Heavy barrel, 0.4 deep against the rifle's 0.3.
       ['steel', 0.038, 0.038, 0.4, 0, 0.02, -0.44],
       // Handguard, under the support hand.
-      ['dark', 0.064, 0.058, 0.16, 0, -0.018, -0.3],
+      ['dark', 0.064, 0.058, 0.16, 0, -0.018, -0.3, 0, 0, 0, 'handguard'],
       // Cooling ribs on the exposed run of barrel, forward of the handguard.
       ['dark', 0.058, 0.058, 0.016, 0, 0.02, -0.44],
       ['dark', 0.058, 0.058, 0.016, 0, 0.02, -0.52],
@@ -592,8 +598,8 @@ export const RIGS = {
       ['dark', 0.014, 0.12, 0.014, 0.042, -0.078, -0.585],
       ['dark', 0.014, 0.12, 0.014, -0.042, -0.078, -0.585],
       ['dark', 0.03, 0.05, 0.028, 0, 0.056, -0.62],
-      ['dark', 0.05, 0.13, 0.07, 0, -0.096, 0.09],
-      ['steel', 0.054, 0.088, 0.2, 0, -0.005, 0.33],
+      ['dark', 0.05, 0.13, 0.07, 0, -0.096, 0.09, 0, 0, 0, 'grip'],
+      ['steel', 0.054, 0.088, 0.2, 0, -0.005, 0.33, 0, 0, 0, 'stock'],
     ],
   },
   semi: {
@@ -606,15 +612,15 @@ export const RIGS = {
       [-0.045, -0.09, -0.27, 1],
     ],
     parts: [
-      ['steel', 0.072, 0.088, 0.42, 0, 0, 0],
+      ['steel', 0.072, 0.088, 0.42, 0, 0, 0, 0, 0, 0, 'receiver'],
       ['steel', 0.034, 0.034, 0.32, 0, 0.012, -0.35],
-      ['trim', 0.05, 0.12, 0.07, 0, -0.09, 0.02],
+      ['trim', 0.05, 0.12, 0.07, 0, -0.09, 0.02, 0, 0, 0, 'mag'],
       // A low optic, deliberately smaller than the sniper's: this weapon does not zoom,
       // and a rig that promises a scope the right button will not give you is a lie the
       // player pays for in a duel.
       ['dark', 0.04, 0.04, 0.15, 0, 0.076, -0.1],
       ['dark', 0.026, 0.03, 0.026, 0, 0.05, -0.03],
-      ['steel', 0.05, 0.078, 0.18, 0, -0.012, 0.26],
+      ['steel', 0.05, 0.078, 0.18, 0, -0.012, 0.26, 0, 0, 0, 'stock'],
     ],
   },
   shotgun: {
@@ -630,12 +636,12 @@ export const RIGS = {
       [-0.045, -0.09, -0.28, 1],
     ],
     parts: [
-      ['steel', 0.078, 0.095, 0.34, 0, 0, 0],
+      ['steel', 0.078, 0.095, 0.34, 0, 0, 0, 0, 0, 0, 'receiver'],
       ['steel', 0.04, 0.04, 0.42, 0, 0.02, -0.36],
       // Barrel over tube, the two-cylinder profile that says pump-action.
       ['dark', 0.036, 0.036, 0.36, 0, -0.03, -0.33],
-      ['trim', 0.048, 0.052, 0.13, 0, -0.028, -0.22],
-      ['steel', 0.052, 0.088, 0.22, 0, -0.02, 0.24],
+      ['trim', 0.048, 0.052, 0.13, 0, -0.028, -0.22, 0, 0, 0, 'handguard'],
+      ['steel', 0.052, 0.088, 0.22, 0, -0.02, 0.24, 0, 0, 0, 'stock'],
     ],
   },
 
@@ -677,13 +683,13 @@ export const RIGS = {
     parts: [
       // HAVOC R4 — old-school long-stroke rifle: exposed gas tube, raked magazine,
       // separate wooden fore-end and a solid triangular stock.
-      ['steel', 0.086, 0.105, 0.34, 0, 0, 0.015],
-      ['trim', 0.078, 0.075, 0.23, 0, -0.006, -0.27],
+      ['steel', 0.086, 0.105, 0.34, 0, 0, 0.015, 0, 0, 0, 'receiver'],
+      ['trim', 0.078, 0.075, 0.23, 0, -0.006, -0.27, 0, 0, 0, 'handguard'],
       ['steel', 0.038, 0.038, 0.34, 0, 0.018, -0.46],
-      ['dark', 0.064, 0.19, 0.08, 0, -0.115, 0.015, -0.33, 0, 0],
+      ['dark', 0.064, 0.19, 0.08, 0, -0.115, 0.015, -0.33, 0, 0, 'mag'],
       ['dark', 0.026, 0.026, 0.3, 0, 0.055, -0.33],
-      ['trim', 0.072, 0.105, 0.25, 0, -0.005, 0.31, 0.12, 0, 0],
-      ['dark', 0.045, 0.11, 0.055, 0, -0.07, 0.12, 0.18, 0, 0],
+      ['trim', 0.072, 0.105, 0.25, 0, -0.005, 0.31, 0.12, 0, 0, 'stock'],
+      ['dark', 0.045, 0.11, 0.055, 0, -0.07, 0.12, 0.18, 0, 0, 'grip'],
       ['steel', 0.052, 0.025, 0.045, 0, 0.068, 0.05],
     ],
   },
@@ -692,13 +698,13 @@ export const RIGS = {
     grips: [[0.043, -0.105, 0.03, 0], [-0.043, -0.085, -0.22, 1]],
     parts: [
       // FALCON C4 — very short carbine with a raised carry handle and twin-rail stock.
-      ['steel', 0.064, 0.082, 0.29, 0, 0, -0.015],
-      ['dark', 0.058, 0.066, 0.18, 0, -0.005, -0.235],
-      ['trim', 0.047, 0.14, 0.06, 0, -0.095, 0.01, -0.12, 0, 0],
+      ['steel', 0.064, 0.082, 0.29, 0, 0, -0.015, 0, 0, 0, 'receiver'],
+      ['dark', 0.058, 0.066, 0.18, 0, -0.005, -0.235, 0, 0, 0, 'handguard'],
+      ['trim', 0.047, 0.14, 0.06, 0, -0.095, 0.01, -0.12, 0, 0, 'mag'],
       ['steel', 0.034, 0.034, 0.16, 0, 0.012, -0.36],
-      ['dark', 0.02, 0.025, 0.3, 0.026, 0.006, 0.21],
-      ['dark', 0.02, 0.025, 0.3, -0.026, 0.006, 0.21],
-      ['steel', 0.074, 0.032, 0.055, 0, 0.006, 0.36],
+      ['dark', 0.02, 0.025, 0.3, 0.026, 0.006, 0.21, 0, 0, 0, 'stock'],
+      ['dark', 0.02, 0.025, 0.3, -0.026, 0.006, 0.21, 0, 0, 0, 'stock'],
+      ['steel', 0.074, 0.032, 0.055, 0, 0.006, 0.36, 0, 0, 0, 'stock'],
       ['trim', 0.022, 0.095, 0.18, 0, 0.095, -0.06],
       ['dark', 0.052, 0.022, 0.11, 0, 0.145, -0.06],
     ],
@@ -708,13 +714,13 @@ export const RIGS = {
     grips: [[0.04, -0.115, 0.04, 0], [-0.04, -0.09, -0.13, 1]],
     parts: [
       // KITE-9 — Uzi-like machine pistol: magazine through the grip and folding wire stock.
-      ['steel', 0.058, 0.12, 0.22, 0, 0, -0.015],
+      ['steel', 0.058, 0.12, 0.22, 0, 0, -0.015, 0, 0, 0, 'receiver'],
       ['dark', 0.03, 0.03, 0.11, 0, 0.012, -0.18],
-      ['trim', 0.043, 0.2, 0.052, 0, -0.135, 0.055, 0.06, 0, 0],
-      ['dark', 0.056, 0.11, 0.065, 0, -0.075, 0.045],
-      ['steel', 0.016, 0.02, 0.27, 0.026, 0.018, 0.2],
-      ['steel', 0.016, 0.02, 0.27, -0.026, 0.018, 0.2],
-      ['dark', 0.068, 0.026, 0.045, 0, 0.018, 0.33],
+      ['trim', 0.043, 0.2, 0.052, 0, -0.135, 0.055, 0.06, 0, 0, 'mag'],
+      ['dark', 0.056, 0.11, 0.065, 0, -0.075, 0.045, 0, 0, 0, 'grip'],
+      ['steel', 0.016, 0.02, 0.27, 0.026, 0.018, 0.2, 0, 0, 0, 'stock'],
+      ['steel', 0.016, 0.02, 0.27, -0.026, 0.018, 0.2, 0, 0, 0, 'stock'],
+      ['dark', 0.068, 0.026, 0.045, 0, 0.018, 0.33, 0, 0, 0, 'stock'],
       ['trim', 0.05, 0.02, 0.07, 0, 0.082, -0.05],
     ],
   },
@@ -723,11 +729,11 @@ export const RIGS = {
     grips: [[0.045, -0.11, 0.05, 0], [-0.045, -0.09, -0.2, 1]],
     parts: [
       // BANSHEE .45 — blocky top-fed SMG with a long suppressor and side battery housing.
-      ['steel', 0.082, 0.11, 0.3, 0, 0, -0.02],
-      ['dark', 0.06, 0.065, 0.14, 0, -0.002, -0.225],
+      ['steel', 0.082, 0.11, 0.3, 0, 0, -0.02, 0, 0, 0, 'receiver'],
+      ['dark', 0.06, 0.065, 0.14, 0, -0.002, -0.225, 0, 0, 0, 'handguard'],
       ['dark', 0.052, 0.052, 0.31, 0, 0.014, -0.42],
-      ['trim', 0.052, 0.17, 0.07, 0, 0.13, -0.045, 0.12, 0, 0],
-      ['dark', 0.052, 0.11, 0.065, 0, -0.075, 0.055],
+      ['trim', 0.052, 0.17, 0.07, 0, 0.13, -0.045, 0.12, 0, 0, 'mag'],
+      ['dark', 0.052, 0.11, 0.065, 0, -0.075, 0.055, 0, 0, 0, 'grip'],
       ['trim', 0.035, 0.075, 0.16, 0.055, -0.01, -0.02],
       ['steel', 0.06, 0.075, 0.16, 0, -0.004, 0.22],
       ['dark', 0.025, 0.025, 0.1, 0, 0.078, 0.12],
@@ -739,9 +745,9 @@ export const RIGS = {
     grips: [[0.034, -0.105, 0.05, 0], [-0.034, -0.115, 0.03, 1]],
     parts: [
       // WISP-9 — machine pistol: vented slide, compensator and unmistakable extended mag.
-      ['steel', 0.046, 0.062, 0.16, 0, 0, 0.005],
-      ['dark', 0.042, 0.027, 0.19, 0, 0.045, -0.01],
-      ['trim', 0.04, 0.18, 0.052, 0, -0.11, 0.045, 0.05, 0, 0],
+      ['steel', 0.046, 0.062, 0.16, 0, 0, 0.005, 0, 0, 0, 'slide'],
+      ['dark', 0.042, 0.027, 0.19, 0, 0.045, -0.01, 0, 0, 0, 'slide'],
+      ['trim', 0.04, 0.18, 0.052, 0, -0.11, 0.045, 0.05, 0, 0, 'grip'],
       ['steel', 0.052, 0.052, 0.055, 0, 0.008, -0.13],
       ['dark', 0.018, 0.035, 0.035, 0, 0.087, -0.015],
       ['dark', 0.014, 0.012, 0.025, 0.017, 0.072, -0.065],
@@ -754,10 +760,10 @@ export const RIGS = {
     parts: [
       // ROOK .45 — revolver. The faceted cylinder, exposed barrel and hooked grip make
       // it categorically different from the two magazine-fed pistols.
-      ['steel', 0.07, 0.075, 0.11, 0, 0.012, -0.02],
+      ['steel', 0.07, 0.075, 0.11, 0, 0.012, -0.02, 0, 0, 0, 'receiver'],
       ['steel', 0.036, 0.036, 0.25, 0, 0.028, -0.2],
       ['dark', 'sphere', 0.058, 0, 0.01, -0.035],
-      ['trim', 0.06, 0.15, 0.075, 0, -0.105, 0.06, 0.22, 0, 0],
+      ['trim', 0.06, 0.15, 0.075, 0, -0.105, 0.06, 0.22, 0, 0, 'grip'],
       ['dark', 0.025, 0.06, 0.07, 0, 0.088, 0.035],
       ['steel', 0.05, 0.022, 0.14, 0, 0.075, -0.16],
     ],
@@ -767,14 +773,14 @@ export const RIGS = {
     grips: [[0.05, -0.115, 0.075, 0], [-0.05, -0.095, -0.31, 1]],
     parts: [
       // ATLAS SAW — squad automatic rifle: top carry handle and a side-mounted soft box.
-      ['steel', 0.082, 0.105, 0.42, 0, 0, -0.015],
+      ['steel', 0.082, 0.105, 0.42, 0, 0, -0.015, 0, 0, 0, 'receiver'],
       ['dark', 0.06, 0.045, 0.24, 0, 0.07, -0.08],
       ['steel', 0.038, 0.038, 0.36, 0, 0.018, -0.4],
-      ['trim', 0.14, 0.13, 0.15, 0.052, -0.105, -0.045],
+      ['trim', 0.14, 0.13, 0.15, 0.052, -0.105, -0.045, 0, 0, 0, 'mag'],
       ['brass', 0.065, 0.022, 0.045, 0.042, -0.035, -0.045],
-      ['dark', 0.062, 0.06, 0.16, 0, -0.018, -0.28],
-      ['dark', 0.044, 0.1, 0.065, 0, -0.072, 0.08],
-      ['steel', 0.052, 0.082, 0.19, 0, -0.004, 0.3],
+      ['dark', 0.062, 0.06, 0.16, 0, -0.018, -0.28, 0, 0, 0, 'handguard'],
+      ['dark', 0.044, 0.1, 0.065, 0, -0.072, 0.08, 0, 0, 0, 'grip'],
+      ['steel', 0.052, 0.082, 0.19, 0, -0.004, 0.3, 0, 0, 0, 'stock'],
       ['dark', 0.018, 0.11, 0.2, 0, 0.13, -0.12, 0, 0, -0.28],
       ['dark', 0.06, 0.018, 0.1, 0, 0.175, -0.18],
     ],
@@ -785,11 +791,11 @@ export const RIGS = {
     parts: [
       // COLOSSUS 120 — rotary support gun: central motor, three separated barrels and
       // a huge under-slung ammunition drum. No other gun has this front silhouette.
-      ['steel', 0.11, 0.14, 0.38, 0, 0, 0.02],
+      ['steel', 0.11, 0.14, 0.38, 0, 0, 0.02, 0, 0, 0, 'receiver'],
       ['dark', 0.1, 0.1, 0.28, 0, 0.055, -0.19],
       ['dark', 0.024, 0.024, 0.58, 0.045, 0.045, -0.55],
       ['dark', 0.024, 0.024, 0.58, -0.045, 0.045, -0.55],
-      ['trim', 0.126, 0.18, 0.24, 0, -0.135, -0.075],
+      ['trim', 0.126, 0.18, 0.24, 0, -0.135, -0.075, 0, 0, 0, 'mag'],
       ['brass', 0.09, 0.028, 0.06, 0.062, -0.04, -0.06],
       ['steel', 0.024, 0.024, 0.58, 0, -0.025, -0.55],
       ['dark', 0.12, 0.11, 0.16, 0, 0.01, -0.34],
@@ -797,34 +803,28 @@ export const RIGS = {
       ['dark', 0.14, 0.14, 0.025, 0, 0.01, -0.67],
       ['dark', 0.016, 0.13, 0.016, 0.048, -0.085, -0.65],
       ['dark', 0.016, 0.13, 0.016, -0.048, -0.085, -0.65],
-      ['dark', 0.058, 0.14, 0.078, 0, -0.102, 0.12],
-      ['steel', 0.066, 0.1, 0.23, 0, -0.006, 0.32],
+      ['dark', 0.058, 0.14, 0.078, 0, -0.102, 0.12, 0, 0, 0, 'grip'],
+      ['steel', 0.066, 0.1, 0.23, 0, -0.006, 0.32, 0, 0, 0, 'stock'],
     ],
   },
   knife_karambit: {
     rest: [0.13, -0.128, -0.285], muzzle: [0, 0.085, -0.34], kick: 2.3,
     melee: true, anim: 'knife_karambit', grips: [[0.012, -0.005, 0.02, 0]],
     parts: [
-      ['blade', 0.018, 0.07, 0.12, 0, 0.035, -0.15, -0.2, 0, 0],
-      ['blade', 0.018, 0.06, 0.1, 0, 0.07, -0.25, -0.5, 0, 0],
-      ['blade', 0.016, 0.04, 0.07, 0, 0.105, -0.325, -0.85, 0, 0],
-      ['dark', 0.046, 0.054, 0.15, 0, -0.008, 0.005],
+      ['blade', 0.024, 0.23, 0.3, 0, 0.035, -0.23, 0, 0, 0, 'karambit'],
+      ['dark', 0.046, 0.054, 0.15, 0, -0.008, 0.005, 0, 0, 0, 'grip'],
       ['trim', 0.052, 0.014, 0.024, 0, -0.002, -0.025],
-      // Four bars leave a visible finger ring instead of the solid ball the old shape used.
-      ['dark', 0.018, 0.07, 0.018, 0, 0.026, 0.095],
-      ['dark', 0.018, 0.07, 0.018, 0, -0.04, 0.095],
-      ['dark', 0.018, 0.018, 0.07, 0, -0.006, 0.12],
-      ['dark', 0.018, 0.018, 0.07, 0, -0.006, 0.07],
+      // A real open finger ring rather than four bars pretending to be one.
+      ['dark', 0.018, 0.07, 0.07, 0, -0.006, 0.095, 0, 0, 0, 'ring'],
     ],
   },
   knife_tanto: {
     rest: [0.128, -0.126, -0.27], muzzle: [0, 0.045, -0.44], kick: 2.7,
     melee: true, anim: 'knife_tanto', grips: [[0.012, -0.006, 0.022, 0]],
     parts: [
-      ['blade', 0.026, 0.096, 0.27, 0, 0.038, -0.23],
-      ['blade', 0.022, 0.062, 0.1, 0, 0.055, -0.405],
+      ['blade', 0.026, 0.1, 0.39, 0, 0.042, -0.29, 0, 0, 0, 'blade'],
       ['dark', 0.074, 0.026, 0.04, 0, 0.01, -0.08],
-      ['dark', 0.046, 0.056, 0.16, 0, -0.005, 0.02],
+      ['dark', 0.046, 0.056, 0.16, 0, -0.005, 0.02, 0, 0, 0, 'grip'],
       ['trim', 0.05, 0.012, 0.026, 0, -0.002, 0],
       ['trim', 0.05, 0.012, 0.026, 0, -0.002, 0.05],
       ['dark', 0.054, 0.06, 0.035, 0, -0.004, 0.115],
@@ -834,10 +834,9 @@ export const RIGS = {
     rest: [0.132, -0.128, -0.245], muzzle: [0, 0.058, -0.51], kick: 3.3,
     melee: true, anim: 'knife_bowie', grips: [[0.013, -0.007, 0.026, 0]],
     parts: [
-      ['blade', 0.03, 0.125, 0.31, 0, 0.052, -0.27],
-      ['blade', 0.024, 0.072, 0.11, 0, 0.075, -0.48],
+      ['blade', 0.032, 0.13, 0.46, 0, 0.055, -0.34, 0, 0, 0, 'blade'],
       ['dark', 0.098, 0.032, 0.045, 0, 0.012, -0.09],
-      ['dark', 0.052, 0.066, 0.18, 0, -0.008, 0.025],
+      ['dark', 0.052, 0.066, 0.18, 0, -0.008, 0.025, 0, 0, 0, 'grip'],
       ['trim', 0.056, 0.014, 0.03, 0, -0.002, 0.002],
       ['trim', 0.056, 0.014, 0.03, 0, -0.002, 0.062],
       ['dark', 0.062, 0.07, 0.045, 0, -0.006, 0.135],
@@ -847,11 +846,9 @@ export const RIGS = {
     rest: [0.13, -0.125, -0.255], muzzle: [0, 0.1, -0.46], kick: 3.1,
     melee: true, anim: 'knife_kukri', grips: [[0.012, -0.006, 0.024, 0]],
     parts: [
-      ['blade', 0.026, 0.09, 0.16, 0, 0.035, -0.18, 0.18, 0, 0],
-      ['blade', 0.03, 0.125, 0.16, 0, 0.07, -0.33, 0.38, 0, 0],
-      ['blade', 0.024, 0.085, 0.1, 0, 0.11, -0.455, 0.58, 0, 0],
+      ['blade', 0.03, 0.17, 0.43, 0, 0.065, -0.31, 0, 0, 0, 'kukri'],
       ['dark', 0.078, 0.028, 0.04, 0, 0.01, -0.075],
-      ['dark', 0.05, 0.06, 0.17, 0, -0.006, 0.025],
+      ['dark', 0.05, 0.06, 0.17, 0, -0.006, 0.025, 0, 0, 0, 'grip'],
       ['trim', 0.054, 0.014, 0.026, 0, -0.002, 0.015],
       ['trim', 0.054, 0.014, 0.026, 0, -0.002, 0.065],
       ['dark', 0.058, 0.064, 0.04, 0, -0.006, 0.13],
@@ -881,6 +878,61 @@ function limb(mat, a, b, w) {
 }
 
 /**
+ * A compact articulated low-poly hand whose local +Z axis points toward the shoulder.
+ *
+ * It is deliberately not a photoreal hand—FPSBone's operators are stylised—but it has
+ * the anatomy the old dice was missing: palm, four knuckles, two phalanges per finger,
+ * a two-piece thumb and a wrist. Every segment overlaps its neighbour slightly so the
+ * silhouette remains one connected hand through recoil, reload and inspection.
+ */
+function articulatedHand(mat, thumbSide) {
+  const hand = new THREE.Group();
+  const palm = new THREE.Mesh(
+    new RoundedBoxGeometry(...FIST, 3, Math.min(...FIST) * 0.42),
+    mat,
+  );
+  palm.position.z = 0.006;
+  hand.add(palm);
+
+  const knuckleGeo = new THREE.DodecahedronGeometry(0.012, 0);
+  const xs = [-0.0255, -0.0085, 0.0085, 0.0255];
+  for (let i = 0; i < xs.length; i++) {
+    const x = xs[i];
+    const knuckle = new THREE.Mesh(knuckleGeo, mat);
+    knuckle.scale.set(0.82, 0.76, 1);
+    knuckle.position.set(x, -0.004, -0.034);
+    hand.add(knuckle);
+
+    // The index finger sits a little straighter on the trigger; the remaining three
+    // curl farther around the grip. That tiny asymmetry is what stops this reading as
+    // four decorative tubes glued to a box.
+    const curl = i === (thumbSide > 0 ? 3 : 0) ? 0.006 : 0;
+    const joint = V(x, -0.012 - curl, -0.057);
+    const tip = V(x, -0.038 - curl, -0.067);
+    const first = limb(mat, V(x, -0.004, -0.032), joint, 0.016);
+    const second = limb(mat, joint, tip, 0.014);
+    if (first) hand.add(first);
+    if (second) hand.add(second);
+  }
+
+  const sx = thumbSide * 0.034;
+  const thumbJoint = V(thumbSide * 0.052, -0.014, -0.004);
+  const thumbTip = V(thumbSide * 0.046, -0.036, -0.034);
+  const thumb0 = limb(mat, V(sx, 0.004, 0.018), thumbJoint, 0.019);
+  const thumb1 = limb(mat, thumbJoint, thumbTip, 0.017);
+  if (thumb0) hand.add(thumb0);
+  if (thumb1) hand.add(thumb1);
+
+  // The wrist bridges palm and sleeve. Without it, even good fingers leave the hand
+  // looking snapped onto the forearm at a hard box seam.
+  const wrist = new THREE.Mesh(new THREE.CylinderGeometry(0.027, 0.032, 0.045, 8, 1), mat);
+  wrist.rotateX(Math.PI / 2);
+  wrist.position.z = 0.052;
+  hand.add(wrist);
+  return hand;
+}
+
+/**
  * Forearms and fists for one handedness, in rig-local space.
  *
  * Built per rig and per side, then toggled by visibility. The arms are CHILDREN of
@@ -906,7 +958,8 @@ function buildArms(spec, side, dz) {
     hands[arm] = h;
     g.add(h);
 
-    const wrist = V(gx * side, gy, gz + dz);
+    const gripX = gx * side;
+    const wrist = V(gripX + Math.sign(gripX || side) * 0.006, gy, gz + dz + 0.012);
     // Where this hand's fist sits when it is just holding the weapon. Kept because one
     // animation needs to move a hand to a point on the WEAPON rather than by an offset
     // from wherever it happens to grip: see `strike` and the jam branch. `position` is
@@ -926,10 +979,7 @@ function buildArms(spec, side, dz) {
     h.userData.shoulder = shoulder.clone();
     h.userData.back = back.clone();
 
-    const fist = new THREE.Mesh(
-      new RoundedBoxGeometry(...FIST, 3, Math.min(...FIST) * 0.28),
-      skin,
-    );
+    const fist = articulatedHand(skin, side * (arm === 0 ? 1 : -1));
     fist.position.copy(wrist);
     // Face the fist along the arm, so the knuckles sit across the weapon rather
     // than skewed to the world axes.
@@ -958,6 +1008,7 @@ function buildArms(spec, side, dz) {
  * of is not sellable.
  */
 function rearOf(spec) {
+  const parts = arguments[1] ?? spec.parts;
   const rot = (rx, ry, rz, x, y, z) => {
     const cx = Math.cos(rx), sx = Math.sin(rx);
     const cy = Math.cos(ry), sy = Math.sin(ry);
@@ -967,7 +1018,7 @@ function rearOf(spec) {
     return { x: x2 * cz - y1 * sz, y: x2 * sz + y1 * cz, z: z2 };
   };
   let back = 0;
-  for (const p of spec.parts) {
+  for (const p of parts) {
     const sphere = p[1] === 'sphere';
     const z = sphere ? p[5] : p[6];
     let hz = sphere ? p[2] : p[3] * 0.5;
@@ -995,6 +1046,7 @@ function rearOf(spec) {
  * line would swing a rifle's own box out of frame as it turned.
  */
 function boxOf(spec) {
+  const parts = arguments[1] ?? spec.parts;
   const rot = (rx, ry, rz, x, y, z) => {
     const cx = Math.cos(rx), sx = Math.sin(rx);
     const cy = Math.cos(ry), sy = Math.sin(ry);
@@ -1009,7 +1061,7 @@ function boxOf(spec) {
   let y1 = -Infinity;
   let z0 = Infinity;
   let z1 = -Infinity;
-  for (const p of spec.parts) {
+  for (const p of parts) {
     const sphere = p[1] === 'sphere';
     const o = sphere ? [p[3], p[4], p[5]] : [p[4], p[5], p[6]];
     let h = sphere ? [p[2], p[2], p[2]] : [p[1] * 0.5, p[2] * 0.5, p[3] * 0.5];
@@ -1115,7 +1167,21 @@ function frameFist(p, tanX, tanY) {
 /** Clearance between the rearmost part and the camera plane, and how much a pose is
  *  then allowed to move the rig back toward the camera on top of that. */
 const REAR_CLEAR = 0.03;
-const POSE_ROOM = 0.06;
+const POSE_ROOM = 0.3;
+// The old framing parked the nearest stock/slide face only 9–16cm from the camera,
+// making a handful of boxes fill the screen and burying the fingers inside the gun.
+// A consistent setback preserves every authored proportion while giving the full low-
+// poly silhouette and both hands room to read. Individual rest X/Y values still decide
+// each weapon's stance.
+const VIEWMODEL_SETBACK = 0.16;
+const VIEWMODEL_RAISE = 0.075;
+
+function setbackOf(spec) {
+  if (spec.anim) return 0.11;
+  if (spec.id?.startsWith('pistol')) return VIEWMODEL_SETBACK;
+  if (spec.id?.startsWith('smg')) return 0.23;
+  return 0.3;
+}
 
 /**
  * How far to slide a rig's own parts forward so all of it clears the camera.
@@ -1130,61 +1196,63 @@ const POSE_ROOM = 0.06;
  *
  * Zero for rigs that already clear, so short weapons are left completely alone.
  */
-const shiftOf = (spec) =>
-  Math.min(0, -(REAR_CLEAR + POSE_ROOM) - spec.rest[2] - rearOf(spec));
+const shiftOf = (spec, parts = spec.parts) =>
+  Math.min(0, -(REAR_CLEAR + POSE_ROOM) - spec.rest[2] - rearOf(spec, parts));
 
 function buildRig(spec) {
   const g = new THREE.Group();
+  // Static presentation pivot. The animated rig (`g`) still owns recoil/reload/inspect,
+  // while this child turns the weapon and hands around the receiver itself. Rotating the
+  // shared camera-space parent instead made the whole gun orbit the eye and kept barrel
+  // and receiver perfectly stacked—the exact flat rear-face problem we are avoiding.
+  const model = new THREE.Group();
+  g.add(model);
+  const modelSpec = {
+    ...spec,
+    rest: [spec.rest[0], spec.rest[1] + VIEWMODEL_RAISE, spec.rest[2] - setbackOf(spec)],
+  };
+  const modelParts = [...modelSpec.parts, ...weaponDetailParts(modelSpec)];
+  // A buttstock is part of the authored/world model, but it lives against the shoulder
+  // behind the first-person eye. Pulling it in front of the camera created the enormous
+  // rectangular wall players were seeing. Keep its mesh in the rig for stable part and
+  // reload indices, but exclude it from first-person framing and drawing.
+  const framedParts = modelParts.filter((part) => part[10] !== 'stock');
   // Applied to every part, every grip and the muzzle alike — a uniform translation of
   // the whole rig's contents, so the model is unchanged and nothing needs re-tuning.
-  const dz = shiftOf(spec);
+  const dz = shiftOf(modelSpec, framedParts);
   let mag = null;
   const finishMats = [];
-  for (const part of spec.parts) {
+  for (const part of modelParts) {
     const mat = MATS[part[0]]();
     if (part[0] === 'steel' || part[0] === 'dark' || part[0] === 'trim') {
       finishMats.push({ role: part[0], mat });
     }
-    const roundBarrel = part[1] !== 'sphere'
-      && part[3] > Math.max(part[1], part[2]) * 3.4
-      && Math.abs(part[1] - part[2]) < Math.max(part[1], part[2]) * 0.35;
-    const geo = part[1] === 'sphere'
-      ? new THREE.IcosahedronGeometry(part[2], 1)
-      : roundBarrel
-        ? new THREE.CylinderGeometry(
-          Math.max(part[1], part[2]) * 0.5,
-          Math.max(part[1], part[2]) * 0.5,
-          part[3],
-          10,
-          1,
-        )
-        : new RoundedBoxGeometry(
-          part[1], part[2], part[3], 2, Math.min(part[1], part[2], part[3]) * 0.16,
-        );
-    if (roundBarrel) geo.rotateX(Math.PI / 2);
+    const geo = weaponPartGeometry(part);
     const mesh = new THREE.Mesh(geo, mat);
     const off = part[1] === 'sphere' ? part.slice(3) : part.slice(4);
     mesh.position.set(off[0], off[1], off[2] + dz);
     if (part[1] !== 'sphere') mesh.rotation.set(part[7] || 0, part[8] || 0, part[9] || 0);
-    g.add(mesh);
+    if (part[10] === 'stock') mesh.visible = false;
+    model.add(mesh);
   }
   if (spec.mag !== undefined) {
-    mag = { mesh: g.children[spec.mag], base: g.children[spec.mag].position.clone() };
+    mag = { mesh: model.children[spec.mag], base: model.children[spec.mag].position.clone() };
   }
   // Both hands are built now and swapped later. Building on demand would allocate
   // geometry during a settings change, mid-match.
-  const arms = { 1: buildArms(spec, 1, dz), '-1': buildArms(spec, -1, dz) };
+  const arms = { 1: buildArms(modelSpec, 1, dz), '-1': buildArms(modelSpec, -1, dz) };
   arms['-1'].g.visible = false;
-  g.add(arms[1].g, arms['-1'].g);
+  model.add(arms[1].g, arms['-1'].g);
 
-  const box = boxOf(spec);
+  const box = boxOf(modelSpec, framedParts);
 
   g.visible = false;
   return {
     g,
+    model,
     mag,
     arms,
-    rest: spec.rest,
+    rest: modelSpec.rest,
     muzzle: [spec.muzzle[0], spec.muzzle[1], spec.muzzle[2] + dz],
     /** The rig's own middle, and half its extent on each axis. The inspect turns about
      *  the first and frames itself off the second. `center` carries `dz`, so it is in the
@@ -1200,7 +1268,7 @@ function buildRig(spec) {
     /** The closest to the camera any pose may bring this rig. Every animated pose
      *  clamps against it, so a new animation cannot silently reintroduce the clipping
      *  — hand-checking each branch every time one changes is not a guarantee. */
-    limitZ: -REAR_CLEAR - (rearOf(spec) + dz),
+    limitZ: -REAR_CLEAR - (rearOf(modelSpec, framedParts) + dz),
     /**
      * Where the support hand pounds this weapon to clear a stoppage, in rig-local space.
      *
@@ -1241,8 +1309,8 @@ function buildRig(spec) {
       (box.x0 + box.x1) / 2,
       box.y1 + FIST[1] * 0.5,
       Math.max(
-        spec.muzzle[2] + dz,
-        Math.min(gripMid(spec) + dz, -STRIKE_NEAR - spec.rest[2]),
+        modelSpec.muzzle[2] + dz,
+        Math.min(gripMid(modelSpec) + dz, -STRIKE_NEAR - modelSpec.rest[2]),
       ),
     ],
     /**
@@ -1253,7 +1321,7 @@ function buildRig(spec) {
      * disappear at release. The arms are separate children added after the parts, which
      * is what makes the slice safe and is why the hand can follow through empty.
      */
-    throwBody: spec.anim === 'throw' ? g.children.slice(0, spec.parts.length) : null,
+    throwBody: spec.anim === 'throw' ? model.children.slice(0, spec.parts.length) : null,
   };
 }
 
@@ -1458,7 +1526,7 @@ export function createViewmodel(camera, scene, vmRoot, hooks = {}) {
     // to `hand` it would have needed rest+muzzle recomputed on every swap and would
     // still not have moved with the kick.
     const m = current.muzzle;
-    current.g.add(flash);
+    current.model.add(flash);
     flash.position.set(m[0], m[1], m[2]);
     // A swap interrupts recoil, the swing, the inspect and a half-worked action rather
     // than inheriting them — otherwise the new weapon appears already mid-animation.
@@ -1546,6 +1614,14 @@ export function createViewmodel(camera, scene, vmRoot, hooks = {}) {
     if (!current) return;
     current.arms[1].g.visible = side === 1;
     current.arms['-1'].g.visible = side === -1;
+    // Present the near side of the action and aim the barrel toward screen centre.
+    // Zero yaw makes the player stare into the square rear face of the receiver, hiding
+    // every shaped side panel, control, finger and most of the barrel behind it.
+    hand.rotation.y = 0;
+    const presentationYaw = current.spec.anim === 'throw' ? 0.08
+      : current.spec.melee ? 0.38
+        : 0.27;
+    current.model.rotation.y = presentationYaw * side;
   }
 
   /** Undo everything an animation moved *inside* the rig. The rig's own transform is
@@ -1582,8 +1658,8 @@ export function createViewmodel(camera, scene, vmRoot, hooks = {}) {
     if (!current) return out.setFromMatrixPosition(camera.matrixWorld);
     const m = current.muzzle;
     out.set(m[0], m[1], m[2]);
-    current.g.updateWorldMatrix(true, false);
-    out.applyMatrix4(current.g.matrixWorld);
+    current.model.updateWorldMatrix(true, false);
+    out.applyMatrix4(current.model.matrixWorld);
     return out.applyMatrix4(camera.matrixWorld);
   }
 
@@ -1619,12 +1695,12 @@ export function createViewmodel(camera, scene, vmRoot, hooks = {}) {
   function eject(now) {
     if (!current) return;
     camera.updateWorldMatrix(true, false);
-    current.g.updateWorldMatrix(true, false);
+    current.model.updateWorldMatrix(true, false);
     const m = current.muzzle;
     // Back from the muzzle toward the breech, and out to the side of the receiver. A
     // third of the way down the barrel is where a port sits on every rig in the table.
     ejPos.set(m[0] + 0.03 * side, m[1] + 0.012, m[2] * 0.34);
-    ejPos.applyMatrix4(current.g.matrixWorld).applyMatrix4(camera.matrixWorld);
+    ejPos.applyMatrix4(current.model.matrixWorld).applyMatrix4(camera.matrixWorld);
 
     const e = camera.matrixWorld.elements;
     ejRight.set(e[0], e[1], e[2]).normalize();

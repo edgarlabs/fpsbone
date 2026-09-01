@@ -4922,10 +4922,11 @@ const okG = (cond, label, detail = '') => {
       'scope shoulders the optic · gait carries by family · shot impulse remains on the same IK rig');
   okG(vmSrc.includes("from 'three/examples/jsm/geometries/RoundedBoxGeometry.js'")
       && vmSrc.includes('new THREE.CylinderGeometry(w * 0.43, w * 0.56, len')
-      && vmSrc.includes('const roundBarrel = part[1] !== \'sphere\'')
+      && vmSrc.includes('weaponPartGeometry(part)')
+      && vmSrc.includes('function articulatedHand')
       && vmSrc.includes('new RoundedBoxGeometry(...FIST'),
-      'the first-person body and arsenal no longer render as raw boxes',
-      'tapered forearms · rounded hands/receivers · cylindrical barrels');
+      'the first-person body and arsenal use shaped low-poly models rather than raw boxes',
+      'profiled receivers/blades · cylindrical barrels · articulated palms, fingers and thumbs');
 
   /** Brace-match a `{...}` starting at or after `from` and evaluate it. */
   const braced = (src, from) => {
